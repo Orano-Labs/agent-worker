@@ -1,0 +1,13 @@
+{
+  "extends": ["@kairo/shared-config-typescript/tsconfig.common.json"],
+  "include": ["src"],
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "lib": ["dom", "esnext"],
+    "moduleResolution": "NodeNext",
+    "module": "NodeNext"
+  }
+}

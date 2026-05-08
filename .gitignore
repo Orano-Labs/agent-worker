@@ -1,0 +1,16 @@
+.DS_Store
+.cache
+
+dist
+node_modules/
+
+*.log
+*.local
+*.tsbuildinfo
+.vscode-upload.json
+
+.env
+.idea
+/.vscode
+
+.vm

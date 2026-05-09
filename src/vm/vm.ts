@@ -16,6 +16,7 @@ export class VM {
     readonly memory: number;
     readonly disk: number;
     readonly net_slot: number;
+    readonly net_bandwidth: number | null;
     readonly image: string | null;
   };
 
@@ -51,6 +52,7 @@ export class VM {
       memory: row.memory,
       disk: row.disk,
       net_slot: row.net_slot,
+      net_bandwidth: row.net_bandwidth,
       image: row.image,
     });
 

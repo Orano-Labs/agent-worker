@@ -11,7 +11,7 @@ export class VM {
   #controller: VMController;
   #id: string;
   #row?: {
-    readonly state: "running" | "stopped" | "archived";
+    readonly state: "active" | "archived";
     readonly cpus: number;
     readonly memory: number;
     readonly disk: number;
@@ -111,7 +111,6 @@ export class VM {
   async #exec(command: string, timeout = 0) {
     return new Promise<string>((resolve, reject) => {
       exec(command, { timeout }, (err, stdout, stderr) => {
-        console.log(stderr);
         if (err) {
           reject(err);
         } else {
@@ -190,44 +189,25 @@ export class VM {
       throw new Error("Cannot run an archived VM.");
     }
 
-    await this.#transaction(async () => {
-      if (this.row.state !== "running") {
-        this.#controller.db.prepare(`UPDATE vm_configs SET state = 'running' WHERE id = ?`).run(this.id);
-      }
-
-      if (this.#session.process()) {
-        return;
-      }
-
-      try {
-        await this.#prepare();
-        await this.#net.install();
-        await this.#session.start();
-      } catch (error) {
-        await this.#net.uninstall();
-
-        throw error;
-      }
-    });
-
-    this.#row = undefined;
-  }
-
-  async stop() {
-    if (this.row.state === "archived") {
+    if (this.#session.process()) {
       return;
     }
 
-    await this.#transaction(async () => {
-      if (this.row.state !== "stopped") {
-        this.#controller.db.prepare(`UPDATE vm_configs SET state = 'running' WHERE id = ?`).run(this.id);
-      }
-
-      await this.#session.stop();
+    try {
+      await this.#prepare();
       await this.#net.uninstall();
-    });
+      await this.#net.install();
+      await this.#session.start();
+    } catch (error) {
+      await this.#net.uninstall();
 
-    this.#row = undefined;
+      throw error;
+    }
+  }
+
+  async stop() {
+    await this.#session.stop();
+    await this.#net.uninstall();
   }
 
   async archive() {
@@ -235,19 +215,63 @@ export class VM {
       return;
     }
 
-    if (this.row.state !== "stopped") {
-      throw new Error(`VM must be in 'stopped' state to be archived. Current state: ${this.row.state}`);
+    if (this.#session.process()) {
+      throw new Error(`Cannot archive VM "${this.#id}" while it is running. Stop it first.`);
     }
 
     await this.#transaction(async () => {
-      this.#controller.db.prepare(`UPDATE vm_configs SET state = 'archived' WHERE id = ?`).run(this.id);
+      this.#controller.db
+        .prepare(
+          `UPDATE vm_configs SET state = 'archived', updated_at = STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW') WHERE id = ?`,
+        )
+        .run(this.id);
     });
 
     this.#row = undefined;
+  }
+
+  async health() {
+    if (!this.#session.process()) {
+      return { ok: false, stage: "process" } satisfies VM.Health;
+    }
+
+    const vmm = await this.#session
+      .connect()
+      .then((fc) => {
+        return fc.getInstanceInformation();
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+
+    if (!vmm) {
+      return { ok: false, stage: "vmm" } satisfies VM.Health;
+    }
+
+    const guest = await this.#exec(`nc -z -w 1 ${this.ip} 22`).then(
+      () => true,
+      () => false,
+    );
+
+    if (!guest) {
+      return { ok: false, stage: "guest" } satisfies VM.Health;
+    }
+
+    return { ok: true } satisfies VM.Health;
   }
 }
 
 export namespace VM {
   export const CPU_CFS_PERIOD_US = 100000;
   export const VMM_OVERHEAD_MIB = 64;
+
+  export type Health =
+    | {
+        ok: false;
+        stage: "process" | "vmm" | "guest";
+      }
+    | {
+        ok: true;
+      };
 }

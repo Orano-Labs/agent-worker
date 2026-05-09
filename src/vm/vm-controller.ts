@@ -28,7 +28,7 @@ export class VMController extends VMEnvironment {
     const columns = [
       {
         name: "state",
-        type: "TEXT NOT NULL CHECK(state IN ('running', 'stopped', 'archived')) DEFAULT 'stopped'",
+        type: "TEXT NOT NULL CHECK(state IN ('active', 'archived')) DEFAULT 'active'",
       },
       {
         name: "cpus",
@@ -210,20 +210,6 @@ export class VMController extends VMEnvironment {
     this.#instances.set(id, vm);
 
     return vm;
-  }
-
-  async init() {
-    await super.init();
-    await Promise.allSettled(
-      this.list({ state: "running" }).map(async (vm) => {
-        if (vm.session.process()) {
-          return;
-        }
-
-        await vm.net.uninstall();
-        await vm.run();
-      }),
-    );
   }
 }
 

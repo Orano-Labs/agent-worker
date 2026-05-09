@@ -7,10 +7,8 @@ node_modules/
 *.log
 *.local
 *.tsbuildinfo
-.vscode-upload.json
 
 .env
 .idea
-/.vscode
 
 .vm

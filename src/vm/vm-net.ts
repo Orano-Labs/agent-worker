@@ -285,6 +285,46 @@ export class VMNet {
       await this.#exec(cmd).catch(() => {});
     }
   }
+
+  async health() {
+    const link = await this.#exec(`ip link show ${this.veth.host.name}`).then(
+      () => true,
+      () => false,
+    );
+
+    if (!link) {
+      return { ok: false, stage: "veth" } satisfies VMNet.Health;
+    }
+
+    const ns = await this.#exec(`ip netns list | grep -q "^${this.name}\\b"`).then(
+      () => true,
+      () => false,
+    );
+
+    if (!ns) {
+      return { ok: false, stage: "netns" } satisfies VMNet.Health;
+    }
+
+    const tap = await this.#exec(`sudo ip netns exec ${this.name} ip link show ${VMNet.TAP}`).then(
+      () => true,
+      () => false,
+    );
+
+    if (!tap) {
+      return { ok: false, stage: "tap" } satisfies VMNet.Health;
+    }
+
+    const ping = await this.#exec(`sudo ip netns exec ${this.name} ping -c 1 -W 1 ${this.veth.host.ip}`).then(
+      () => true,
+      () => false,
+    );
+
+    if (!ping) {
+      return { ok: false, stage: "connectivity" } satisfies VMNet.Health;
+    }
+
+    return { ok: true } satisfies VMNet.Health;
+  }
 }
 
 export namespace VMNet {
@@ -307,4 +347,13 @@ export namespace VMNet {
 
   export const NFT_TABLE_FILTER = "cc-w-filter";
   export const NFT_TABLE_NAT = "cc-w-nat";
+
+  export type Health =
+    | {
+        ok: false;
+        stage: "veth" | "netns" | "tap" | "connectivity";
+      }
+    | {
+        ok: true;
+      };
 }

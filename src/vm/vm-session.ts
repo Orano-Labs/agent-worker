@@ -120,57 +120,73 @@ export class VMSession {
       });
     });
 
-    const fc = await this.connect();
+    try {
+      const fc = await this.connect();
 
-    await fc.setLogger({
-      log_path: "./firecracker.log",
-      level: "Debug",
-      show_level: true,
-      show_log_origin: true,
-    });
+      await fc.setLogger({
+        log_path: "./firecracker.log",
+        level: "Debug",
+        show_level: true,
+        show_log_origin: true,
+      });
 
-    await fc.setMachineConfiguration({
-      vcpu_count: this.#vm.cpus,
-      mem_size_mib: this.#vm.memory,
-      cpu_template: "None",
-      track_dirty_pages: true,
-      smt: false,
-    });
+      await fc.setMachineConfiguration({
+        vcpu_count: this.#vm.cpus,
+        mem_size_mib: this.#vm.memory,
+        cpu_template: "None",
+        track_dirty_pages: true,
+        smt: false,
+      });
 
-    await fc.setBootSource({
-      kernel_image_path: "./kernel",
-      boot_args: `console=ttyS0 reboot=k panic=1 ip=${VMNet.TAP_VM_IP}:${VMNet.TAP_NS_IP}:${VMNet.TAP_NS_IP}:255.255.255.0::eth0:off ${process.arch === "arm64" ? "keep_bootcon" : ""} quiet loglevel=0`,
-    });
+      await fc.setBootSource({
+        kernel_image_path: "./kernel",
+        boot_args: `console=ttyS0 reboot=k panic=1 ip=${VMNet.TAP_VM_IP}:${VMNet.TAP_NS_IP}:${VMNet.TAP_NS_IP}:255.255.255.0::eth0:off ${process.arch === "arm64" ? "keep_bootcon" : ""} quiet loglevel=0`,
+      });
 
-    await fc.setDrive("rootfs", {
-      drive_id: "rootfs",
-      path_on_host: "./rootfs.ext4",
-      is_root_device: true,
-      is_read_only: false,
-      cache_type: "Unsafe",
-      io_engine: "Sync",
-    });
+      await fc.setDrive("rootfs", {
+        drive_id: "rootfs",
+        path_on_host: "./rootfs.ext4",
+        is_root_device: true,
+        is_read_only: false,
+        cache_type: "Unsafe",
+        io_engine: "Sync",
+      });
 
-    await fc.setNetworkInterface("net1", {
-      iface_id: "net1",
-      guest_mac: this.#vm.mac,
-      host_dev_name: VMNet.TAP,
-    });
+      await fc.setNetworkInterface("net1", {
+        iface_id: "net1",
+        guest_mac: this.#vm.mac,
+        host_dev_name: VMNet.TAP,
+      });
 
-    await fc.setMmdsConfig({
-      version: "V2",
-      network_interfaces: ["net1"],
-      ipv4_address: "169.254.169.254",
-      imds_compat: false,
-    });
+      await fc.setMmdsConfig({
+        version: "V2",
+        network_interfaces: ["net1"],
+        ipv4_address: "169.254.169.254",
+        imds_compat: false,
+      });
 
-    await fc.setMmds({
-      hello: "Hello!!",
-    });
+      await fc.setMmds({
+        hello: "Hello!!",
+      });
 
-    await fc.createSyncAction({
-      action_type: "InstanceStart",
-    });
+      await fc.createSyncAction({
+        action_type: "InstanceStart",
+      });
+    } catch (error) {
+      const p = this.process();
+
+      if (p) {
+        try {
+          await this.#exec(`sudo kill -9 ${p.pid}`);
+        } catch {
+          try {
+            process.kill(p.pid, "SIGKILL");
+          } catch {}
+        }
+      }
+
+      throw error;
+    }
   }
 
   async stop() {
@@ -209,17 +225,17 @@ export class VMSession {
     } catch {}
   }
 
-  async connect() {
+  async connect(timeout = 1000 * 3) {
     const socket = join(this.#vm.root, "run", "firecracker.socket");
-    const timeout = AbortSignal.timeout(1000 * 10);
+    const timeoutSignal = AbortSignal.timeout(timeout);
 
     await new Promise<void>((resolve, reject) => {
       let error: unknown;
 
       const attempt = () => {
-        if (timeout.aborted) {
+        if (timeoutSignal.aborted) {
           return reject(
-            new Error(`Socket ${socket} not ready after 10s.${error ? ` Last error: ${asError(error).message}` : ""}`),
+            new Error(`Socket ${socket} not ready.${error ? ` Last error: ${asError(error).message}` : ""}`),
           );
         }
 
@@ -249,9 +265,9 @@ export class VMSession {
     return new Firecracker(socket);
   }
 
-  async ssh() {
+  async ssh(timeout = 1000 * 3) {
     const ssh = new NodeSSH();
-    const timeout = AbortSignal.timeout(1000 * 10);
+    const timeoutSignal = AbortSignal.timeout(timeout);
 
     const config: NodeSSHConfig = {
       host: this.#vm.ip,
@@ -262,9 +278,9 @@ export class VMSession {
     let error: unknown;
 
     const attempt = async (): Promise<NodeSSH> => {
-      if (timeout.aborted) {
+      if (timeoutSignal.aborted) {
         throw new Error(
-          `SSH connection timed out after 10s for VM ${this.#vm.id}.${error ? ` Last error: ${asError(error).message}` : ""}`,
+          `SSH connection timed out for VM ${this.#vm.id}.${error ? ` Last error: ${asError(error).message}` : ""}`,
         );
       }
 

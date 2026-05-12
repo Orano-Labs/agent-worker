@@ -1,0 +1,5 @@
+syntax = "proto3";
+
+package vm.agent.v1;
+
+service VMAgentSessionService {}

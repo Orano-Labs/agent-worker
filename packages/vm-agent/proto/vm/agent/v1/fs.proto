@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package vm.agent.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+message VMAgentFSPath {
+  string value = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.max_len = 1024,
+    (buf.validate.field).string.pattern = "^/[^\\0]+$"
+  ];
+}
+
+message VMAgentFSStreamingChunk {
+  bytes chunk = 1 [
+    (buf.validate.field).bytes.min_len = 1,
+    (buf.validate.field).bytes.max_len = 1048576
+  ];
+}
+
+message VMAgentFSNodeName {
+  string value = 1 [
+    (buf.validate.field).string.min_len = 1,
+    (buf.validate.field).string.max_len = 128
+  ];
+}
+
+message VMAgentFSHash {
+  bytes value = 1 [(buf.validate.field).bytes.len = 256];
+}
+
+message VMAgentFSNodeMetadata {
+  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+  VMAgentFSNodeName name = 2 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp modify_time = 3 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp create_time = 4 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSNode {
+  VMAgentFSNodeMetadata metadata = 1 [(buf.validate.field).required = true];
+
+  oneof type {
+    VMAgentFSFileNode file = 2;
+    VMAgentFSDirectoryNode directory = 3;
+    VMAgentFSSymlinkNode symlink = 4;
+  }
+}
+
+message VMAgentFSSymlinkNode {
+  VMAgentFSPath target = 1 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSFileNode {
+  uint64 size = 1;
+}
+
+message VMAgentFSDirectoryNode {
+  uint64 items = 1;
+}
+
+enum VMAgentFSWriteMode {
+  VMAgentFSWriteModeUnspecified = 0;
+  VMAgentFSWriteModeOverwrite = 1;
+  VMAgentFSWriteModeAppend = 2;
+}
+
+enum VMAgentFSWritePrecondition {
+  VMAgentFSWritePreconditionUnspecified = 0;
+  VMAgentFSWritePreconditionMustExist = 1;
+  VMAgentFSWritePreconditionMustNotExist = 2;
+}
+
+message VMAgentFSWriteHeader {
+  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+  VMAgentFSHash hash = 2 [(buf.validate.field).required = true];
+  VMAgentFSWriteMode mode = 3 [(buf.validate.field).required = true];
+  VMAgentFSWritePrecondition precondition = 4 [(buf.validate.field).required = true];
+  uint64 size = 5 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceListRequest {
+  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceListResponse {
+  repeated VMAgentFSNode entries = 1;
+}
+
+message VMAgentFSServiceReadRequest {
+  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceReadResponse {
+  VMAgentFSStreamingChunk chunk = 1 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceWriteRequest {
+  oneof part {
+    VMAgentFSWriteHeader header = 1;
+    VMAgentFSStreamingChunk chunk = 2;
+  }
+}
+
+message VMAgentFSServiceWriteResponse {}
+
+message VMAgentFSServiceRemoveRequest {
+  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceRemoveResponse {}
+
+message VMAgentFSServiceCopyRequest {
+  VMAgentFSPath source = 1 [(buf.validate.field).required = true];
+  VMAgentFSPath destination = 2 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceCopyResponse {}
+
+message VMAgentFSServiceMoveRequest {
+  VMAgentFSPath source = 1 [(buf.validate.field).required = true];
+  VMAgentFSPath destination = 2 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceMoveResponse {}
+
+message VMAgentFSServiceStatsRequest {
+  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+}
+
+message VMAgentFSServiceStatsResponse {
+  VMAgentFSNode node = 1;
+}
+
+service VMAgentFSService {
+  rpc List(VMAgentFSServiceListRequest) returns (VMAgentFSServiceListResponse);
+  rpc Read(VMAgentFSServiceReadRequest) returns (stream VMAgentFSServiceReadResponse);
+  rpc Write(stream VMAgentFSServiceWriteRequest) returns (VMAgentFSServiceWriteResponse);
+  rpc Remove(VMAgentFSServiceRemoveRequest) returns (VMAgentFSServiceRemoveResponse);
+  rpc Move(VMAgentFSServiceMoveRequest) returns (VMAgentFSServiceMoveResponse);
+  rpc Copy(VMAgentFSServiceCopyRequest) returns (VMAgentFSServiceCopyResponse);
+  rpc Stats(VMAgentFSServiceStatsRequest) returns (VMAgentFSServiceStatsResponse);
+}

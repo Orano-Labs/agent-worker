@@ -1,0 +1,17 @@
+{
+  "name": "@aw/shared-config-typescript",
+  "version": "0.0.1",
+  "type": "module",
+  "files": [
+    "tsconfig.node.json",
+    "tsconfig.common.json",
+    "tsconfig.browser.json"
+  ],
+  "exports": {
+    "./tsconfig.node.json": "./tsconfig.node.json",
+    "./tsconfig.common.json": "./tsconfig.common.json",
+    "./tsconfig.browser.json": "./tsconfig.browser.json",
+    "./*": "./*"
+  },
+  "license": "See LICENSE.md file in the root of the repository"
+}

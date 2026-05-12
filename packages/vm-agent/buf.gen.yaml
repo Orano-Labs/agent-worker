@@ -13,7 +13,9 @@ plugins:
     out: src/protocol
     # Also generate any imported dependencies
     include_imports: true
-
+  - local: ["tsx", "./scripts/protoc-gen-nice-grpc.ts"]
+    opt: target=ts
+    out: src/protocol
 # Uncomment to set `jstype = JS_STRING` on all applicable fields automatically:
 # managed:
 #   enabled: true

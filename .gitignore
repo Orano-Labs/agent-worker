@@ -1,14 +1,17 @@
 .DS_Store
 .cache
 
-dist
+dist/
 node_modules/
 
 *.log
 *.local
 *.tsbuildinfo
 
+.vscode-upload.json
+
 .env
 .idea
+.turbo
 
 .vm

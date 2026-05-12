@@ -1,25 +1,3 @@
 {
-  "include": ["src"],
-  "compilerOptions": {
-    "composite": false,
-    "declaration": true,
-    "declarationMap": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "inlineSources": false,
-    "isolatedModules": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "preserveWatchOutput": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    },
-    "lib": ["dom", "esnext"],
-    "moduleResolution": "NodeNext",
-    "module": "NodeNext"
-  }
+  "extends": ["@aw/shared-config-typescript/tsconfig.common.json"]
 }

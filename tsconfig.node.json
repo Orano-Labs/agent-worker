@@ -1,4 +1,0 @@
-{
-  "extends": ["@kairo/shared-config-typescript/tsconfig.node.json"],
-  "include": ["tsdown.config.ts", "vitest.config.ts", "**/*.test.ts"]
-}

@@ -1,5 +1,5 @@
 import { exec } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -76,6 +76,10 @@ export class Environment {
     this.#status = {
       type: "ready",
     };
+  }
+
+  async reset() {
+    await rm(this.workdir, { force: true, recursive: true });
   }
 }
 

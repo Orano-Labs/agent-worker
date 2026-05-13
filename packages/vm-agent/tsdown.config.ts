@@ -8,4 +8,7 @@ export default defineConfig({
   clean: false,
   target: false,
   deps: {},
+  define: {
+    VERSION: JSON.stringify(process.env.npm_package_version),
+  },
 });

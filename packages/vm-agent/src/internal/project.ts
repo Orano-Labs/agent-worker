@@ -5,11 +5,13 @@ import { promisify } from "node:util";
 
 import { Container } from "@/helpers/container";
 import { Environment } from "@/internal/environment";
+import { Logger } from "@/internal/logger";
 
 export class Project {
   #status: Project.Status;
 
   #environment: Environment;
+  #logger: Logger;
 
   get status() {
     return this.#status;
@@ -29,6 +31,7 @@ export class Project {
 
   constructor() {
     this.#environment = Container.inject(Environment);
+    this.#logger = Container.inject(Logger).scope("Project");
 
     this.#status = {
       type: "error",
@@ -37,7 +40,11 @@ export class Project {
   }
 
   async init() {
+    this.#logger.info("Initializing...");
+
     if (!this.#environment.ready) {
+      this.#logger.error("Environment not ready, skipping project initialization");
+
       this.#status = {
         type: "error",
         message: "Environment not ready",
@@ -66,15 +73,14 @@ export class Project {
     ];
 
     for (const directory of directories) {
-      const ok = await mkdir(directory.path, { recursive: true }).then(
-        () => true,
-        () => false,
-      );
+      try {
+        await mkdir(directory.path, { recursive: true });
+      } catch (error) {
+        this.#logger.errorFrom(error, `Failed to create ${directory.description} directory`);
 
-      if (!ok) {
         this.#status = {
           type: "error",
-          message: `Failed to create ${directory.description} dir`,
+          message: `Failed to create ${directory.description} directory`,
         };
 
         return;
@@ -115,13 +121,11 @@ export class Project {
     ];
 
     for (const command of commands) {
-      console.log(command.command);
-      const ok = await promisify(exec)(command.command, { cwd: command.cwd }).then(
-        () => true,
-        () => false,
-      );
+      try {
+        await promisify(exec)(command.command, { cwd: command.cwd });
+      } catch (error) {
+        this.#logger.errorFrom(error, `Failed to ${command.description}`);
 
-      if (!ok) {
         this.#status = {
           type: "error",
           message: `Failed to ${command.description}.`,
@@ -134,6 +138,8 @@ export class Project {
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialized");
   }
 }
 

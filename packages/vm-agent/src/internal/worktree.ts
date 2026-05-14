@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { Container } from "@/helpers/container";
+import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Environment } from "@/internal/environment";
+import { Logger } from "@/internal/logger";
 import { Project } from "@/internal/project";
 
 export class Worktree {
@@ -11,6 +13,7 @@ export class Worktree {
 
   #environment: Environment;
   #project: Project;
+  #logger: Logger;
 
   get status() {
     return this.#status;
@@ -23,6 +26,7 @@ export class Worktree {
   constructor() {
     this.#environment = Container.inject(Environment);
     this.#project = Container.inject(Project);
+    this.#logger = Container.inject(Logger).scope("Worktree");
 
     this.#status = {
       type: "error",
@@ -41,7 +45,11 @@ export class Worktree {
   }
 
   async init() {
+    this.#logger.info("Initializing...");
+
     if (!this.#project.ready) {
+      this.#logger.error("Project not ready, skipping worktree initialization");
+
       this.#status = {
         type: "error",
         message: "Project not ready",
@@ -59,12 +67,11 @@ export class Worktree {
     ];
 
     for (const command of commands) {
-      const ok = await promisify(exec)(command.command, { cwd: command.cwd }).then(
-        () => true,
-        () => false,
-      );
+      try {
+        await promisify(exec)(command.command, { cwd: command.cwd });
+      } catch (error) {
+        this.#logger.errorFrom(error, `Failed to ${command.description}`);
 
-      if (!ok) {
         this.#status = {
           type: "error",
           message: `Failed to ${command.description}.`,
@@ -77,6 +84,32 @@ export class Worktree {
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialized");
+  }
+
+  async create(id: string) {
+    if (!this.ready) {
+      throw new Error("Worktree not ready, cannot create session worktree");
+    }
+
+    const dir = this.resolve("session", id);
+
+    this.#logger.debug(`Creating session worktree for ID: ${id}`);
+
+    try {
+      // Create a new branch for this session based on main
+      const branch = `session/${id}`;
+
+      // Add worktree with new branch from main
+      await promisify(exec)(`git --git-dir=${this.#project.repository} worktree add -b ${branch} ${dir} main`, {
+        cwd: this.#environment.workdir,
+      });
+
+      this.#logger.debug(`Session worktree created successfully at ${dir}`);
+    } catch (error) {
+      throw new Error(`Failed to create session worktree: ${ErrorHelpers.as(error).message}`);
+    }
   }
 }
 

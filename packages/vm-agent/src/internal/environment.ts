@@ -4,10 +4,14 @@ import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { Container } from "@/helpers/container";
+import { Logger } from "@/internal/logger";
+
 declare const VERSION: string;
 
 export class Environment {
   #status: Environment.Status;
+  #logger: Logger;
 
   get platform() {
     return platform();
@@ -38,44 +42,48 @@ export class Environment {
       type: "error",
       message: "Not initialized",
     };
+
+    this.#logger = Container.inject(Logger).scope("Environment");
   }
 
   async init() {
-    {
-      const ok = await mkdir(this.workdir, { recursive: true }).then(
-        () => true,
-        () => false,
-      );
+    this.#logger.info("Initializing...");
 
-      if (!ok) {
-        this.#status = {
-          type: "error",
-          message: "Failed to create workdir",
-        };
+    try {
+      await mkdir(this.workdir, { recursive: true });
+    } catch (error) {
+      this.#logger.errorFrom(error, "Failed to create workdir");
 
-        return;
-      }
+      this.#status = {
+        type: "error",
+        message: "Failed to create workdir",
+      };
+
+      return;
     }
 
-    {
-      const ok = await promisify(exec)("git --version").then(
-        (o) => o.stdout.startsWith("git version"),
-        () => false,
-      );
+    try {
+      await promisify(exec)("git --version").then((o) => {
+        if (!o.stdout.startsWith("git version")) {
+          throw new Error(`Invalid git version output: ${o.stdout}`);
+        }
+      });
+    } catch (error) {
+      this.#logger.errorFrom(error, "Failed to verify git installation");
 
-      if (!ok) {
-        this.#status = {
-          type: "error",
-          message: "Failed to execute command",
-        };
+      this.#status = {
+        type: "error",
+        message: "Failed to verify git installation",
+      };
 
-        return;
-      }
+      return;
     }
 
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialized");
   }
 
   async reset() {

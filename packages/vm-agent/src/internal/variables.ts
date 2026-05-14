@@ -25,6 +25,8 @@ export class Variables {
   }
 
   async init() {
+    this.#logger.info("Initializing...");
+
     if (this.#cli.envFiles.length > 0) {
       for (const file of this.#cli.envFiles) {
         let content: string;
@@ -66,6 +68,8 @@ export class Variables {
     } else {
       this.#logger.info("No environment files found");
     }
+
+    this.#logger.info("Initialization completed");
   }
 
   get(key: (typeof Variables.TRUSTED)[number]) {

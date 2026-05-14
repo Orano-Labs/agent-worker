@@ -114,7 +114,7 @@ export class Project {
         cwd: `${this.#environment.workdir}/.bootstrap`,
       },
       {
-        command: "rm -rf bootstrap",
+        command: "rm -rf ./.bootstrap",
         description: "cleanup bootstrap",
         cwd: this.#environment.workdir,
       },
@@ -138,8 +138,6 @@ export class Project {
     this.#status = {
       type: "ready",
     };
-
-    this.#logger.info("Initialized");
   }
 }
 

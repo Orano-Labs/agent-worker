@@ -1,6 +1,9 @@
 import { default as pino } from "pino";
 import { default as pretty } from "pino-pretty";
+
+import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
+import { CommandLine } from "@/internal/command-line";
 
 const PRODUCTION = process.env.NODE_ENV === "production";
 
@@ -8,7 +11,11 @@ export class Logger {
   #logger: ReturnType<typeof pino>;
   #scope: string[];
 
+  #cli: CommandLine;
+
   constructor(options?: Logger.Options) {
+    this.#cli = Container.inject(CommandLine);
+
     this.#scope = [];
 
     if (options?.parent) {
@@ -29,10 +36,20 @@ export class Logger {
               return extra.labelColorized.replace(extra.label, extra.label.padEnd(5));
             },
           },
-          colorize: !PRODUCTION,
+          colorize: this.#cli.logColorize ?? !PRODUCTION,
         }),
       );
-      this.#logger.level = "trace";
+
+      if (
+        this.#cli.logLevel &&
+        ["fatal", "error", "warn", "info", "debug", "trace", "silent"].includes(this.#cli.logLevel)
+      ) {
+        this.#logger.level = this.#cli.logLevel;
+      } else if (PRODUCTION) {
+        this.#logger.level = "info";
+      } else {
+        this.#logger.level = "trace";
+      }
     }
   }
 

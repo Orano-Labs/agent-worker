@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { Container } from "@/helpers/container";
+import { CommandLine } from "@/internal/command-line";
 import { Logger } from "@/internal/logger";
 
 declare const VERSION: string;
@@ -12,6 +13,7 @@ declare const VERSION: string;
 export class Environment {
   #status: Environment.Status;
   #logger: Logger;
+  #cli: CommandLine;
 
   get platform() {
     return platform();
@@ -37,6 +39,10 @@ export class Environment {
     return VERSION;
   }
 
+  get cwd() {
+    return this.#cli.cwd;
+  }
+
   constructor() {
     this.#status = {
       type: "error",
@@ -44,22 +50,36 @@ export class Environment {
     };
 
     this.#logger = Container.inject(Logger).scope("Environment");
+    this.#cli = Container.inject(CommandLine);
   }
 
   async init() {
     this.#logger.info("Initializing...");
 
-    try {
-      await mkdir(this.workdir, { recursive: true });
-    } catch (error) {
-      this.#logger.errorFrom(error, "Failed to create workdir");
+    const directories = [
+      {
+        path: this.workdir,
+        description: "work",
+      },
+      {
+        path: join(this.workdir, "data"),
+        description: "data",
+      },
+    ];
 
-      this.#status = {
-        type: "error",
-        message: "Failed to create workdir",
-      };
+    for (const directory of directories) {
+      try {
+        await mkdir(directory.path, { recursive: true });
+      } catch (error) {
+        this.#logger.errorFrom(error, `Failed to create ${directory.description} directory`);
 
-      return;
+        this.#status = {
+          type: "error",
+          message: `Failed to create ${directory.description} directory`,
+        };
+
+        return;
+      }
     }
 
     try {
@@ -82,8 +102,6 @@ export class Environment {
     this.#status = {
       type: "ready",
     };
-
-    this.#logger.info("Initialized");
   }
 
   async reset() {

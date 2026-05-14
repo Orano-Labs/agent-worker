@@ -1,6 +1,8 @@
 import { exec } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { simpleGit } from "simple-git";
 
 import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
@@ -84,11 +86,9 @@ export class Worktree {
     this.#status = {
       type: "ready",
     };
-
-    this.#logger.info("Initialized");
   }
 
-  async create(id: string) {
+  async createSession(id: string) {
     if (!this.ready) {
       throw new Error("Worktree not ready, cannot create session worktree");
     }
@@ -108,8 +108,21 @@ export class Worktree {
 
       this.#logger.debug(`Session worktree created successfully at ${dir}`);
     } catch (error) {
+      this.#logger.errorFrom(error, `Failed to create session worktree for ID: ${id}`);
       throw new Error(`Failed to create session worktree: ${ErrorHelpers.as(error).message}`);
     }
+  }
+
+  async createSessionGitInterface(id: string) {
+    const dir = this.resolve("session", id);
+
+    try {
+      await stat(dir);
+    } catch {
+      throw new Error(`Session worktree for ID: ${id} does not exist`);
+    }
+
+    return simpleGit(dir);
   }
 }
 

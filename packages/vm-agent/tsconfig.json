@@ -1,6 +1,12 @@
 {
   "extends": ["@aw/shared-config-typescript/tsconfig.common.json"],
-  "include": ["src"],
+  "include": [
+    "src",
+    "scripts",
+    "tsdown.config.ts",
+    "vitest.config.ts",
+    "drizzle.config.ts"
+  ],
   "compilerOptions": {
     "paths": {
       "@/*": ["./src/*"]

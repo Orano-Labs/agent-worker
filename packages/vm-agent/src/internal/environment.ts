@@ -3,6 +3,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { lock } from "proper-lockfile";
 
 import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
@@ -94,6 +95,32 @@ export class Environment {
       this.#status = {
         type: "error",
         message: "Failed to verify git installation",
+      };
+
+      return;
+    }
+
+    try {
+      const release = await lock(join(this.workdir, ".single-instance-lock"), {
+        realpath: false,
+      });
+
+      const exit = async () => {
+        this.#logger.info("Received termination signal, releasing lock...");
+
+        await release().catch((error) => {
+          this.#logger.errorFrom(error, "Failed to release single instance lock");
+        });
+      };
+
+      process.on("SIGINT", exit);
+      process.on("SIGTERM", exit);
+    } catch (error) {
+      this.#logger.errorFrom(error, "Failed to acquire single instance lock");
+
+      this.#status = {
+        type: "error",
+        message: "Failed to acquire single instance lock",
       };
 
       return;

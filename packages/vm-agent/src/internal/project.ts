@@ -1,5 +1,5 @@
 import { exec } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -87,52 +87,75 @@ export class Project {
       }
     }
 
-    const commands = [
-      {
-        command: `git init --bare ${this.repository}`,
-        description: "initialize bare repository",
-        cwd: this.#environment.workdir,
-      },
-      {
-        command: `git clone ${this.repository} .bootstrap`,
-        description: "bootstrap repository",
-        cwd: this.#environment.workdir,
-      },
-      {
-        command: "git checkout -b main",
-        description: "create main branch",
-        cwd: `${this.#environment.workdir}/.bootstrap`,
-      },
-      {
-        command: "git commit --allow-empty -m 'Initial commit'",
-        description: "initial commit",
-        cwd: `${this.#environment.workdir}/.bootstrap`,
-      },
-      {
-        command: "git push -u origin main",
-        description: "push main branch",
-        cwd: `${this.#environment.workdir}/.bootstrap`,
-      },
-      {
-        command: "rm -rf ./.bootstrap",
-        description: "cleanup bootstrap",
-        cwd: this.#environment.workdir,
-      },
-    ];
+    let skipInitializeGit = false;
 
-    for (const command of commands) {
-      try {
-        await promisify(exec)(command.command, { cwd: command.cwd });
-      } catch (error) {
-        this.#logger.errorFrom(error, `Failed to ${command.description}`);
+    try {
+      const out = await promisify(exec)(`git rev-parse --is-bare-repository`, { cwd: this.repository });
+
+      if (out.stdout.trim() === "false") {
+        this.#logger.error("Existing repository is not a bare repository");
 
         this.#status = {
           type: "error",
-          message: `Failed to ${command.description}.`,
+          message: "Repository exists but is not a bare repository",
         };
 
         return;
       }
+
+      skipInitializeGit = true;
+    } catch {}
+
+    if (!skipInitializeGit) {
+      const commands = [
+        {
+          command: `git init --bare ${this.repository}`,
+          description: "initialize bare repository",
+          cwd: this.#environment.workdir,
+        },
+        {
+          command: `git clone ${this.repository} .bootstrap`,
+          description: "bootstrap repository",
+          cwd: this.#environment.workdir,
+        },
+        {
+          command: "git checkout -b main",
+          description: "create main branch",
+          cwd: `${this.#environment.workdir}/.bootstrap`,
+        },
+        {
+          command: "git commit --allow-empty -m 'Initial commit'",
+          description: "initial commit",
+          cwd: `${this.#environment.workdir}/.bootstrap`,
+        },
+        {
+          command: "git push -u origin main",
+          description: "push main branch",
+          cwd: `${this.#environment.workdir}/.bootstrap`,
+        },
+        {
+          command: "rm -rf .bootstrap",
+          description: "cleanup bootstrap",
+          cwd: this.#environment.workdir,
+        },
+      ];
+
+      for (const command of commands) {
+        try {
+          await promisify(exec)(command.command, { cwd: command.cwd });
+        } catch (error) {
+          this.#logger.errorFrom(error, `Failed to ${command.description}`);
+
+          this.#status = {
+            type: "error",
+            message: `Failed to ${command.description}.`,
+          };
+
+          return;
+        }
+      }
+    } else {
+      this.#logger.info("Repository already initialized, skipping initialization");
     }
 
     this.#status = {

@@ -25,6 +25,8 @@ export class Variables {
   }
 
   async init() {
+    this.#logger.info("Initializing...");
+
     if (this.#cli.envFiles.length > 0) {
       for (const file of this.#cli.envFiles) {
         let content: string;
@@ -66,6 +68,8 @@ export class Variables {
     } else {
       this.#logger.info("No environment files found");
     }
+
+    this.#logger.info("Initialization completed");
   }
 
   get(key: (typeof Variables.TRUSTED)[number]) {
@@ -74,7 +78,11 @@ export class Variables {
 }
 
 export namespace Variables {
-  export const TRUSTED_PREFIX = "AGENT_WORKER_";
+  export const TRUSTED_PREFIX = "VM_AGENT_";
 
-  export const TRUSTED = [`${TRUSTED_PREFIX}CLAUDE_API_KEY`] as const;
+  export const TRUSTED = [
+    // REGISTRY
+    `${TRUSTED_PREFIX}REGISTRY_KEY`,
+    `${TRUSTED_PREFIX}REGISTRY_URL`,
+  ] as const;
 }

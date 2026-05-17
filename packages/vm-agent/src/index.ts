@@ -1,16 +1,46 @@
-import { fastifyConnectPlugin } from "@connectrpc/connect-fastify";
-import { createValidateInterceptor } from "@connectrpc/validate";
-import { fastify } from "fastify";
+import { Container } from "@/helpers/container";
+import { CommandLine } from "@/internal/command-line";
+import { Database } from "@/internal/database";
+import { Environment } from "@/internal/environment";
+import { Logger } from "@/internal/logger";
+import { Project } from "@/internal/project";
+import { Variables } from "@/internal/variables";
+import { Worktree } from "@/internal/worktree";
+
+Container.singleton(CommandLine, () => new CommandLine());
+Container.singleton(Logger, () => new Logger());
+Container.singleton(Environment, () => new Environment());
+Container.singleton(Project, () => new Project());
+Container.singleton(Worktree, () => new Worktree());
+Container.singleton(Variables, () => new Variables());
+Container.singleton(Database, () => new Database());
 
 const main = async () => {
-  const server = fastify({ http2: true, http2SessionTimeout: 1000 * 2 });
+  const cli = Container.inject(CommandLine);
+  const logger = Container.inject(Logger).scope("Main");
+  const environment = Container.inject(Environment);
+  const project = Container.inject(Project);
+  const worktree = Container.inject(Worktree);
+  const variables = Container.inject(Variables);
+  const db = Container.inject(Database);
 
-  await server.register(fastifyConnectPlugin, {
-    interceptors: [createValidateInterceptor()],
-    routes: (router) => {},
+  logger.info("Command line arguments", {
+    cwd: cli.cwd,
+    logLevel: cli.logLevel,
+    logColorize: cli.logColorize,
+    envFiles: cli.envFiles,
   });
+  logger.info("Initializing...");
 
-  await server.listen({ host: "0.0.0.0", port: 8999 });
+  await variables.init();
+  // await environment.reset();
+  await environment.init();
+  await db.init();
+  await project.init();
+  await worktree.init();
 };
 
-main();
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

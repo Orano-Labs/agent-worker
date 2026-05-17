@@ -19,6 +19,7 @@ const SESSIONS_TABLE_COLUMNS = {
   ...SHARED_COLUMNS,
 
   id: text("id").primaryKey(),
+  config: text("config", { mode: "json" }).notNull(),
 } as const;
 
 export const SESSIONS_TABLE = sqliteTable("sessions", SESSIONS_TABLE_COLUMNS, (table) => {

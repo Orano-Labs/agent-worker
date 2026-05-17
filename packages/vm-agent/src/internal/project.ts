@@ -161,6 +161,8 @@ export class Project {
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialization completed");
   }
 }
 

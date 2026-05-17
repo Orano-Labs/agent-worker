@@ -110,6 +110,8 @@ export class Database {
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialization completed");
   }
 }
 

@@ -19,7 +19,7 @@
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
-      "lineWidth": 120
+      "lineWidth": 140
     }
   },
   "css": {

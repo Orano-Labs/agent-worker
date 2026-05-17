@@ -1,5 +1,5 @@
 {
-  "name": "@aw/vm-agent-protocol",
+  "name": "@aw/vm-agent",
   "version": "0.0.1",
   "description": "",
   "main": "./dist/index.cjs",

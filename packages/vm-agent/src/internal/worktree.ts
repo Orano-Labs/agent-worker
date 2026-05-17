@@ -60,32 +60,46 @@ export class Worktree {
       return;
     }
 
-    const commands = [
-      {
-        command: `git --git-dir=${this.#project.repository} worktree add ${this.resolve("main")} main`,
-        description: "create main worktree",
-        cwd: this.#environment.workdir,
-      },
-    ];
+    let skipInitializeMainWorktree = false;
 
-    for (const command of commands) {
-      try {
-        await promisify(exec)(command.command, { cwd: command.cwd });
-      } catch (error) {
-        this.#logger.errorFrom(error, `Failed to ${command.description}`);
+    try {
+      await stat(join(this.#project.repository, "worktrees/main")).then(() => {
+        skipInitializeMainWorktree = true;
+      });
+    } catch {}
 
-        this.#status = {
-          type: "error",
-          message: `Failed to ${command.description}.`,
-        };
+    if (!skipInitializeMainWorktree) {
+      const commands = [
+        {
+          command: `git --git-dir=${this.#project.repository} worktree add ${this.resolve("main")} main`,
+          description: "create main worktree",
+          cwd: this.#environment.workdir,
+        },
+      ];
 
-        return;
+      for (const command of commands) {
+        try {
+          await promisify(exec)(command.command, { cwd: command.cwd });
+        } catch (error) {
+          this.#logger.errorFrom(error, `Failed to ${command.description}`);
+
+          this.#status = {
+            type: "error",
+            message: `Failed to ${command.description}.`,
+          };
+
+          return;
+        }
       }
+    } else {
+      this.#logger.info("Main worktree already exists, skipping initialization");
     }
 
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialization completed");
   }
 
   async createSession(id: string) {

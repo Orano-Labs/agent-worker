@@ -129,6 +129,8 @@ export class Environment {
     this.#status = {
       type: "ready",
     };
+
+    this.#logger.info("Initialization completed");
   }
 
   async reset() {

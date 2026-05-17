@@ -5,6 +5,7 @@ package vm.agent.v1;
 import "buf/validate/validate.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "vm/agent/v1/session.proto";
 
 message VMAgentFSPath {
   string value = 1 [
@@ -61,6 +62,19 @@ message VMAgentFSDirectoryNode {
   uint64 items = 1;
 }
 
+message VMAgentFSContext {
+  oneof value {
+    VMAgentFSProjectContext project = 1;
+    VMAgentFSSessionContext session = 2;
+  }
+}
+
+message VMAgentFSProjectContext {}
+
+message VMAgentFSSessionContext {
+  vm.agent.v1.VMAgentSessionID id = 1 [(buf.validate.field).required = true];
+}
+
 enum VMAgentFSWriteMode {
   VMAgentFSWriteModeUnspecified = 0;
   VMAgentFSWriteModeOverwrite = 1;
@@ -78,11 +92,14 @@ message VMAgentFSWriteHeader {
   VMAgentFSHash hash = 2 [(buf.validate.field).required = true];
   VMAgentFSWriteMode mode = 3 [(buf.validate.field).required = true];
   VMAgentFSWritePrecondition precondition = 4 [(buf.validate.field).required = true];
-  uint64 size = 5 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 5;
+
+  uint64 size = 6 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceListRequest {
-  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 1;
+  VMAgentFSPath path = 2 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceListResponse {
@@ -90,7 +107,8 @@ message VMAgentFSServiceListResponse {
 }
 
 message VMAgentFSServiceReadRequest {
-  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 1;
+  VMAgentFSPath path = 2 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceReadResponse {
@@ -107,27 +125,31 @@ message VMAgentFSServiceWriteRequest {
 message VMAgentFSServiceWriteResponse {}
 
 message VMAgentFSServiceRemoveRequest {
-  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 1;
+  VMAgentFSPath path = 2 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceRemoveResponse {}
 
 message VMAgentFSServiceCopyRequest {
-  VMAgentFSPath source = 1 [(buf.validate.field).required = true];
-  VMAgentFSPath destination = 2 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 1;
+  VMAgentFSPath source = 2 [(buf.validate.field).required = true];
+  VMAgentFSPath destination = 3 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceCopyResponse {}
 
 message VMAgentFSServiceMoveRequest {
-  VMAgentFSPath source = 1 [(buf.validate.field).required = true];
-  VMAgentFSPath destination = 2 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 1;
+  VMAgentFSPath source = 2 [(buf.validate.field).required = true];
+  VMAgentFSPath destination = 3 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceMoveResponse {}
 
 message VMAgentFSServiceStatsRequest {
-  VMAgentFSPath path = 1 [(buf.validate.field).required = true];
+  VMAgentFSContext context = 1;
+  VMAgentFSPath path = 2 [(buf.validate.field).required = true];
 }
 
 message VMAgentFSServiceStatsResponse {

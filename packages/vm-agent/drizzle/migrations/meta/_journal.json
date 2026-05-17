@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1778748708038,
+      "tag": "0000_sticky_anita_blake",
+      "breakpoints": true
+    }
+  ]
+}

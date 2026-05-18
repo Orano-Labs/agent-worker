@@ -40,80 +40,109 @@ export class RPCStreamsManager {
       case "stream:frame":
         this.#incoming.handleFrame(event.body.id, event.body.data);
         break;
-
-      case "request:canceled":
-        this.#incoming.handleRequestCanceled(event.body.id);
-        this.#outgoing.handleRequestCanceled(event.body.id);
-        break;
     }
   }
 
-  createIncoming(id: string, owner: RPCStreamsManager.Owner) {
-    return this.#incoming.create(id, owner);
+  createIncoming(id: string, options: RPCStreamsManager.IncomingOptions) {
+    return this.#incoming.create(id, options);
   }
 
-  createOutgoing(stream: ReadableStream<RPCMessage.Transferable>, owner: RPCStreamsManager.Owner) {
-    return this.#outgoing.create(stream, owner);
+  createOutgoing(stream: ReadableStream<RPCMessage.Transferable>, options: RPCStreamsManager.OutgoingOptions) {
+    return this.#outgoing.create(stream, options);
   }
 }
 
 export namespace RPCStreamsManager {
   export class Incoming {
-    #controllers: Map<
+    #streams: Map<
       string,
       {
         controller: ReadableStreamDefaultController<unknown>;
-        owner: RPCStreamsManager.Owner;
+        clean: () => void;
       }
     >;
     #sender: Sender;
 
     constructor(sender: Sender) {
       this.#sender = sender;
-      this.#controllers = new Map();
+      this.#streams = new Map();
     }
 
-    create(id: string, owner: RPCStreamsManager.Owner) {
-      if (this.#controllers.has(id)) {
+    #clean(id: string) {
+      this.#streams.get(id)?.clean();
+      this.#streams.delete(id);
+    }
+
+    create(id: string, options: IncomingOptions) {
+      if (this.#streams.has(id)) {
         throw new Error(`Incoming stream with ID "${id}" already exists.`);
       }
 
       return new ReadableStream<RPCMessage.Transferable>({
         start: (controller) => {
-          this.#controllers.set(id, {
+          this.#streams.set(id, {
             controller,
-            owner,
+            clean: () => {
+              if (signal) {
+                signal.removeEventListener("abort", handleAbort);
+              }
+            },
           });
+
+          const handleAbort = (reason: unknown) => {
+            if (this.#streams.has(id)) {
+              try {
+                controller.error(reason);
+              } catch {}
+
+              this.#sender.send(RPCMessage.createStreamCanceledEvent(id));
+              this.#clean(id);
+            }
+          };
+
+          const signal = options.signal;
+
+          if (signal) {
+            if (signal.aborted) {
+              return handleAbort(signal.reason);
+            }
+
+            signal.addEventListener("abort", handleAbort);
+          }
         },
         cancel: () => {
-          this.#controllers.delete(id);
-          this.#sender.send(RPCMessage.createStreamCanceledEvent(id));
+          if (this.#streams.has(id)) {
+            this.#sender.send(RPCMessage.createStreamCanceledEvent(id));
+            this.#clean(id);
+          }
         },
       });
     }
 
     has(id: string) {
-      return this.#controllers.has(id);
+      return this.#streams.has(id);
     }
 
     count() {
-      return this.#controllers.size;
+      return this.#streams.size;
     }
 
     destroy(error: Error) {
-      for (const [_, { controller }] of this.#controllers.entries()) {
+      for (const [_, { controller, clean }] of this.#streams.entries()) {
         try {
           controller.error(error);
         } catch {
           // 尽最大努力通知异常
         }
+
+        clean();
       }
 
-      this.#controllers.clear();
+      this.#streams.clear();
     }
 
     handleFrame(id: string, data: unknown) {
-      const controller = this.#controllers.get(id)?.controller;
+      const controller = this.#streams.get(id)?.controller;
 
       if (!controller) {
         return;
@@ -129,12 +158,12 @@ export namespace RPCStreamsManager {
           // 忽略二次报错
         }
 
-        this.#controllers.delete(id);
+        this.#clean(id);
       }
     }
 
     handleClose(id: string) {
-      const controller = this.#controllers.get(id)?.controller;
+      const controller = this.#streams.get(id)?.controller;
 
       if (!controller) {
         return;
@@ -145,12 +174,12 @@ export namespace RPCStreamsManager {
       } catch {
         // 忽略重复关闭的异常
       } finally {
-        this.#controllers.delete(id);
+        this.#clean(id);
       }
     }
 
     handleError(id: string, error: RPCMessage.Error) {
-      const controller = this.#controllers.get(id)?.controller;
+      const controller = this.#streams.get(id)?.controller;
 
       if (!controller) {
         return;
@@ -161,77 +190,103 @@ export namespace RPCStreamsManager {
       } catch {
         // 忽略已处于错误状态的流
       } finally {
-        this.#controllers.delete(id);
-      }
-    }
-
-    handleRequestCanceled(request: string) {
-      for (const [id, { owner, controller }] of this.#controllers.entries()) {
-        if (request !== owner.id) {
-          continue;
-        }
-
-        try {
-          controller.error(RPCError.createAborted("Request canceled."));
-        } catch {
-          // 忽略已处于错误状态的流
-        } finally {
-          this.#controllers.delete(id);
-        }
+        this.#clean(id);
       }
     }
   }
 
   export class Outgoing {
-    #readers: Map<
+    #streams: Map<
       string,
       {
         reader: ReadableStreamDefaultReader<RPCMessage.Transferable>;
-        owner: RPCStreamsManager.Owner;
+        clean: () => void;
       }
     >;
     #sender: Sender;
 
     constructor(sender: Sender) {
       this.#sender = sender;
-      this.#readers = new Map();
+      this.#streams = new Map();
     }
 
-    create(stream: ReadableStream<RPCMessage.Transferable>, owner: RPCStreamsManager.Owner) {
+    #clean(id: string) {
+      this.#streams.get(id)?.clean();
+      this.#streams.delete(id);
+    }
+
+    create(stream: ReadableStream<RPCMessage.Transferable>, options: OutgoingOptions) {
       const id = crypto.randomUUID();
       const reader = stream.getReader();
 
-      this.#readers.set(id, { reader, owner });
+      this.#streams.set(id, {
+        reader,
+        clean: () => {
+          if (signal) {
+            signal.removeEventListener("abort", handleAbort);
+          }
+        },
+      });
+
+      const signal = options.signal;
+      const handleAbort = () => {
+        const reason = signal?.reason || new Error("Stream aborted.");
+
+        if (this.#streams.has(id)) {
+          reader.cancel(reason).catch(() => {});
+
+          this.#clean(id);
+
+          // 当通过 AbortSignal 触发取消时；无法判断具体的取消来源
+          // 所以默认为发送端主动终止了输出流；并向远端发送流错误事件
+          this.#sender.send(RPCMessage.createStreamErrorEvent(id, RPCError.fromUnknown(reason, RPCError.Code.Aborted).transferable()));
+        }
+      };
+
+      if (signal) {
+        signal.addEventListener("abort", handleAbort);
+
+        if (signal.aborted) {
+          handleAbort();
+        }
+      }
 
       // 开启异步推流循环（不阻塞当前主线程）
       (async () => {
         try {
           while (true) {
             // 在读取前，先验证该流是否还存在于 Map 中（是否已被远端 handleCancel 取消）
-            if (!this.#readers.has(id)) {
+            if (!this.#streams.has(id)) {
               break;
             }
 
             const { done, value } = await reader.read();
+
+            // 再次安全检查，防止在 await reader.read() 期间远端发来了取消信号
+            if (!this.#streams.has(id)) {
+              break;
+            }
 
             if (done) {
               // 本地流正常结束，通知远端关闭
               return this.#sender.send(RPCMessage.createStreamClosedEvent(id));
             }
 
-            // 再次安全检查，防止在 await reader.read() 期间远端发来了取消信号
-            if (!this.#readers.has(id)) {
-              break;
-            }
-
             // 发送数据帧到网络层
             this.#sender.send(RPCMessage.createStreamFrameEvent(id, value));
           }
         } catch (err) {
-          this.#sender.send(RPCMessage.createStreamErrorEvent(id, RPCError.fromUnknown(err, RPCError.Code.Internal).transferable()));
+          if (this.#streams.has(id)) {
+            this.#sender.send(RPCMessage.createStreamErrorEvent(id, RPCError.fromUnknown(err, RPCError.Code.Internal).transferable()));
+          }
+
+          reader.cancel(err).catch(() => {});
         } finally {
-          reader.releaseLock();
-          this.#readers.delete(id);
+          this.#clean(id);
+
+          try {
+            reader.releaseLock();
+          } catch {}
         }
       })();
 
@@ -239,43 +294,33 @@ export namespace RPCStreamsManager {
     }
 
     has(id: string) {
-      return this.#readers.has(id);
+      return this.#streams.has(id);
     }
 
     count() {
-      return this.#readers.size;
+      return this.#streams.size;
     }
 
     destroy(error: Error) {
-      for (const [_, { reader }] of this.#readers.entries()) {
+      for (const [_, { reader }] of this.#streams.entries()) {
         reader.cancel(error).catch(() => {});
       }
 
-      this.#readers.clear();
+      this.#streams.clear();
     }
 
     handleCancel(id: string) {
-      const reader = this.#readers.get(id)?.reader;
+      const reader = this.#streams.get(id)?.reader;
 
       if (!reader) {
         return;
       }
 
+      this.#clean(id);
+
+      // 如果是从远端取消的，不再向远端发送任何消息
+      // 包括流被取消的信息；因为默认远端已经处理了输入流的取消
       reader.cancel(RPCError.createCanceled("Stream canceled by remote side.")).catch(() => {});
-
-      this.#readers.delete(id);
-    }
-
-    handleRequestCanceled(request: string) {
-      for (const [id, { owner, reader }] of this.#readers.entries()) {
-        if (request !== owner.id) {
-          continue;
-        }
-
-        reader.cancel(RPCError.createCanceled("Request canceled.")).catch(() => {});
-
-        this.#readers.delete(id);
-      }
     }
   }
 
@@ -283,8 +328,6 @@ export namespace RPCStreamsManager {
     send(message: RPCMessage.Event): void;
   };
 
-  export type Owner = {
-    id: string;
-    type: "request" | "response";
-  };
+  export type IncomingOptions = { signal?: AbortSignal };
+  export type OutgoingOptions = { signal?: AbortSignal };
 }

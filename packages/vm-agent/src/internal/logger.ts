@@ -40,10 +40,7 @@ export class Logger {
         }),
       );
 
-      if (
-        this.#cli.logLevel &&
-        ["fatal", "error", "warn", "info", "debug", "trace", "silent"].includes(this.#cli.logLevel)
-      ) {
+      if (this.#cli.logLevel && ["fatal", "error", "warn", "info", "debug", "trace", "silent"].includes(this.#cli.logLevel)) {
         this.#logger.level = this.#cli.logLevel;
       } else if (PRODUCTION) {
         this.#logger.level = "info";
@@ -79,6 +76,10 @@ export class Logger {
 
   fatal(message: string, context?: Record<string, unknown>) {
     this.#write("fatal", message, context);
+  }
+
+  fatalFrom(error: unknown, message?: string) {
+    this.#logger.fatal(ErrorHelpers.as(error), message);
   }
 
   error(message: string, context?: Record<string, unknown>) {

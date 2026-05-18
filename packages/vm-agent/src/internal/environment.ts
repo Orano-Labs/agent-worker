@@ -8,6 +8,7 @@ import { lock } from "proper-lockfile";
 import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
 import { Logger } from "@/internal/logger";
+import { Variables } from "@/internal/variables";
 
 declare const VERSION: string;
 
@@ -15,6 +16,7 @@ export class Environment {
   #status: Environment.Status;
   #logger: Logger;
   #cli: CommandLine;
+  #variables: Variables;
 
   get platform() {
     return platform();
@@ -29,7 +31,7 @@ export class Environment {
   }
 
   get workdir() {
-    return join(homedir(), ".agent-worker");
+    return this.#variables.get("VM_AGENT_ROOT_DIR") || join(homedir(), ".agent-worker");
   }
 
   get status() {
@@ -52,6 +54,7 @@ export class Environment {
 
     this.#logger = Container.inject(Logger).scope("Environment");
     this.#cli = Container.inject(CommandLine);
+    this.#variables = Container.inject(Variables);
   }
 
   async init() {
@@ -88,6 +91,8 @@ export class Environment {
         if (!o.stdout.startsWith("git version")) {
           throw new Error(`Invalid git version output: ${o.stdout}`);
         }
+
+        this.#logger.info(`Git version: ${o.stdout.replace("git version", "").trim()}`);
       });
     } catch (error) {
       this.#logger.errorFrom(error, "Failed to verify git installation");
@@ -95,6 +100,21 @@ export class Environment {
       this.#status = {
         type: "error",
         message: "Failed to verify git installation",
+      };
+
+      return;
+    }
+
+    try {
+      await promisify(exec)("claude --version").then((o) => {
+        this.#logger.info(`Claude version: ${o.stdout.split(" ")[0].trim()}`);
+      });
+    } catch (error) {
+      this.#logger.errorFrom(error, "Failed to verify claude installation");
+
+      this.#status = {
+        type: "error",
+        message: "Failed to verify claude installation",
       };
 
       return;
@@ -131,10 +151,6 @@ export class Environment {
     };
 
     this.#logger.info("Initialization completed");
-  }
-
-  async reset() {
-    await rm(this.workdir, { force: true, recursive: true });
   }
 }
 

@@ -84,5 +84,7 @@ export namespace Variables {
     // REGISTRY
     `${TRUSTED_PREFIX}REGISTRY_KEY`,
     `${TRUSTED_PREFIX}REGISTRY_URL`,
+
+    `${TRUSTED_PREFIX}ROOT_DIR`,
   ] as const;
 }

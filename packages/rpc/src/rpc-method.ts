@@ -27,7 +27,7 @@ export namespace RPCMethod {
     BidiStream,
   }
 
-  export type Handler<T extends RPCMethod> =
+  export type Handler<T extends RPCMethod = RPCMethod> =
     T extends RPCMethod<infer I, infer O>
       ? T["type"] extends Type.Unary
         ? Handler.Unary<I, O>
@@ -42,11 +42,13 @@ export namespace RPCMethod {
 
   export namespace Handler {
     export type Context = {
-      signal: AbortSignal;
+      readonly id: string;
+      readonly signal: AbortSignal;
+
       metadata: Record<string, string>;
     };
 
-    type F<I, O> = (input: I, context: Context) => O;
+    type F<I, O> = (input: I, metadata: Record<string, string>, context: Context) => O;
 
     import InferI = Codec.InferI;
     import InferO = Codec.InferO;
@@ -55,6 +57,8 @@ export namespace RPCMethod {
     export type ServerStream<I extends Codec, O extends Codec> = F<InferO<I>, PromisableStream<InferI<O>>>;
     export type ClientStream<I extends Codec, O extends Codec> = F<ReadableStream<InferO<I>>, Promisable<InferI<O>>>;
     export type BidiStream<I extends Codec, O extends Codec> = F<ReadableStream<InferO<I>>, PromisableStream<InferI<O>>>;
+
+    export type Any = F<RPCMessage.Streamable<RPCMessage.Transferable>, Promisable<RPCMessage.Streamable<RPCMessage.Transferable>>>;
   }
 
   export type Invoker<T extends RPCMethod> =

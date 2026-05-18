@@ -79,8 +79,7 @@ export class RPCConnection {
 
       try {
         stream = this.#streams.createIncoming(message.content.stream, {
-          type: "request",
-          id: message.id,
+          signal: controller.signal,
         });
       } catch (error) {
         return this.#transport.send(
@@ -107,7 +106,7 @@ export class RPCConnection {
           throw RPCError.createUnimplemented("Method not implemented.");
         }
 
-        return this.#handler(input, { signal: controller.signal });
+        return this.#handler(input, { signal: controller.signal, id: message.id, method: message.method });
       })
       .then((output) => {
         if (output.data instanceof ReadableStream) {
@@ -115,8 +114,7 @@ export class RPCConnection {
 
           try {
             stream = this.#streams.createOutgoing(output.data, {
-              type: "response",
-              id: message.id,
+              signal: controller.signal,
             });
           } catch (error) {
             return this.#transport.send(
@@ -156,8 +154,7 @@ export class RPCConnection {
       try {
         deferred.resolve({
           data: this.#streams.createIncoming(message.content.stream, {
-            type: "response",
-            id: message.request,
+            signal: deferred.signal,
           }),
           metadata: message.metadata,
         });
@@ -187,17 +184,17 @@ export class RPCConnection {
   }
 
   async invoke(method: string, content: RPCConnection.Content, context?: RPCConnection.InvokeContext) {
-    context?.signal.throwIfAborted();
+    const signal = context?.signal;
+
+    signal?.throwIfAborted();
 
     const message = RPCMessage.createRequest(method, { data: null }, content.metadata);
 
     if (content.data instanceof ReadableStream) {
       try {
         message.content = {
-          // TODO: 这里应该也支持通过 signal 控制输入流
           stream: this.#streams.createOutgoing(content.data, {
-            type: "request",
-            id: message.id,
+            signal,
           }),
         };
       } catch (error) {
@@ -214,8 +211,6 @@ export class RPCConnection {
 
         reject(reason);
       };
-
-      const signal = context?.signal;
 
       if (signal) {
         signal.addEventListener("abort", handleAbort);
@@ -252,10 +247,12 @@ export namespace RPCConnection {
   };
 
   export type HandlerContext = {
+    id: string;
+    method: string;
     signal: AbortSignal;
   };
 
-  export type Handler = (payload: Content, context: HandlerContext) => Promise<Content>;
+  export type Handler = (content: Content, context: HandlerContext) => Promise<Content>;
 
   export type InvokeContext = {
     signal: AbortSignal;

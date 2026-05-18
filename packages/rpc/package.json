@@ -40,6 +40,7 @@
     "@standard-schema/spec": "^1.1.0",
     "better-sqlite3": "^12.10.0",
     "catch-unknown": "^2.0.0",
+    "debug": "^4.4.3",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.8.5",
     "pino": "^10.3.1",
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/debug": "^4.1.13",
     "@types/proper-lockfile": "^4.1.4",
     "drizzle-kit": "^0.31.10"
   }

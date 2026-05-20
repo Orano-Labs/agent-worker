@@ -9,14 +9,14 @@ export class RPCConnection {
   #handler?: RPCConnection.Handler;
 
   constructor(transport: RPCConnection.Transport, options: RPCConnection.Options) {
-    if (transport.onMessage || transport.onClose) {
+    if (transport.onMessage || transport.onDisconnect) {
       throw new Error(`Transport already has handlers`);
     }
 
     this.#transport = transport;
     this.#handler = options.handler;
 
-    this.#transport.onClose = this.#onClose.bind(this);
+    this.#transport.onDisconnect = this.#onClose.bind(this);
     this.#transport.onMessage = this.#onMessage.bind(this);
 
     this.#streams = new RPCStreamsManager({
@@ -255,7 +255,7 @@ export namespace RPCConnection {
   export type Handler = (content: Content, context: HandlerContext) => Promise<Content>;
 
   export type InvokeContext = {
-    signal: AbortSignal;
+    signal?: AbortSignal;
   };
 
   export type Options = {
@@ -278,6 +278,11 @@ export namespace RPCConnection {
     send(message: RPCMessage): void;
 
     onMessage?: (message: RPCMessage) => void;
-    onClose?: (error?: Error) => void;
+    onDisconnect?: (error?: Error) => void;
   }
+
+  export type Encoder = {
+    encode: (data: RPCMessage) => Uint8Array;
+    decode: (data: Uint8Array) => RPCMessage;
+  };
 }

@@ -1,7 +1,8 @@
+import { Bootstrapper } from "@/bootstrapper";
 import { Container } from "@/helpers/container";
-import { Bootstrapper } from "@/internal/bootstrapper";
 
-Container.singleton(Bootstrapper, () => new Bootstrapper());
+process.env.VM_AGENT_REGISTRY_URL = "http://localhost:3000";
+process.env.VM_AGENT_REGISTRY_AUTH_TOKEN = "token";
 
 const main = async () => {
   await Container.inject(Bootstrapper).boot();

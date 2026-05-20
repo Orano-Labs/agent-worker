@@ -82,7 +82,7 @@ export namespace Variables {
 
   export const TRUSTED = [
     // REGISTRY
-    `${TRUSTED_PREFIX}REGISTRY_KEY`,
+    `${TRUSTED_PREFIX}REGISTRY_AUTH_TOKEN`,
     `${TRUSTED_PREFIX}REGISTRY_URL`,
 
     `${TRUSTED_PREFIX}ROOT_DIR`,

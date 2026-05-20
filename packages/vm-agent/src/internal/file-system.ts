@@ -1,8 +1,6 @@
-import { createReadStream, createWriteStream } from "node:fs";
-import { copyFile, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { resolve as resolvePosixFormat } from "node:path/posix";
-import { Readable, Writable } from "node:stream";
 
 import { Container } from "@/helpers/container";
 import { Worktree } from "@/internal/worktree";
@@ -70,77 +68,6 @@ export class FileSystem {
     });
   }
 
-  async read(worktree: FileSystem.Worktree, path: string) {
-    const metadata = await this.#assertFile(worktree, path);
-    const stream = createReadStream(metadata.realpath, {
-      encoding: "binary",
-    });
-
-    return Readable.toWeb(stream);
-  }
-
-  async write(worktree: FileSystem.Worktree, path: string) {
-    let metadata: (FileSystem.Metadata & { type: "file" }) | undefined;
-
-    try {
-      metadata = await this.#assertFile(worktree, path);
-    } catch (error) {
-      if (!(error instanceof FileSystem.NotExistentError)) {
-        throw error;
-      }
-    }
-
-    if (!metadata) {
-      metadata = {
-        type: "file",
-        realpath: this.resolve(worktree, path),
-        createTime: new Date(),
-        updateTime: new Date(),
-        size: 0,
-      };
-    }
-
-    await writeFile(metadata.realpath, "");
-
-    const stream = createWriteStream(metadata.realpath, {
-      encoding: "binary",
-    });
-
-    return Writable.toWeb(stream);
-  }
-
-  async remove(worktree: FileSystem.Worktree, path: string) {
-    await this.#assertExist(worktree, path).then((metadata) => {
-      return rm(metadata.realpath, { force: true, recursive: true });
-    });
-  }
-
-  async move(worktree: FileSystem.Worktree, source: string, destination: string) {
-    const sourceMetadata = await this.#assertEntry(worktree, source);
-    const destinationMetadata = await this.#assertDirectory(worktree, destination);
-
-    await rename(sourceMetadata.realpath, destinationMetadata.realpath);
-  }
-
-  async list(worktree: FileSystem.Worktree, path: string) {
-    const metadata = await this.#assertDirectory(worktree, path);
-
-    return await readdir(metadata.realpath)
-      .then((result) => {
-        return Promise.all(
-          result.map(async (entry) => {
-            return {
-              name: entry,
-              metadata: await this.metadata(worktree, join(metadata.realpath, entry)),
-            };
-          }),
-        );
-      })
-      .then((result) => {
-        return result.filter((entry) => entry.metadata !== null) as FileSystem.Entry[];
-      });
-  }
-
   async metadata(worktree: FileSystem.Worktree, path: string) {
     const realpath = this.resolve(worktree, path);
 
@@ -171,8 +98,6 @@ export class FileSystem {
       });
   }
 
-  async copy(worktree: FileSystem.Worktree, source: string, destination: string) {}
-
   normalize(path: string) {
     return resolvePosixFormat("/", path);
   }
@@ -183,35 +108,6 @@ export class FileSystem {
     }
 
     return resolve(this.#worktree.resolve(worktree.type, worktree.id), this.normalize(path));
-  }
-
-  worktree(worktree: FileSystem.Worktree) {
-    return {
-      exists: async (path: string) => {
-        return this.exists(worktree, path);
-      },
-      read: async (path: string) => {
-        return this.read(worktree, path);
-      },
-      write: async (path: string) => {
-        return this.write(worktree, path);
-      },
-      remove: async (path: string) => {
-        return this.remove(worktree, path);
-      },
-      move: async (source: string, destination: string) => {
-        return this.move(worktree, source, destination);
-      },
-      list: async (path: string) => {
-        return this.list(worktree, path);
-      },
-      metadata: async (path: string) => {
-        return this.metadata(worktree, path);
-      },
-      copy: async (source: string, destination: string) => {
-        return this.copy(worktree, source, destination);
-      },
-    };
   }
 }
 

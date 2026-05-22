@@ -1,4 +1,5 @@
 export * from "@/rpc-connection";
+export * from "@/rpc-debugger";
 export * from "@/rpc-error";
 export * from "@/rpc-handler";
 export * from "@/rpc-invoker";

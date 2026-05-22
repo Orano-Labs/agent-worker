@@ -1,3 +1,4 @@
+import type { RPCDebugger } from "@/rpc-debugger";
 import { RPCError } from "@/rpc-error";
 import { RPCMessage } from "@/rpc-message";
 
@@ -5,9 +6,13 @@ export class RPCStreamsManager {
   #incoming: RPCStreamsManager.Incoming;
   #outgoing: RPCStreamsManager.Outgoing;
 
-  constructor(sender: RPCStreamsManager.Sender) {
-    this.#incoming = new RPCStreamsManager.Incoming(sender);
-    this.#outgoing = new RPCStreamsManager.Outgoing(sender);
+  #debugger?: RPCDebugger;
+
+  constructor(sender: RPCStreamsManager.Sender, options?: RPCStreamsManager.Options) {
+    this.#incoming = new RPCStreamsManager.Incoming(sender, options);
+    this.#outgoing = new RPCStreamsManager.Outgoing(sender, options);
+
+    this.#debugger = options?.debugger;
   }
 
   get incoming() {
@@ -24,6 +29,8 @@ export class RPCStreamsManager {
   }
 
   handle(event: RPCMessage.Event) {
+    this.#debugger?.debug("Received event", { type: event.body.type, id: event.body.id });
+
     switch (event.body.type) {
       case "stream:canceled":
         this.#outgoing.handleCancel(event.body.id);
@@ -68,9 +75,12 @@ export namespace RPCStreamsManager {
     >;
     #sender: Sender;
 
-    constructor(sender: Sender) {
+    #debugger?: RPCDebugger;
+
+    constructor(sender: Sender, options?: Options) {
       this.#sender = sender;
       this.#streams = new Map();
+      this.#debugger = options?.debugger;
     }
 
     #clean(id: string) {
@@ -91,6 +101,8 @@ export namespace RPCStreamsManager {
      * @returns 一个 `ReadableStream`，可用于从远端接收数据。
      */
     create(id: string, options: IncomingOptions) {
+      this.#debugger?.debug("Creating incoming stream", { id });
+
       if (this.#streams.has(id)) {
         throw new Error(`Incoming stream with ID "${id}" already exists.`);
       }
@@ -114,6 +126,8 @@ export namespace RPCStreamsManager {
 
           const signal = options.signal;
 
+          this.#debugger?.debug("Incoming stream started", { id, hasSignal: !!signal });
+
           this.#streams.set(id, {
             controller,
             clean: () => {
@@ -127,6 +141,7 @@ export namespace RPCStreamsManager {
           if (signal) {
             // 如果 signal 在流创建时已经处于 aborted 状态，则立即中止
             if (signal.aborted) {
+              this.#debugger?.debug("Incoming stream aborted immediately", { id });
               return handleAbort();
             }
 
@@ -136,6 +151,7 @@ export namespace RPCStreamsManager {
         cancel: () => {
           // 当本地消费者调用 stream.cancel() 时触发
           if (this.#streams.has(id)) {
+            this.#debugger?.debug("Incoming stream canceled locally", { id });
             this.#sender.send(RPCMessage.createStreamCanceledEvent(id));
             this.#clean(id);
           }
@@ -166,6 +182,8 @@ export namespace RPCStreamsManager {
      * @param error 用于终止流的错误对象。
      */
     destroy(error: Error) {
+      this.#debugger?.debug("Destroying all incoming streams", { count: this.#streams.size, error: error.message });
+
       for (const [_, { controller, clean }] of this.#streams.entries()) {
         try {
           controller.error(error);
@@ -190,12 +208,14 @@ export namespace RPCStreamsManager {
       const controller = this.#streams.get(id)?.controller;
 
       if (!controller) {
+        this.#debugger?.debug("Received frame for non-existent incoming stream", { id });
         return;
       }
 
       try {
         controller.enqueue(data);
       } catch (err) {
+        this.#debugger?.debug("Failed to enqueue frame for incoming stream", { id, error: err });
         // 如果 enqueue 失败（例如，流已关闭或处于错误状态），
         // 必须显式地使 controller 抛出错误。这会中断本地消费者（Reader）的异步等待，防止死锁。
         try {
@@ -217,8 +237,11 @@ export namespace RPCStreamsManager {
       const controller = this.#streams.get(id)?.controller;
 
       if (!controller) {
+        this.#debugger?.debug("Received close for non-existent incoming stream", { id });
         return;
       }
+
+      this.#debugger?.debug("Closing incoming stream", { id });
 
       try {
         controller.close();
@@ -239,8 +262,11 @@ export namespace RPCStreamsManager {
       const controller = this.#streams.get(id)?.controller;
 
       if (!controller) {
+        this.#debugger?.debug("Received error for non-existent incoming stream", { id });
         return;
       }
+
+      this.#debugger?.debug("Handling error for incoming stream", { id, error });
 
       try {
         controller.error(RPCError.fromTransferable(error));
@@ -267,9 +293,12 @@ export namespace RPCStreamsManager {
     >;
     #sender: Sender;
 
-    constructor(sender: Sender) {
+    #debugger?: RPCDebugger;
+
+    constructor(sender: Sender, options?: Options) {
       this.#sender = sender;
       this.#streams = new Map();
+      this.#debugger = options?.debugger;
     }
 
     #clean(id: string) {
@@ -293,6 +322,8 @@ export namespace RPCStreamsManager {
      */
     create(stream: ReadableStream<RPCMessage.Transferable>, options: OutgoingOptions) {
       const id = crypto.randomUUID();
+      this.#debugger?.debug("Creating outgoing stream", { id });
+
       const reader = stream.getReader();
 
       const signal = options.signal;
@@ -300,6 +331,8 @@ export namespace RPCStreamsManager {
         const reason = signal?.reason || RPCError.createAborted("Stream aborted.");
 
         if (this.#streams.has(id)) {
+          this.#debugger?.debug("Outgoing stream aborted", { id, reason });
+
           // 取消对本地流的读取
           reader.cancel(reason).catch(() => {});
 
@@ -321,8 +354,11 @@ export namespace RPCStreamsManager {
         },
       });
 
+      this.#debugger?.debug("Outgoing stream registered", { id, hasSignal: !!signal });
+
       if (signal) {
         if (signal.aborted) {
+          this.#debugger?.debug("Outgoing stream aborted immediately", { id });
           handleAbort();
         } else {
           signal.addEventListener("abort", handleAbort);
@@ -331,11 +367,14 @@ export namespace RPCStreamsManager {
 
       // 启动异步推流循环，不阻塞当前执行线程
       (async () => {
+        this.#debugger?.debug("Starting push loop for outgoing stream", { id });
+
         try {
           while (true) {
             // 在每次读取前，检查流是否仍然有效。
             // 流可能在等待 `reader.read()` 的过程中被远端取消（通过 handleCancel）。
             if (!this.#streams.has(id)) {
+              this.#debugger?.debug("Outgoing stream no longer exists during read", { id });
               break;
             }
 
@@ -343,11 +382,13 @@ export namespace RPCStreamsManager {
 
             // 再次进行安全检查，确保在 `await reader.read()` 期间流没有被取消。
             if (!this.#streams.has(id)) {
+              this.#debugger?.debug("Outgoing stream canceled during read", { id });
               break;
             }
 
             if (done) {
               // 本地流已成功读取完毕，通知远端关闭
+              this.#debugger?.debug("Outgoing stream completed", { id });
               this.#sender.send(RPCMessage.createStreamClosedEvent(id));
               break;
             }
@@ -358,12 +399,14 @@ export namespace RPCStreamsManager {
         } catch (err) {
           // 如果在读取或处理过程中发生错误，且流仍然有效，则通知远端
           if (this.#streams.has(id)) {
+            this.#debugger?.debug("Error in outgoing stream", { id, error: err });
             this.#sender.send(RPCMessage.createStreamErrorEvent(id, RPCError.fromUnknown(err, RPCError.Code.Internal).transferable()));
           }
 
           // 确保 reader 被取消，以释放资源
           reader.cancel(err).catch(() => {});
         } finally {
+          this.#debugger?.debug("Cleaning up outgoing stream", { id });
           this.#clean(id);
 
           // 释放 reader 上的锁
@@ -399,6 +442,8 @@ export namespace RPCStreamsManager {
      * @param error 用于终止流的错误对象。
      */
     destroy(error: Error) {
+      this.#debugger?.debug("Destroying all outgoing streams", { count: this.#streams.size, error: error.message });
+
       for (const [_, { reader, clean }] of this.#streams.entries()) {
         reader.cancel(error).catch(() => {});
         clean();
@@ -417,8 +462,11 @@ export namespace RPCStreamsManager {
       const reader = this.#streams.get(id)?.reader;
 
       if (!reader) {
+        this.#debugger?.debug("Received cancel for non-existent outgoing stream", { id });
         return;
       }
+
+      this.#debugger?.debug("Handling cancel for outgoing stream", { id });
 
       this.#clean(id);
 
@@ -434,4 +482,8 @@ export namespace RPCStreamsManager {
 
   export type IncomingOptions = { signal?: AbortSignal };
   export type OutgoingOptions = { signal?: AbortSignal };
+
+  export type Options = {
+    debugger?: RPCDebugger;
+  };
 }

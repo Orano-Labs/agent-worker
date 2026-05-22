@@ -1,3 +1,4 @@
+import type { RPCDebugger } from "@/rpc-debugger";
 import { RPCError } from "@/rpc-error";
 import { RPCMessage } from "@/rpc-message";
 import { RPCStreamsManager } from "@/rpc-streams-manager";
@@ -7,6 +8,8 @@ export class RPCConnection {
   #streams: RPCStreamsManager;
 
   #handler?: RPCConnection.Handler;
+
+  #debugger?: RPCDebugger;
 
   constructor(transport: RPCConnection.Transport, options: RPCConnection.Options) {
     if (transport.onMessage || transport.onDisconnect) {
@@ -19,15 +22,24 @@ export class RPCConnection {
     this.#transport.onDisconnect = this.#onClose.bind(this);
     this.#transport.onMessage = this.#onMessage.bind(this);
 
-    this.#streams = new RPCStreamsManager({
-      send: (msg) => this.#transport.send(msg),
-    });
+    this.#streams = new RPCStreamsManager(
+      {
+        send: (msg) => this.#transport.send(msg),
+      },
+      {
+        debugger: options.debugger,
+      },
+    );
+
+    this.#debugger = options.debugger;
   }
 
   #incomingRequests = new Map<string, RPCConnection.IncomingRequest>();
   #outgoingRequests = new Map<string, RPCConnection.OutgoingRequest>();
 
   #onMessage(message: RPCMessage) {
+    this.#debugger?.debug("Received message", { type: message.type, id: "id" in message ? message.id : undefined });
+
     if (message.type === "request") {
       this.#onRequest(message);
     } else if (message.type === "response") {
@@ -41,6 +53,12 @@ export class RPCConnection {
 
   #onClose(error?: Error) {
     const e = error || RPCError.createCanceled("Connection closed.");
+
+    this.#debugger?.debug("Connection closing", {
+      error: e.message,
+      incomingRequests: this.#incomingRequests.size,
+      outgoingRequests: this.#outgoingRequests.size,
+    });
 
     for (const request of this.#incomingRequests.values()) {
       request.controller.abort(e);
@@ -56,6 +74,8 @@ export class RPCConnection {
   }
 
   #onRequest(message: RPCMessage.Request) {
+    this.#debugger?.debug("Received request", { id: message.id, method: message.method });
+
     const controller = new AbortController();
 
     const request: RPCConnection.IncomingRequest = {
@@ -64,6 +84,7 @@ export class RPCConnection {
     };
 
     if (this.#incomingRequests.has(message.id)) {
+      this.#debugger?.debug("Duplicate request received", { id: message.id });
       return this.#transport.send(
         RPCMessage.createFailureResponse(message.id, {
           code: RPCError.Code.Unimplemented,
@@ -78,10 +99,12 @@ export class RPCConnection {
       let stream: ReadableStream<RPCMessage.Transferable>;
 
       try {
+        this.#debugger?.debug("Creating incoming stream for request", { id: message.id, streamId: message.content.stream });
         stream = this.#streams.createIncoming(message.content.stream, {
           signal: controller.signal,
         });
       } catch (error) {
+        this.#debugger?.debug("Failed to create incoming stream for request", { id: message.id, error });
         return this.#transport.send(
           RPCMessage.createFailureResponse(message.id, RPCError.fromUnknown(error, RPCError.Code.Internal).transferable()),
         );
@@ -100,6 +123,8 @@ export class RPCConnection {
 
     this.#incomingRequests.set(message.id, request);
 
+    this.#debugger?.debug("Processing request", { id: message.id, hasHandler: !!this.#handler });
+
     Promise.resolve()
       .then(() => {
         if (!this.#handler) {
@@ -113,45 +138,56 @@ export class RPCConnection {
           let stream: string;
 
           try {
+            this.#debugger?.debug("Creating outgoing stream for response", { id: message.id });
             stream = this.#streams.createOutgoing(output.data, {
               signal: controller.signal,
             });
           } catch (error) {
+            this.#debugger?.debug("Failed to create outgoing stream for response", { id: message.id, error });
             return this.#transport.send(
               RPCMessage.createFailureResponse(message.id, RPCError.fromUnknown(error, RPCError.Code.Internal).transferable()),
             );
           }
 
+          this.#debugger?.debug("Sending success response with stream", { id: message.id, streamId: stream });
           return this.#transport.send(RPCMessage.createSuccessResponse(message.id, { stream }, output.metadata));
         } else {
+          this.#debugger?.debug("Sending success response with data", { id: message.id });
           return this.#transport.send(RPCMessage.createSuccessResponse(message.id, { data: output.data }, output.metadata));
         }
       })
       .catch((error) => {
+        this.#debugger?.debug("Request failed", { id: message.id, error });
         return this.#transport.send(
           RPCMessage.createFailureResponse(message.id, RPCError.fromUnknown(error, RPCError.Code.Internal).transferable()),
         );
       })
       .finally(() => {
+        this.#debugger?.debug("Request completed", { id: message.id });
         this.#incomingRequests.delete(message.id);
       });
   }
 
   #onResponse(message: RPCMessage.Response) {
+    this.#debugger?.debug("Received response", { requestId: message.request, hasError: "error" in message });
+
     const deferred = this.#outgoingRequests.get(message.request);
 
     if (!deferred) {
+      this.#debugger?.debug("Response for unknown request", { requestId: message.request });
       return;
     }
 
     this.#outgoingRequests.delete(message.request);
 
     if ("error" in message) {
+      this.#debugger?.debug("Response contains error", { requestId: message.request, error: message.error });
       return deferred.reject(RPCError.fromTransferable(message.error));
     }
 
     if ("stream" in message.content) {
       try {
+        this.#debugger?.debug("Creating incoming stream from response", { requestId: message.request, streamId: message.content.stream });
         deferred.resolve({
           data: this.#streams.createIncoming(message.content.stream, {
             signal: deferred.signal,
@@ -159,9 +195,11 @@ export class RPCConnection {
           metadata: message.metadata,
         });
       } catch (err) {
+        this.#debugger?.debug("Failed to create incoming stream from response", { requestId: message.request, error: err });
         deferred.reject(RPCError.fromUnknown(err, RPCError.Code.Internal));
       }
     } else {
+      this.#debugger?.debug("Resolving response with data", { requestId: message.request });
       deferred.resolve({
         data: message.content.data,
         metadata: message.metadata,
@@ -170,13 +208,17 @@ export class RPCConnection {
   }
 
   #onEvent(message: RPCMessage.Event) {
+    this.#debugger?.debug("Received event", { eventType: message.body.type, id: message.body.id });
+
     if (message.body.type === "request:canceled") {
       const request = this.#incomingRequests.get(message.body.id);
 
       if (!request) {
+        this.#debugger?.debug("Cancel event for unknown request", { id: message.body.id });
         return;
       }
 
+      this.#debugger?.debug("Canceling request by remote", { id: message.body.id });
       request.controller.abort(RPCError.createCanceled("Request canceled by remote side."));
     }
 
@@ -184,6 +226,8 @@ export class RPCConnection {
   }
 
   async invoke(method: string, content: RPCConnection.Content, context?: RPCConnection.InvokeContext) {
+    this.#debugger?.debug("Invoking method", { method });
+
     const signal = context?.signal;
 
     signal?.throwIfAborted();
@@ -192,20 +236,25 @@ export class RPCConnection {
 
     if (content.data instanceof ReadableStream) {
       try {
+        this.#debugger?.debug("Creating outgoing stream for invoke", { method, messageId: message.id });
         message.content = {
           stream: this.#streams.createOutgoing(content.data, {
             signal,
           }),
         };
       } catch (error) {
+        this.#debugger?.debug("Failed to create outgoing stream for invoke", { method, messageId: message.id, error });
         throw RPCError.fromUnknown(error, RPCError.Code.Internal);
       }
     } else {
       message.content = { data: content.data };
     }
 
+    this.#debugger?.debug("Sending request", { method, messageId: message.id });
+
     return new Promise((resolve, reject) => {
       const handleAbort = (reason: unknown) => {
+        this.#debugger?.debug("Request aborted", { messageId: message.id, reason });
         this.#outgoingRequests.delete(message.id);
         this.#transport.send(RPCMessage.createRequestCanceledEvent(message.id));
 
@@ -220,6 +269,7 @@ export class RPCConnection {
         signal,
         message,
         resolve: (responsePayload) => {
+          this.#debugger?.debug("Request resolved", { messageId: message.id });
           if (signal) {
             signal.removeEventListener("abort", handleAbort);
           }
@@ -227,6 +277,7 @@ export class RPCConnection {
           resolve(responsePayload);
         },
         reject: (error) => {
+          this.#debugger?.debug("Request rejected", { messageId: message.id, error });
           if (signal) {
             signal.removeEventListener("abort", handleAbort);
           }
@@ -260,6 +311,7 @@ export namespace RPCConnection {
 
   export type Options = {
     handler?: Handler;
+    debugger?: RPCDebugger;
   };
 
   export type IncomingRequest = {

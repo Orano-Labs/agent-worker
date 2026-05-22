@@ -5,3 +5,5 @@ onlyBuiltDependencies:
   - esbuild
   - lefthook
   - better-sqlite3
+  - cpu-features
+  - node-pty

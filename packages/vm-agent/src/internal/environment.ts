@@ -58,7 +58,12 @@ export class Environment {
   }
 
   async init() {
-    this.#logger.info("Initializing...");
+    this.#logger.info("Initializing...", {
+      workdir: this.workdir,
+      platform: this.platform,
+      arch: this.arch,
+      cwd: this.cwd,
+    });
 
     const directories = [
       {

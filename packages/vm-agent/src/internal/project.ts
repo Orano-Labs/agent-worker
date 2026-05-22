@@ -1,5 +1,5 @@
 import { exec } from "node:child_process";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -40,7 +40,10 @@ export class Project {
   }
 
   async init() {
-    this.#logger.info("Initializing...");
+    this.#logger.info("Initializing...", {
+      repository: this.repository,
+      worktrees: this.worktrees,
+    });
 
     if (!this.#environment.ready) {
       this.#logger.error("Environment not ready, skipping project initialization");
@@ -90,21 +93,41 @@ export class Project {
     let skipInitializeGit = false;
 
     try {
-      const out = await promisify(exec)(`git rev-parse --is-bare-repository`, { cwd: this.repository });
+      const items = await readdir(this.repository);
 
-      if (out.stdout.trim() === "false") {
-        this.#logger.error("Existing repository is not a bare repository");
+      if (items.length > 0) {
+        const dirs = ["info", "objects", "hooks"];
 
-        this.#status = {
-          type: "error",
-          message: "Repository exists but is not a bare repository",
-        };
+        for (const dir of dirs) {
+          const stats = await stat(join(this.repository, dir));
 
-        return;
+          if (!stats.isDirectory()) {
+            throw new Error(`${dir} is not a directory`);
+          }
+        }
+
+        const files = ["config", "HEAD"];
+
+        for (const file of files) {
+          const stats = await stat(join(this.repository, file));
+
+          if (!stats.isFile()) {
+            throw new Error(`${file} is not a file`);
+          }
+        }
+
+        skipInitializeGit = true;
       }
+    } catch (error) {
+      this.#logger.errorFrom(error, "Failed to verify git repository");
 
-      skipInitializeGit = true;
-    } catch {}
+      this.#status = {
+        type: "error",
+        message: "Failed to verify git repository",
+      };
+
+      return;
+    }
 
     if (!skipInitializeGit) {
       const commands = [

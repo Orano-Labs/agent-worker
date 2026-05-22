@@ -1,4 +1,5 @@
 import { API } from "@/api";
+import { VMAgent } from "@/api/invoker";
 import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
 import { Database } from "@/internal/database";
@@ -76,17 +77,17 @@ export class Bootstrapper {
         onConnection: (socket) => {
           const connection = api.connect(socket);
 
-          connection
-            .invoke("vm-agent.fs/list", {
-              data: {
-                context: {
-                  type: "main",
-                },
-                path: "xxx",
+          const vm = VMAgent.implement(connection);
+
+          vm.fs
+            .list({
+              context: {
+                branch: "main",
               },
-              metadata: {},
+              path: "/",
             })
-            .then(console.log, console.log);
+            .then(console.log)
+            .catch(console.log);
         },
       });
       await tunnel.init({

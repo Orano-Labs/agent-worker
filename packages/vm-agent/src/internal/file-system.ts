@@ -1,6 +1,7 @@
-import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
-import { resolve as resolvePosixFormat } from "node:path/posix";
+import { createReadStream, createWriteStream } from "node:fs";
+import { copyFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
+import { Readable, Writable } from "node:stream";
 
 import { Container } from "@/helpers/container";
 import { Worktree } from "@/internal/worktree";
@@ -68,6 +69,38 @@ export class FileSystem {
     });
   }
 
+  async remove(worktree: FileSystem.Worktree, path: string) {
+    await this.#assertExist(worktree, path).then((metadata) => {
+      return rm(metadata.realpath, { force: true, recursive: true });
+    });
+  }
+
+  async move(worktree: FileSystem.Worktree, source: string, destination: string) {
+    const sourceMetadata = await this.#assertEntry(worktree, source);
+    const destinationMetadata = await this.#assertDirectory(worktree, destination);
+
+    await rename(sourceMetadata.realpath, destinationMetadata.realpath);
+  }
+
+  async list(worktree: FileSystem.Worktree, path: string) {
+    const metadata = await this.#assertDirectory(worktree, path);
+
+    return await readdir(metadata.realpath)
+      .then((result) => {
+        return Promise.all(
+          result.map(async (entry) => {
+            return {
+              name: entry,
+              metadata: await this.metadata(worktree, join(metadata.realpath, entry)),
+            };
+          }),
+        );
+      })
+      .then((result) => {
+        return result.filter((entry) => entry.metadata !== null) as FileSystem.Entry[];
+      });
+  }
+
   async metadata(worktree: FileSystem.Worktree, path: string) {
     const realpath = this.resolve(worktree, path);
 
@@ -98,16 +131,23 @@ export class FileSystem {
       });
   }
 
-  normalize(path: string) {
-    return resolvePosixFormat("/", path);
+  async copy(worktree: FileSystem.Worktree, source: string, destination: string) {}
+
+  #inside(root: string, target: string) {
+    const relation = relative(root, target);
+
+    return Boolean(relation && relation !== ".." && !relation.startsWith(`..${sep}`) && relation !== resolve(target));
   }
 
   resolve(worktree: FileSystem.Worktree, path: string) {
-    if (worktree.type === "main") {
-      return resolve(this.#worktree.resolve(worktree.type), this.normalize(path));
+    const root = worktree.type === "main" ? this.#worktree.resolve(worktree.type) : this.#worktree.resolve(worktree.type, worktree.id);
+    const target = join(root, path);
+
+    if (!this.#inside(root, target)) {
+      throw new FileSystem.InvalidPath(path, "Access denied, path is outside the worktree root");
     }
 
-    return resolve(this.#worktree.resolve(worktree.type, worktree.id), this.normalize(path));
+    return target;
   }
 }
 
@@ -161,6 +201,12 @@ export namespace FileSystem {
   export class NotSupportedEntryTypeError extends Error {
     constructor(type: string) {
       super(`Entry type ${type} is not supported`);
+    }
+  }
+
+  export class InvalidPath extends Error {
+    constructor(path: string, message?: string) {
+      super(`Path ${path} is invalid${message ? `: ${message}` : ""}`);
     }
   }
 }

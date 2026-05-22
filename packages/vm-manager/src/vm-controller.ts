@@ -19,63 +19,7 @@ export class VMController extends VMEnvironment {
   constructor(options: VMController.Options) {
     super(options.root);
 
-    this.#db = new DatabaseSync(join(options.root, "vms/data.db"));
-
-    this.#db.exec("CREATE TABLE IF NOT EXISTS vm_configs (id TEXT PRIMARY KEY);");
-    this.#db.exec("PRAGMA journal_mode = WAL;");
-    this.#db.exec("PRAGMA busy_timeout = 5000;");
-
-    const columns = [
-      {
-        name: "state",
-        type: "TEXT NOT NULL CHECK(state IN ('active', 'archived')) DEFAULT 'active'",
-      },
-      {
-        name: "cpus",
-        type: "INTEGER NOT NULL DEFAULT 1 CHECK(cpus > 0)",
-      },
-      {
-        name: "memory",
-        type: "INTEGER NOT NULL DEFAULT 128 CHECK(memory >= 128)",
-      },
-      {
-        name: "disk",
-        type: "INTEGER NOT NULL DEFAULT 1024 CHECK(disk >= 1024)",
-      },
-      {
-        name: "net_slot",
-        type: `INTEGER NOT NULL CHECK(net_slot >= ${VMNet.NS_MIN_SLOT} AND net_slot <= ${VMNet.NS_MAX_SLOT})`,
-      },
-      {
-        name: "net_bandwidth",
-        type: `INTEGER CHECK(net_bandwidth >= 1 AND net_bandwidth <= 10000)`,
-      },
-      {
-        name: "image",
-        type: `TEXT`,
-      },
-      {
-        name: "created_at",
-        type: "DATETIME DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))",
-      },
-      {
-        name: "updated_at",
-        type: "DATETIME DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))",
-      },
-    ];
-
-    const existingColumns = this.#db.prepare("PRAGMA table_info(vm_configs)").all() as { name: string }[];
-    const existingNames = existingColumns.map((c) => c.name);
-
-    for (const col of columns) {
-      if (!existingNames.includes(col.name)) {
-        this.#db.exec(`ALTER TABLE vm_configs ADD COLUMN ${col.name} ${col.type};`);
-      }
-    }
-
-    this.#db.exec(
-      `CREATE UNIQUE INDEX IF NOT EXISTS idx_vm_net_slot_unique_active ON vm_configs(net_slot) WHERE state != 'archived';`,
-    );
+    this.#db = new DatabaseSync(":memory:");
 
     this.#instances = new Map();
 
@@ -210,6 +154,66 @@ export class VMController extends VMEnvironment {
     this.#instances.set(id, vm);
 
     return vm;
+  }
+
+  async init() {
+    await super.init();
+
+    this.#db = new DatabaseSync(join(this.root, "vms/data.db"));
+
+    this.#db.exec("CREATE TABLE IF NOT EXISTS vm_configs (id TEXT PRIMARY KEY);");
+    this.#db.exec("PRAGMA journal_mode = WAL;");
+    this.#db.exec("PRAGMA busy_timeout = 5000;");
+
+    const columns = [
+      {
+        name: "state",
+        type: "TEXT NOT NULL CHECK(state IN ('active', 'archived')) DEFAULT 'active'",
+      },
+      {
+        name: "cpus",
+        type: "INTEGER NOT NULL DEFAULT 1 CHECK(cpus > 0)",
+      },
+      {
+        name: "memory",
+        type: "INTEGER NOT NULL DEFAULT 128 CHECK(memory >= 128)",
+      },
+      {
+        name: "disk",
+        type: "INTEGER NOT NULL DEFAULT 1024 CHECK(disk >= 1024)",
+      },
+      {
+        name: "net_slot",
+        type: `INTEGER NOT NULL CHECK(net_slot >= ${VMNet.NS_MIN_SLOT} AND net_slot <= ${VMNet.NS_MAX_SLOT})`,
+      },
+      {
+        name: "net_bandwidth",
+        type: `INTEGER CHECK(net_bandwidth >= 1 AND net_bandwidth <= 10000)`,
+      },
+      {
+        name: "image",
+        type: `TEXT`,
+      },
+      {
+        name: "created_at",
+        type: "DATETIME DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))",
+      },
+      {
+        name: "updated_at",
+        type: "DATETIME DEFAULT (STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW'))",
+      },
+    ];
+
+    const existingColumns = this.#db.prepare("PRAGMA table_info(vm_configs)").all() as { name: string }[];
+    const existingNames = existingColumns.map((c) => c.name);
+
+    for (const col of columns) {
+      if (!existingNames.includes(col.name)) {
+        this.#db.exec(`ALTER TABLE vm_configs ADD COLUMN ${col.name} ${col.type};`);
+      }
+    }
+
+    this.#db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vm_net_slot_unique_active ON vm_configs(net_slot) WHERE state != 'archived';`);
   }
 }
 

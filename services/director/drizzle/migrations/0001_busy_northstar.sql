@@ -1,0 +1,1 @@
+ALTER TABLE `supervisors` MODIFY COLUMN `public_key` varchar(255) NOT NULL;

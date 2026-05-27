@@ -1,7 +1,7 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "2b56a494-2e73-4e4f-891d-5ff3d7ef9c99",
+  "id": "ed0eee93-3dad-47b4-b0e4-aac022d46912",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "issuses": {
@@ -9,6 +9,13 @@
       "columns": {
         "id": {
           "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "uid": {
+          "name": "uid",
           "type": "binary(16)",
           "primaryKey": false,
           "notNull": true,
@@ -41,7 +48,12 @@
           "columns": ["id"]
         }
       },
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "issuses_uid_unique": {
+          "name": "issuses_uid_unique",
+          "columns": ["uid"]
+        }
+      },
       "checkConstraint": {}
     },
     "issue_collaborators": {
@@ -49,6 +61,13 @@
       "columns": {
         "id": {
           "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "uid": {
+          "name": "uid",
           "type": "binary(16)",
           "primaryKey": false,
           "notNull": true,
@@ -81,14 +100,26 @@
           "columns": ["id"]
         }
       },
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "issue_collaborators_uid_unique": {
+          "name": "issue_collaborators_uid_unique",
+          "columns": ["uid"]
+        }
+      },
       "checkConstraint": {}
     },
-    "supervisiors": {
-      "name": "supervisiors",
+    "supervisors": {
+      "name": "supervisors",
       "columns": {
         "id": {
           "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "uid": {
+          "name": "uid",
           "type": "binary(16)",
           "primaryKey": false,
           "notNull": true,
@@ -138,12 +169,17 @@
       "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
-        "supervisiors_id": {
-          "name": "supervisiors_id",
+        "supervisors_id": {
+          "name": "supervisors_id",
           "columns": ["id"]
         }
       },
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "supervisors_uid_unique": {
+          "name": "supervisors_uid_unique",
+          "columns": ["uid"]
+        }
+      },
       "checkConstraint": {}
     },
     "templates": {
@@ -151,6 +187,13 @@
       "columns": {
         "id": {
           "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "uid": {
+          "name": "uid",
           "type": "binary(16)",
           "primaryKey": false,
           "notNull": true,
@@ -183,7 +226,12 @@
           "columns": ["id"]
         }
       },
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "templates_uid_unique": {
+          "name": "templates_uid_unique",
+          "columns": ["uid"]
+        }
+      },
       "checkConstraint": {}
     },
     "users": {
@@ -191,6 +239,13 @@
       "columns": {
         "id": {
           "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "uid": {
+          "name": "uid",
           "type": "binary(16)",
           "primaryKey": false,
           "notNull": true,
@@ -218,7 +273,7 @@
           "name": "role",
           "type": "enum('admin','normal')",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false,
           "default": "'normal'"
         }
@@ -231,7 +286,12 @@
           "columns": ["id"]
         }
       },
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "users_uid_unique": {
+          "name": "users_uid_unique",
+          "columns": ["uid"]
+        }
+      },
       "checkConstraint": {}
     }
   },

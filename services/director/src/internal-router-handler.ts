@@ -1,7 +1,8 @@
+import { createPrivateKey } from "node:crypto";
 import { SmartCoercionPlugin } from "@orpc/json-schema";
 import { RPCHandler } from "@orpc/server/ws";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
-import { type WebSocket, WebSocketServer } from "ws";
+import { type WebSocket, WebSocketServer, default as WS } from "ws";
 import { Authenticator } from "@/core/services/authenticator";
 import { SupervisorRegistry } from "@/core/services/supervisor-registry";
 import type { EndpointHelpers } from "@/endpoints/helpers";
@@ -10,7 +11,7 @@ import { HTTPServer } from "@/internal/http-server";
 import { Logger } from "@/internal/logger";
 import { INTERNAL_ROUTER } from "@/internal-router";
 
-export class InternalRouterHandler extends RPCHandler<EndpointHelpers.ExternalRouterContext> {
+export class InternalRouterHandler extends RPCHandler<EndpointHelpers.InternalRouterContext> {
   #logger: Logger;
   #http: HTTPServer;
   #authenticator: Authenticator;
@@ -104,6 +105,18 @@ export class InternalRouterHandler extends RPCHandler<EndpointHelpers.ExternalRo
       try {
         const credentials = await this.#authenticator.authenticateSupervisorConnect(req);
 
+        if (credentials.isErr()) {
+          this.#logger.warn("Supervisor authentication failed", {
+            connectionId,
+            reason: credentials.error.message,
+          });
+
+          socket.write(`HTTP/1.1 401 Unauthorized\r\n\r\n`);
+          socket.destroy();
+
+          return;
+        }
+
         this.#logger.info("Supervisor authenticated successfully, upgrading protocol", {
           connectionId,
         });
@@ -111,7 +124,7 @@ export class InternalRouterHandler extends RPCHandler<EndpointHelpers.ExternalRo
         socket.removeListener("error", handleSocketError);
 
         const ws = await new Promise<WebSocket>((resolve) => {
-          this.#wss.handleUpgrade(req, socket, head, (ws, rq) => {
+          this.#wss.handleUpgrade(req, socket, head, (ws) => {
             resolve(ws);
           });
         });
@@ -119,40 +132,32 @@ export class InternalRouterHandler extends RPCHandler<EndpointHelpers.ExternalRo
         await this.upgrade(ws, {
           context: {
             connectionId,
-            credentials,
+            credentials: credentials.value,
           },
         });
 
         this.#registry.register(ws, credentials);
+
         this.#logger.info("Supervisor WebSocket connection fully established and registered", {
           connectionId,
         });
       } catch (error) {
-        socket.removeListener("error", handleSocketError);
-
-        let status: string;
-
-        if (error instanceof Authenticator.AuthenticationError) {
-          this.#logger.warn("Supervisor authentication failed", {
-            connectionId,
-            reason: error.message,
-          });
-
-          status = "HTTP/1.1 401 Unauthorized";
-        } else {
-          this.#logger.error("Exception occurred during supervisor upgrade workflow", {
-            err: error,
-            connectionId,
-          });
-
-          status = "HTTP/1.1 500 Internal Server Error";
-        }
+        this.#logger.error("Exception occurred during supervisor upgrade workflow", {
+          err: error,
+          connectionId,
+        });
 
         if (!socket.destroyed) {
-          socket.write(`${status}\r\n\r\n`);
+          socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
           socket.destroy();
         }
+      } finally {
+        socket.removeListener("error", handleSocketError);
       }
+    });
+
+    this.#logger.info("Supervisor WebSocket endpoint ready", {
+      url: `${this.#http.url.replace("http://", "ws://")}/supervisor/join`,
     });
   }
 }

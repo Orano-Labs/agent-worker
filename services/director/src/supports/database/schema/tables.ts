@@ -1,9 +1,13 @@
 import { sql } from "drizzle-orm";
-import { binary, mysqlEnum, mysqlTable as table, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable as table, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { binary } from "@/supports/database/schema/utils";
 
 const SHARED_COLUMNS = {
   get id() {
-    return binary("id", { length: 16 }).primaryKey().default(sql`(UUID_TO_BIN(UUID(), 1))`);
+    return int("id").autoincrement().primaryKey();
+  },
+  get uid() {
+    return binary("uid", { length: 16 }).default(sql`(UUID_TO_BIN(UUID(), 1))`).unique().notNull();
   },
   get createTimestamp() {
     return timestamp("create_timestamp").notNull().defaultNow();
@@ -16,7 +20,7 @@ const SHARED_COLUMNS = {
 const USERS_TABLE_COLUMNS = {
   ...SHARED_COLUMNS,
 
-  role: mysqlEnum("role", ["admin", "normal"]).default("normal"),
+  role: mysqlEnum("role", ["admin", "normal"]).default("normal").notNull(),
 } as const;
 
 const ISSUES_TABLE_COLUMNS = {
@@ -51,7 +55,7 @@ export const TEMPLATES_TABLE = table("templates", TEMPLATES_TABLE_COLUMNS, () =>
 // 基础设施相关表
 //
 
-const SUPERVISIORS_TABLE_COLUMNS = {
+const SUPERVISORS_TABLE_COLUMNS = {
   ...SHARED_COLUMNS,
 
   /**
@@ -62,7 +66,7 @@ const SUPERVISIORS_TABLE_COLUMNS = {
   /**
    * 主机注册密钥
    */
-  publicKey: binary("public_key", { length: 32 }).notNull(),
+  publicKey: varchar("public_key", { length: 255 }).notNull(),
 
   /**
    * 激活状态
@@ -72,6 +76,6 @@ const SUPERVISIORS_TABLE_COLUMNS = {
   status: mysqlEnum("status", ["active", "suspended"]).default("suspended").notNull(),
 } as const;
 
-export const SUPERVISIORS_TABLE = table("supervisiors", SUPERVISIORS_TABLE_COLUMNS, () => {
+export const SUPERVISORS_TABLE = table("supervisors", SUPERVISORS_TABLE_COLUMNS, () => {
   return [];
 });

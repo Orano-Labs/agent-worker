@@ -21,7 +21,7 @@
     "typecheck": "tsc",
     "test": "vitest",
     "generate": "drizzle-kit generate",
-    "dev": "tsx watch --include \"./src/**/*\" src/index.ts",
+    "dev": "tsx watch --include \"./src/**/*\" src/index.ts --env-file ./.env",
     "start": "node ./dist/index.cjs"
   },
   "files": [
@@ -42,6 +42,8 @@
     "fastify": "^5.8.5",
     "find-my-way": "^9.6.0",
     "msgpackr": "^2.0.1",
+    "mysql2": "^3.22.4",
+    "neverthrow": "^8.2.0",
     "orpc": "^0.1.1",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",

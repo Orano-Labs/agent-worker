@@ -25,7 +25,7 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
         async (options) => {
           this.#logger.info("Request received", {
             url: options.request.url,
-            requestId: options.context.connectionId,
+            requestId: options.context.requestId,
             method: options.request.method,
             headers: {
               "content-type": options.request.headers["content-type"],
@@ -41,7 +41,7 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
           } catch (error) {
             this.#logger.error("Error occurred during procedure execution", {
               err: error,
-              requestId: options.context.connectionId,
+              requestId: options.context.requestId,
             });
 
             throw error;
@@ -49,11 +49,11 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
 
           if (result.matched) {
             this.#logger.info("Request handled successfully", {
-              requestId: options.context.connectionId,
+              requestId: options.context.requestId,
               status: result.response.status,
             });
           } else {
-            this.#logger.warn("No matching procedure found inside handler", { requestId: options.context.connectionId });
+            this.#logger.warn("No matching procedure found inside handler", { requestId: options.context.requestId });
           }
 
           return result;
@@ -66,45 +66,46 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
   }
 
   setup() {
-    this.#http.router.get("/api/spec.json", async (_, res) => {
-      this.#logger.info("Generating OpenAPI specification");
+    if (process.env.NODE_ENV !== "production") {
+      this.#http.router.get("/api/spec.json", async (_, res) => {
+        this.#logger.info("Generating OpenAPI specification");
 
-      try {
-        const spec = await new OpenAPIGenerator({
-          schemaConverters: [new ZodToJsonSchemaConverter()],
-        }).generate(EXTERNAL_ROUTER, {
-          info: {
-            title: "API SPEC",
-            version: "1.0.0",
+        try {
+          const spec = await new OpenAPIGenerator({
+            schemaConverters: [new ZodToJsonSchemaConverter()],
+          }).generate(EXTERNAL_ROUTER, {
+            info: {
+              title: "API SPEC",
+              version: "1.0.0",
+            },
+            servers: [{ url: "/" }],
+            security: [{ bearerAuth: [] }],
+            components: {},
+          });
+
+          this.#logger.info("OpenAPI specification generated successfully");
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(spec));
+        } catch (error) {
+          this.#logger.errorFrom(error, "Failed to generate OpenAPI specification");
+
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal Server Error" }));
+        }
+      });
+
+      this.#http.router.get("/api/scalar", async (_, res) => {
+        const configuration = {
+          spec: {
+            url: "/api/spec.json",
           },
-          servers: [{ url: "/" }],
-          security: [{ bearerAuth: [] }],
-          components: {},
-        });
+          theme: "solarized",
+          showOperationId: true,
+        };
 
-        this.#logger.info("OpenAPI specification generated successfully");
-
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(spec));
-      } catch (error) {
-        this.#logger.errorFrom(error, "Failed to generate OpenAPI specification");
-
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Internal Server Error" }));
-      }
-    });
-
-    this.#http.router.get("/api/scalar", async (_, res) => {
-      const configuration = {
-        spec: {
-          url: "/api/spec.json",
-        },
-        theme: "solarized",
-        showOperationId: true,
-      };
-
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(`
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`
         <!doctype html>
         <html>
           <head>
@@ -118,7 +119,12 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
           </body>
         </html>
       `);
-    });
+      });
+
+      this.#logger.info("Registering API reference route", {
+        url: `${this.#http.url}/api/scalar`,
+      });
+    }
 
     this.#http.router.on(["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"], "/api/*", async (req, res) => {
       const id = crypto.randomUUID();
@@ -128,7 +134,7 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
       try {
         const result = await this.handle(req, res, {
           context: {
-            connectionId: id,
+            requestId: id,
           },
         });
 

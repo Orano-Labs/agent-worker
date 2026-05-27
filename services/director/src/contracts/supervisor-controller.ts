@@ -1,7 +1,7 @@
 import { oc } from "@orpc/contract";
 
-export class SupervisiorController {}
+export class SupervisorController {}
 
-export namespace SupervisiorController {
+export namespace SupervisorController {
   export const CONTRACT = {};
 }

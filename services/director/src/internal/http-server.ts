@@ -64,6 +64,10 @@ export class HTTPServer {
     return this.#server;
   }
 
+  get url() {
+    return `http://${this.#variables.get("AW_DIRECTOR_HTTP_HOST") || "127.0.0.1"}:${this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008)}`;
+  }
+
   #destroy(socket: Socket, force?: boolean) {
     const requests = this.#connections.get(socket) || 0;
 
@@ -134,7 +138,7 @@ export class HTTPServer {
           this.#logger.info("HTTP server has been closed successfully and safely.");
         }
 
-        // resolve();
+        resolve();
       });
 
       // Instantly scan and cull all existing connections that are completely "Idle" (counter === 0)
@@ -151,7 +155,7 @@ export class HTTPServer {
     const port = this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008);
     const host = this.#variables.get("AW_DIRECTOR_HTTP_HOST");
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve) => {
       const callback = async () => {
         this.#logger.info(`HTTP server is running on port ${port}`);
 

@@ -1,14 +1,18 @@
 import { os } from "@orpc/server";
-import type { Authenticator } from "@/core/services/authenticator";
+import { Authenticator } from "@/core/services/authenticator";
+import { Container } from "@/helpers/container";
+import { Database } from "@/internal/database";
+import { Logger } from "@/internal/logger";
+import { Variables } from "@/internal/variables";
 
 export namespace EndpointHelpers {
   export type ExternalRouterContext = {
-    connectionId: string;
-    credentials: Authenticator.SupervisorCredentials;
+    requestId: string;
   };
 
   export type InternalRouterContext = {
-    requestId: string;
+    connectionId: string;
+    credentials: Authenticator.SupervisorCredentials;
   };
 
   export const internal = os
@@ -26,4 +30,19 @@ export namespace EndpointHelpers {
     })
     .$context<ExternalRouterContext>()
     .errors({});
+
+  export const container = {
+    get logger() {
+      return Container.inject(Logger);
+    },
+    get variables() {
+      return Container.inject(Variables);
+    },
+    get database() {
+      return Container.inject(Database);
+    },
+    get authenticator() {
+      return Container.inject(Authenticator);
+    },
+  };
 }

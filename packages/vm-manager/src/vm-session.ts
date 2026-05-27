@@ -234,9 +234,7 @@ export class VMSession {
 
       const attempt = () => {
         if (timeoutSignal.aborted) {
-          return reject(
-            new Error(`Socket ${socket} not ready.${error ? ` Last error: ${asError(error).message}` : ""}`),
-          );
+          return reject(new Error(`Socket ${socket} not ready.${error ? ` Last error: ${asError(error).message}` : ""}`));
         }
 
         const connection = createConnection({ path: socket });
@@ -279,9 +277,7 @@ export class VMSession {
 
     const attempt = async (): Promise<NodeSSH> => {
       if (timeoutSignal.aborted) {
-        throw new Error(
-          `SSH connection timed out for VM ${this.#vm.id}.${error ? ` Last error: ${asError(error).message}` : ""}`,
-        );
+        throw new Error(`SSH connection timed out for VM ${this.#vm.id}.${error ? ` Last error: ${asError(error).message}` : ""}`);
       }
 
       try {

@@ -223,9 +223,7 @@ export class VM {
 
     await this.#transaction(async () => {
       this.#controller.db
-        .prepare(
-          `UPDATE vm_configs SET state = 'archived', updated_at = STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW') WHERE id = ?`,
-        )
+        .prepare(`UPDATE vm_configs SET state = 'archived', updated_at = STRFTIME('%Y-%m-%d %H:%M:%f', 'NOW') WHERE id = ?`)
         .run(this.id);
     });
 

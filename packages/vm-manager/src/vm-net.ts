@@ -80,9 +80,7 @@ export class VMNet {
 
     try {
       // 方法3：列出所有 UP 状态的物理网卡，取第一个
-      const output = await this.#exec(
-        "ip -j link show | jq -r '.[] | select(.operstate == \"UP\") | .ifname' | head -1",
-      );
+      const output = await this.#exec("ip -j link show | jq -r '.[] | select(.operstate == \"UP\") | .ifname' | head -1");
       if (output.trim()) {
         return output.trim();
       }

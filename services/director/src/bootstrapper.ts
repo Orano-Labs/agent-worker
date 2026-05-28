@@ -5,6 +5,7 @@ import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
 import { Database } from "@/internal/database";
 import { Environment } from "@/internal/environment";
+import { Git } from "@/internal/git";
 import { HTTPServer } from "@/internal/http-server";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
@@ -56,9 +57,10 @@ export class Bootstrapper {
     const variables = Container.inject(Variables);
     const environment = Container.inject(Environment);
     const db = Container.inject(Database);
+    const git = Container.inject(Git);
     const http = Container.inject(HTTPServer);
 
-    for (const initializable of [variables, environment, db, http]) {
+    for (const initializable of [variables, environment, db, git, http]) {
       await initializable.init();
 
       if ("ready" in initializable && !initializable.ready) {
@@ -76,6 +78,7 @@ Container.singleton(Logger, () => new Logger());
 Container.singleton(Environment, () => new Environment());
 Container.singleton(Variables, () => new Variables());
 Container.singleton(Database, () => new Database());
+Container.singleton(Git, () => new Git());
 Container.singleton(HTTPServer, () => new HTTPServer());
 
 Container.singleton(Authenticator, () => new Authenticator());

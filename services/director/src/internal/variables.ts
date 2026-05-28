@@ -69,7 +69,25 @@ export class Variables {
       this.#logger.info("No environment files found");
     }
 
-    this.#logger.info("Initialization completed");
+    const variables = {
+      HTTP_PORT: this.get("AW_DIRECTOR_HTTP_PORT") || null,
+      HTTP_HOST: this.get("AW_DIRECTOR_HTTP_HOST") || null,
+      MYSQL_URL: this.get("AW_DIRECTOR_MYSQL_URL") || null,
+      GITEA_URL: this.get("AW_DIRECTOR_GITEA_URL") || null,
+      GITEA_ACCESS_TOKEN: this.get("AW_DIRECTOR_GITEA_ACCESS_TOKEN") || null,
+    };
+
+    if (variables.GITEA_ACCESS_TOKEN) {
+      variables.GITEA_ACCESS_TOKEN = this.#logger.mask(variables.GITEA_ACCESS_TOKEN);
+    }
+
+    if (variables.MYSQL_URL) {
+      variables.MYSQL_URL = this.#logger.mask(variables.MYSQL_URL);
+    }
+
+    this.#logger.info("Loaded environment variables", {
+      env: variables,
+    });
   }
 
   get(key: (typeof Variables.TRUSTED)[number]) {
@@ -93,7 +111,7 @@ export class Variables {
 
     const parsed = Number(value);
 
-    return isNaN(parsed) ? fallback : parsed;
+    return Number.isNaN(parsed) ? fallback : parsed;
   }
 }
 
@@ -106,5 +124,8 @@ export namespace Variables {
     `${TRUSTED_PREFIX}HTTP_HOST`,
 
     `${TRUSTED_PREFIX}MYSQL_URL`,
+
+    `${TRUSTED_PREFIX}GITEA_URL`,
+    `${TRUSTED_PREFIX}GITEA_ACCESS_TOKEN`,
   ] as const;
 }

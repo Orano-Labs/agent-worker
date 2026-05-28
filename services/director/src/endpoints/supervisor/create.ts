@@ -26,6 +26,7 @@ export namespace SupervisorCreate {
       method: "POST",
       path: "/supervisor",
       description: "Create a new supervisor agent.",
+      tags: ["Supervisor"],
     })
     .input(Input)
     .output(Output)

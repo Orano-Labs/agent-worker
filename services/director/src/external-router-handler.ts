@@ -5,33 +5,30 @@ import { CORSPlugin } from "@orpc/server/plugins";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import type { EndpointHelpers } from "@/endpoints/helpers";
 import { EXTERNAL_ROUTER } from "@/external-router";
-import { Container } from "./helpers/container";
-import { HTTPServer } from "./internal/http-server";
-import { Logger } from "./internal/logger";
+import { Container } from "@/helpers/container";
+import { HTTPServer } from "@/internal/http-server";
+import { Logger } from "@/internal/logger";
 
-export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.ExternalRouterContext> {
+export class ExternalRouterHandler {
   #logger: Logger;
   #http: HTTPServer;
 
+  #openai: OpenAPIHandler<EndpointHelpers.ExternalRouterContext>;
+
   constructor() {
-    super(EXTERNAL_ROUTER, {
+    this.#openai = new OpenAPIHandler<EndpointHelpers.ExternalRouterContext>(EXTERNAL_ROUTER, {
       plugins: [
         new CORSPlugin(),
         new SmartCoercionPlugin({
           schemaConverters: [new ZodToJsonSchemaConverter()],
         }),
       ],
-      interceptors: [
+      rootInterceptors: [
         async (options) => {
-          this.#logger.info("Request received", {
+          this.#logger.info("(OPENAPI) Request received", {
             url: options.request.url,
             requestId: options.context.requestId,
             method: options.request.method,
-            headers: {
-              "content-type": options.request.headers["content-type"],
-              "content-length": options.request.headers["content-length"],
-              "content-disposition": options.request.headers["content-disposition"],
-            },
           });
 
           let result: Awaited<ReturnType<typeof options.next>>;
@@ -39,7 +36,7 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
           try {
             result = await options.next();
           } catch (error) {
-            this.#logger.error("Error occurred during procedure execution", {
+            this.#logger.error("(OPENAPI) Error occurred during procedure execution", {
               err: error,
               requestId: options.context.requestId,
             });
@@ -48,12 +45,12 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
           }
 
           if (result.matched) {
-            this.#logger.info("Request handled successfully", {
+            this.#logger.info("(OPENAPI) Request handled successfully", {
               requestId: options.context.requestId,
               status: result.response.status,
             });
           } else {
-            this.#logger.warn("No matching procedure found inside handler", { requestId: options.context.requestId });
+            this.#logger.warn("(OPENAPI) No matching procedure found inside handler", { requestId: options.context.requestId });
           }
 
           return result;
@@ -106,19 +103,19 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
 
         res.writeHead(200, { "Content-Type": "text/html" });
         res.end(`
-        <!doctype html>
-        <html>
-          <head>
-            <title>API Reference</title>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-          </head>
-          <body>
-            <script id="api-reference" data-configuration='${JSON.stringify(configuration)}'></script>
-            <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
-          </body>
-        </html>
-      `);
+          <!doctype html>
+          <html>
+            <head>
+              <title>API Reference</title>
+              <meta charset="utf-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+            </head>
+            <body>
+              <script id="api-reference" data-configuration='${JSON.stringify(configuration)}'></script>
+              <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+            </body>
+          </html>
+        `);
       });
 
       this.#logger.info("Registering API reference route", {
@@ -132,7 +129,7 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
       res.setHeader("x-request-id", id);
 
       try {
-        const result = await this.handle(req, res, {
+        const result = await this.#openai.handle(req, res, {
           context: {
             requestId: id,
           },
@@ -143,7 +140,7 @@ export class ExternalRouterHandler extends OpenAPIHandler<EndpointHelpers.Extern
           res.end();
         }
       } catch (error) {
-        this.#logger.errorFrom(error, "Fatal error in API router wrapper");
+        this.#logger.errorFrom(error, "Fatal error in OPENAPI router wrapper");
 
         res.writeHead(500);
         res.end();

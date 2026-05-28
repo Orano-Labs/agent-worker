@@ -1,8 +1,7 @@
-import { createPrivateKey } from "node:crypto";
 import { SmartCoercionPlugin } from "@orpc/json-schema";
 import { RPCHandler } from "@orpc/server/ws";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
-import { type WebSocket, WebSocketServer, default as WS } from "ws";
+import { type WebSocket, WebSocketServer } from "ws";
 import { Authenticator } from "@/core/services/authenticator";
 import { SupervisorRegistry } from "@/core/services/supervisor-registry";
 import type { EndpointHelpers } from "@/endpoints/helpers";
@@ -11,16 +10,18 @@ import { HTTPServer } from "@/internal/http-server";
 import { Logger } from "@/internal/logger";
 import { INTERNAL_ROUTER } from "@/internal-router";
 
-export class InternalRouterHandler extends RPCHandler<EndpointHelpers.InternalRouterContext> {
+export class InternalRouterHandler {
   #logger: Logger;
   #http: HTTPServer;
   #authenticator: Authenticator;
   #registry: SupervisorRegistry;
 
+  #rpc: RPCHandler<EndpointHelpers.InternalRouterContext>;
+
   #wss: WebSocketServer;
 
   constructor() {
-    super(INTERNAL_ROUTER, {
+    this.#rpc = new RPCHandler<EndpointHelpers.InternalRouterContext>(INTERNAL_ROUTER, {
       plugins: [
         new SmartCoercionPlugin({
           schemaConverters: [new ZodToJsonSchemaConverter()],
@@ -59,7 +60,6 @@ export class InternalRouterHandler extends RPCHandler<EndpointHelpers.InternalRo
         },
       ],
     });
-
     this.#wss = new WebSocketServer({ noServer: true });
 
     this.#logger = Container.inject(Logger).scope("InternalRouter");
@@ -89,6 +89,13 @@ export class InternalRouterHandler extends RPCHandler<EndpointHelpers.InternalRo
 
       this.#logger.info("Received supervisor upgrade request, starting authentication", {
         connectionId,
+        ip,
+        headers: {
+          "x-supervisor-id": req.headers["x-supervisor-id"],
+          "x-timestamp": req.headers["x-timestamp"],
+          "x-nonce": req.headers["x-nonce"],
+          "x-signature": req.headers["x-signature"],
+        },
       });
 
       const handleSocketError = (error: Error) => {
@@ -129,14 +136,15 @@ export class InternalRouterHandler extends RPCHandler<EndpointHelpers.InternalRo
           });
         });
 
-        await this.upgrade(ws, {
+        // TODO:
+        // this.#registry.register(ws, credentials);
+
+        await this.#rpc.upgrade(ws, {
           context: {
             connectionId,
             credentials: credentials.value,
           },
         });
-
-        this.#registry.register(ws, credentials);
 
         this.#logger.info("Supervisor WebSocket connection fully established and registered", {
           connectionId,

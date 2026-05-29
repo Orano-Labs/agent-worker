@@ -9,24 +9,15 @@ const PRODUCTION = process.env.NODE_ENV === "production";
 
 export class Logger {
   #logger: ReturnType<typeof pino>;
-  #scope: string[];
 
   #cli: CommandLine;
 
   constructor(options?: Logger.Options) {
     this.#cli = Container.inject(CommandLine);
 
-    this.#scope = [];
-
     if (options?.parent) {
-      this.#scope = [...options.parent.#scope];
-
-      if (options.scope) {
-        this.#scope.push(options.scope);
-      }
-
       this.#logger = options.parent.#logger.child(options.context || {}, {
-        msgPrefix: `[${this.#scope.join("::")}] `,
+        msgPrefix: options.scope ? `[${options.scope}] ` : undefined,
       });
     } else {
       this.#logger = pino(
@@ -98,6 +89,50 @@ export class Logger {
     return new Logger({ parent: this, context });
   }
 
+  mask(text: string, options?: Logger.MaskOptions): string {
+    const opts = {
+      maxLength: options?.maxLength ?? 20,
+      visibleChars: options?.visibleChars ?? 2,
+      pattern: options?.pattern,
+    };
+
+    // 如果提供了自定义模式，使用正则表达式进行替换
+    if (opts.pattern) {
+      return text.replace(opts.pattern, (match) => {
+        if (match.length <= opts.visibleChars * 2) {
+          return "*".repeat(match.length);
+        }
+
+        const start = match.slice(0, opts.visibleChars);
+        const end = match.slice(-opts.visibleChars);
+        const middle = "*".repeat(Math.max(0, match.length - opts.visibleChars * 2));
+
+        return `${start}${middle}${end}`;
+      });
+    }
+
+    // 默认脱敏策略：保留开头和结尾的字符，中间用掩码字符替换
+    if (text.length <= opts.maxLength) {
+      if (text.length <= opts.visibleChars * 2) {
+        return "*".repeat(text.length);
+      }
+
+      const start = text.slice(0, opts.visibleChars);
+      const end = text.slice(-opts.visibleChars);
+      const middle = "*".repeat(text.length - opts.visibleChars * 2);
+
+      return `${start}${middle}${end}`;
+    }
+
+    // 对于较长的文本，截断并脱敏
+    const truncated = text.slice(0, opts.maxLength);
+    const start = truncated.slice(0, opts.visibleChars);
+    const end = truncated.slice(-opts.visibleChars);
+    const middle = "*".repeat(truncated.length - opts.visibleChars * 2);
+
+    return `${start}${middle}${end}...`;
+  }
+
   async flush() {
     this.#logger.flush();
   }
@@ -107,6 +142,15 @@ export namespace Logger {
   export type Context = Record<string, unknown>;
 
   export type Level = "info" | "debug" | "warn" | "trace" | "fatal" | "error";
+
+  export type MaskOptions = {
+    /** 最大显示长度，默认 20 */
+    maxLength?: number;
+    /** 可见字符数（开头和结尾各保留多少个字符），默认 4 */
+    visibleChars?: number;
+    /** 自定义正则表达式模式，用于匹配需要脱敏的内容 */
+    pattern?: RegExp;
+  };
 
   export type Options = {
     parent?: Logger;

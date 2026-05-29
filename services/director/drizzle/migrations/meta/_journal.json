@@ -15,6 +15,13 @@
       "when": 1779877172779,
       "tag": "0001_busy_northstar",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1779955399458,
+      "tag": "0002_steady_mercury",
+      "breakpoints": true
     }
   ]
 }

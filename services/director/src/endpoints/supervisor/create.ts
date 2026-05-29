@@ -26,18 +26,19 @@ export namespace SupervisorCreate {
       method: "POST",
       path: "/supervisor",
       description: "Create a new supervisor agent.",
+      tags: ["Supervisor"],
     })
     .input(Input)
     .output(Output)
     .handler(async (ctx) => {
       const db = EndpointHelpers.container.database;
 
-      const keys = await new Promise<{ publicKey: Buffer; privateKey: string }>((resolve, reject) => {
+      const keys = await new Promise<{ publicKey: Buffer; privateKey: Buffer }>((resolve, reject) => {
         generateKeyPair(
           "ed25519",
           {
             publicKeyEncoding: { type: "spki", format: "der" },
-            privateKeyEncoding: { type: "pkcs8", format: "pem" },
+            privateKeyEncoding: { type: "pkcs8", format: "der" },
           },
           (error, publicKey, privateKey) => {
             if (error) {
@@ -62,7 +63,7 @@ export namespace SupervisorCreate {
       return {
         body: {
           uid: db.uuidFromBuffer(row.uid),
-          privateKey: keys.privateKey,
+          privateKey: keys.privateKey.toString("hex"),
         },
       };
     });

@@ -33,6 +33,21 @@ const ISSUE_COLLABORATORS_TABLE_COLUMNS = {
 
 const TEMPLATES_TABLE_COLUMNS = {
   ...SHARED_COLUMNS,
+
+  /**
+   * 模板名称
+   */
+  name: varchar("name", { length: 255 }).notNull(),
+
+  /**
+   * GIT 仓库名称
+   */
+  repository: varchar("repository", { length: 255 }).notNull(),
+
+  /**
+   * 模板标签
+   */
+  tag: varchar("tag", { length: 255 }).notNull(),
 } as const;
 
 export const USERS_TABLE = table("users", USERS_TABLE_COLUMNS, () => {
@@ -72,8 +87,14 @@ const SUPERVISORS_TABLE_COLUMNS = {
    * 激活状态
    * 'active': 已启用，允许连接和调度
    * 'suspended': 临时停用，不应该被调度
+   * 'inactive': 已禁用，不允许连接
    */
-  status: mysqlEnum("status", ["active", "suspended"]).default("suspended").notNull(),
+  status: mysqlEnum("status", ["active", "suspended", "inactive"]).default("suspended").notNull(),
+
+  /**
+   * 删除时间
+   */
+  deleteTimestamp: timestamp("delete_timestamp"),
 } as const;
 
 export const SUPERVISORS_TABLE = table("supervisors", SUPERVISORS_TABLE_COLUMNS, () => {

@@ -1,4 +1,5 @@
 import { Container } from "@/helpers/container";
+import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
 import { GitAPI } from "@/supports/git";
@@ -69,21 +70,31 @@ export class Git {
     });
 
     try {
-      const result = await client.GET("/version");
+      await client.GET("/version").then((result) => {
+        if (!result.data) {
+          throw new Error(`Failed to retrieve gitea version: (${result.response.status} ${result.response.statusText})`);
+        }
 
-      if (result.response.status !== 200) {
-        throw new Error(`Gitea API returned status ${result.response.status}`);
-      }
+        this.#logger.info(`Gitea version: ${result.data.version}`);
+      });
 
-      this.#logger.info(`Gitea version: ${result.data?.version}`);
+      await client.GET("/user").then((result) => {
+        if (!result.data) {
+          throw new Error(`Failed to retrieve user information: (${result.response.status} ${result.response.statusText})`);
+        }
+
+        this.#logger.info(`Gitea user: ${result.data.login} (${result.data.email})`);
+      });
     } catch (error) {
-      const message = `Cannot connect to Gitea: ${error}`;
+      const message = `Gitea connection failed: ${ErrorHelpers.as(error).message}`;
 
-      this.#logger.error(message);
+      this.#logger.error(message, { error });
       this.#status = { type: "error", message };
 
       return;
     }
+
+    this.#client = client;
 
     this.#status = {
       type: "ready",

@@ -1,5 +1,5 @@
 import { Authenticator } from "@/core/services/authenticator";
-import { SupervisorRegistry } from "@/core/services/supervisor-registry";
+import { Scheduler } from "@/core/services/scheduler";
 import { ExternalRouterHandler } from "@/external-router-handler";
 import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
@@ -70,6 +70,8 @@ export class Bootstrapper {
 
     Container.inject(ExternalRouterHandler).setup();
     Container.inject(InternalRouterHandler).setup();
+
+    Container.inject(Scheduler).start();
   }
 }
 
@@ -82,7 +84,7 @@ Container.singleton(Git, () => new Git());
 Container.singleton(HTTPServer, () => new HTTPServer());
 
 Container.singleton(Authenticator, () => new Authenticator());
-Container.singleton(SupervisorRegistry, () => new SupervisorRegistry());
+Container.singleton(Scheduler, () => new Scheduler());
 
 Container.singleton(ExternalRouterHandler, () => new ExternalRouterHandler());
 Container.singleton(InternalRouterHandler, () => new InternalRouterHandler());

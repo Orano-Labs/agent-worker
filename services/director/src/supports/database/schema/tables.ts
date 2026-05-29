@@ -33,6 +33,21 @@ const ISSUE_COLLABORATORS_TABLE_COLUMNS = {
 
 const TEMPLATES_TABLE_COLUMNS = {
   ...SHARED_COLUMNS,
+
+  /**
+   * 模板名称
+   */
+  name: varchar("name", { length: 255 }).notNull(),
+
+  /**
+   * GIT 仓库名称
+   */
+  repository: varchar("repository", { length: 255 }).notNull(),
+
+  /**
+   * 模板标签
+   */
+  tag: varchar("tag", { length: 255 }).notNull(),
 } as const;
 
 export const USERS_TABLE = table("users", USERS_TABLE_COLUMNS, () => {

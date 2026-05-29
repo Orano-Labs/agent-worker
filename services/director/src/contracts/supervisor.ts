@@ -5,9 +5,63 @@ export namespace Supervisor {
   export const CONTROLLER_CONTRACT = {
     host: {
       /**
-       * 获取当前主机的硬件与资源负载状态 (Director -> Supervisor)
+       * Get the current hardware and resource load status of the host
        */
-      status: oc.input(z.void()).output(z.object({})),
+      status: oc.input(z.void()).output(
+        z.object({
+          // State reporting timestamp in milliseconds
+          ts: z.number().int(),
+          // System uptime in seconds
+          uptime: z.number(),
+
+          cpu: z.object({
+            // Number of logical cores
+            cores: z.number().int().positive(),
+            // Total CPU usage percentage (0-100)
+            usagePercent: z.number().min(0).max(100),
+            // Linux load average for [1min, 5min, 15min]
+            loadAvg: z.tuple([z.number(), z.number(), z.number()]),
+          }),
+
+          memory: z.object({
+            // Total memory in bytes
+            totalBytes: z.number().int().positive(),
+            // Used memory in bytes
+            usedBytes: z.number().int().nonnegative(),
+            // Free memory available in bytes
+            freeBytes: z.number().int().nonnegative(),
+            // Memory usage percentage (0-100)
+            usagePercent: z.number().min(0).max(100),
+          }),
+
+          // List of disk partition statuses
+          disk: z
+            .object({
+              // Mount point (e.g., '/', '/data')
+              mountPoint: z.string(),
+              // Total disk capacity in bytes
+              totalBytes: z.number().int().positive(),
+              // Used disk space in bytes
+              usedBytes: z.number().int().nonnegative(),
+              // Disk space usage percentage (0-100)
+              usagePercent: z.number().min(0).max(100),
+              // Disk read rate in Bytes/s
+              ioReadBytesPerSec: z.number(),
+              // Disk write rate in Bytes/s
+              ioWriteBytesPerSec: z.number(),
+            })
+            .array(),
+
+          network: z.object({
+            // Network rx (receive) rate in Bytes/s
+            rxBytesPerSec: z.number(),
+            // Network tx (transmit) rate in Bytes/s
+            txBytesPerSec: z.number(),
+            // Number of currently active network connections
+            connections: z.number().int().nonnegative(),
+          }),
+        }),
+      ),
     },
 
     task: {

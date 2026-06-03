@@ -98,7 +98,7 @@ export class Logger {
     return new Logger({ parent: this, context });
   }
 
-  async flush() {
+  flush() {
     this.#logger.flush();
   }
 }

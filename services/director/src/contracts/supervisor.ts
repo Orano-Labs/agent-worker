@@ -7,7 +7,7 @@ export namespace Supervisor {
       /**
        * Get the current hardware and resource load status of the host
        */
-      status: oc.input(z.void()).output(
+      status: oc.input(z.object({})).output(
         z.object({
           // State reporting timestamp in milliseconds
           ts: z.number().int(),
@@ -16,7 +16,7 @@ export namespace Supervisor {
 
           cpu: z.object({
             // Number of logical cores
-            cores: z.number().int().positive(),
+            cores: z.number().int(),
             // Total CPU usage percentage (0-100)
             usagePercent: z.number().min(0).max(100),
             // Linux load average for [1min, 5min, 15min]
@@ -25,11 +25,11 @@ export namespace Supervisor {
 
           memory: z.object({
             // Total memory in bytes
-            totalBytes: z.number().int().positive(),
+            totalBytes: z.number().int(),
             // Used memory in bytes
-            usedBytes: z.number().int().nonnegative(),
+            usedBytes: z.number().int(),
             // Free memory available in bytes
-            freeBytes: z.number().int().nonnegative(),
+            freeBytes: z.number().int(),
             // Memory usage percentage (0-100)
             usagePercent: z.number().min(0).max(100),
           }),
@@ -40,9 +40,9 @@ export namespace Supervisor {
               // Mount point (e.g., '/', '/data')
               mountPoint: z.string(),
               // Total disk capacity in bytes
-              totalBytes: z.number().int().positive(),
+              totalBytes: z.number().int(),
               // Used disk space in bytes
-              usedBytes: z.number().int().nonnegative(),
+              usedBytes: z.number().int(),
               // Disk space usage percentage (0-100)
               usagePercent: z.number().min(0).max(100),
               // Disk read rate in Bytes/s
@@ -58,7 +58,7 @@ export namespace Supervisor {
             // Network tx (transmit) rate in Bytes/s
             txBytesPerSec: z.number(),
             // Number of currently active network connections
-            connections: z.number().int().nonnegative(),
+            connections: z.number(),
           }),
         }),
       ),

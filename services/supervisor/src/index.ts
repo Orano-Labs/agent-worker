@@ -4,7 +4,12 @@ import { Director } from "@/internal/director";
 import { Environment } from "@/internal/environment";
 import { EventQueue } from "@/internal/event-queue";
 import { Logger } from "@/internal/logger";
+import { Network } from "@/internal/network";
 import { Variables } from "@/internal/variables";
+import { Controller } from "./internal/controller";
+import { Image } from "./internal/image";
+import { KVStorage } from "./internal/kv-storage";
+import { Orchestrator } from "./internal/orchestrator";
 
 Container.singleton(CommandLine, () => new CommandLine());
 Container.singleton(Logger, () => new Logger());
@@ -12,14 +17,27 @@ Container.singleton(Environment, () => new Environment());
 Container.singleton(Variables, () => new Variables());
 Container.singleton(EventQueue, () => new EventQueue());
 Container.singleton(Director, () => new Director());
+Container.singleton(Controller, () => new Controller());
+Container.singleton(Image, () => new Image());
+Container.singleton(KVStorage, () => new KVStorage());
+Container.singleton(Network, () => new Network());
+Container.singleton(Orchestrator, () => new Orchestrator());
 
 (async () => {
   const variables = Container.inject(Variables);
   const environment = Container.inject(Environment);
-  const queue = Container.inject(EventQueue);
+  const kv = Container.inject(KVStorage);
+  const net = Container.inject(Network);
   const director = Container.inject(Director);
+  const controller = Container.inject(Controller);
+  const image = Container.inject(Image);
+  const orchestrator = Container.inject(Orchestrator);
 
   await variables.init();
   await environment.init();
-  await director.init();
+  await kv.init();
+  await net.init();
+  await image.init();
+
+  await orchestrator.run();
 })();

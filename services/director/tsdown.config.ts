@@ -10,6 +10,7 @@ export default defineConfig({
   sourcemap: true,
   clean: false,
   target: false,
+  unbundle: true,
   deps: {},
   define: {
     VERSION: JSON.stringify(process.env.npm_package_version),

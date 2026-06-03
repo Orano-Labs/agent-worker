@@ -3,21 +3,26 @@ import { createPrivateKey, sign } from "node:crypto";
 import { default as PartySocket } from "partysocket";
 import { default as WebSocket } from "ws";
 import { Container } from "@/helpers/container";
-import { CommandLine } from "@/internal/command-line";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
 
 export class Director {
   #logger: Logger;
-  #cli: CommandLine;
   #variables: Variables;
 
   #ws!: PartySocket;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("Director");
-    this.#cli = Container.inject(CommandLine);
     this.#variables = Container.inject(Variables);
+  }
+
+  get socket() {
+    if (!this.#ws) {
+      throw new Error("xxxxxx");
+    }
+
+    return this.#ws;
   }
 
   async init() {
@@ -102,16 +107,11 @@ export class Director {
     this.#ws.reconnect();
 
     this.#ws.addEventListener("error", (error) => {
-      this.#logger.errorFrom(error, "WebSocket encountered an error");
+      this.#logger.error(`WebSocket encountered an error: ${error.message}`);
     });
 
     this.#ws.addEventListener("open", () => {
       this.#logger.info("WebSocket connection established successfully.");
-    });
-
-    this.#ws.addEventListener("message", (event) => {
-      console.log(event.data);
-      this.#ws.send("");
     });
   }
 }

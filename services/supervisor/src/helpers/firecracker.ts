@@ -1,7 +1,7 @@
 import { default as createClient } from "openapi-fetch";
 import { Agent, fetch, Request } from "undici";
 
-import type { components, paths as FirecrackerEndpoints } from "@/internal/service/firecracker.api";
+import type { components, paths as FirecrackerEndpoints } from "./firecracker.api";
 
 export class Firecracker {
   #agent: Agent;

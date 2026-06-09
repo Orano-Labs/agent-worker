@@ -73,8 +73,12 @@ export class Environment {
         description: "kernel",
       },
       {
-        path: join(this.workdir, "rootfs"),
-        description: "rootfs",
+        path: join(this.workdir, "images"),
+        description: "images",
+      },
+      {
+        path: join(this.workdir, "layer"),
+        description: "layer",
       },
     ];
 

@@ -458,6 +458,12 @@ importers:
       mysql2:
         specifier: ^3.22.4
         version: 3.22.4(@types/node@25.6.2)
+      nanoid:
+        specifier: ^5.1.11
+        version: 5.1.11
+      nanoid-dictionary:
+        specifier: ^5.0.0
+        version: 5.0.0
       neverthrow:
         specifier: ^8.2.0
         version: 8.2.0

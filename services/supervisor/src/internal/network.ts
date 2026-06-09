@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { Container } from "@/helpers/container";
-import { KVStorage } from "./kv-storage";
-import { Logger } from "./logger";
+import { KVStorage } from "@/internal/kv-storage";
+import { Logger } from "@/internal/logger";
 
 export class Network {
   #logger: Logger;

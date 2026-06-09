@@ -34,6 +34,36 @@ mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   || log_fatal "Failed to
 mountpoint -q /proc || mount -t proc     proc     /proc  || log_fatal "Failed to mount /proc"
 mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   || log_fatal "Failed to mount /sys"
 
+log_info "Making /mnt writable via tmpfs..."
+
+mount -t tmpfs -o size=1M tmpfs /tmp
+mount -t tmpfs -o size=1M tmpfs /mnt
+
+log_info "Mounting ephemeral ScratchFS..."
+
+mkdir -p /mnt/scratch
+mount /dev/vdb /mnt/scratch || log_fatal "ScratchFS device missing!"
+
+log_info "Initializing temporary local JuiceFS backend..."
+
+JSF_STORAGE="/mnt/scratch/jsf_storage";
+JSF_CACHE="/mnt/scratch/jsf_cache";
+JSF_MOUNT="/mnt/scratch/jsf_mount";
+JSF_META="sqlite3://mnt/scratch/jfs_meta.db"
+JSF_LOG="/mnt/scratch/jsf_log"
+
+export TMPDIR="/mnt/scratch/tmp"
+
+mkdir -p "$JSF_STORAGE" "$JSF_CACHE" "$JSF_MOUNT" "$TMPDIR"
+
+/usr/local/bin/juicefs --help
+
+/usr/local/bin/juicefs format --bucket "$JSF_STORAGE" "$JSF_META" jsf
+
+log_info "Mounting JuiceFS on top of ScratchFS..."
+
+/usr/local/bin/juicefs mount -o allow_root --cache-dir="$JSF_CACHE" --log "$JSF_LOG" --no-usage-report "$JSF_META" "$JSF_MOUNT"
+
 # 暂时未实现 NFS
 # log_info "Attempting to mount Network File System (NFSv4)..."
 
@@ -47,7 +77,23 @@ log_info "Starting target application..."
 # Temporarily disable 'set -e' to safely capture the Node.js exit status code
 set +e
 
-/sbin/tini -gs -- /usr/bin/node /app && NODE_EXIT_CODE=$?
+/sbin/tini -gs -- /usr/bin/bwrap \
+  --ro-bind-try /usr /usr \
+  --ro-bind-try /etc /etc \
+  --ro-bind-try /lib /lib \
+  --ro-bind-try /bin /bin \
+  --ro-bind-try /sbin /sbin \
+  --ro-bind-try /app /app \
+  --ro-bind-try /sys /sys \
+  --dir /proc \
+  --dir /sys \
+  --dir /workspace \
+  --proc /proc \
+  --dev /dev \
+  --tmpfs "$TMPDIR" \
+  --chdir /workspace \
+  /usr/bin/node /app && NODE_EXIT_CODE=$?
+
 
 # Restore strict error checking
 set -e

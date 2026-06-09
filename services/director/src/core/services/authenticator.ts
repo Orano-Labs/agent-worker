@@ -113,6 +113,10 @@ export class Authenticator {
       return Result.error({ message: "Supervisor not found" });
     }
 
+    if (row.status === "inactive") {
+      return Result.error({ message: "xx" });
+    }
+
     const publicKey = createPublicKey({
       key: Buffer.from(row.publicKey, "hex"),
       type: "spki",

@@ -1,21 +1,21 @@
 import { exec } from "node:child_process";
 import { stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-
 import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
 
-const BASE_IMAGE_SNAPSHOT_NAME = "fc-alpine-base.fs";
+const RUNTIME_IMAGE_CONTAINER_NAME = "aw-runtime-image";
 
 export class Image {
   #env: Environment;
   #logger: Logger;
 
-  get base() {
-    return join(this.#env.workdir, BASE_IMAGE_SNAPSHOT_NAME);
+  get runtime() {
+    return join(this.#env.workdir, "images", "runtime.squashfs");
   }
 
   constructor() {
@@ -31,12 +31,12 @@ export class Image {
     let exists = false;
 
     try {
-      await stat(this.base).then((stats) => {
+      await stat(this.runtime).then((stats) => {
         exists = stats.isFile();
       });
     } catch (e) {
       if (e instanceof Error && "code" in e && e.code !== "ENOENT") {
-        this.#logger.errorFrom(e, `Failed to check status for base path: ${this.base}`);
+        this.#logger.errorFrom(e, `Failed to check status for runtime image path: ${this.runtime}`);
         process.exit(1);
       }
     }
@@ -45,9 +45,10 @@ export class Image {
       // return this.#logger.info("Base image snapshot exists. Skipping initialization.");
     }
 
-    this.#logger.debug(`Base image snapshot not found at ${this.base}. Proceeding with creation.`);
+    this.#logger.debug(`Runtime image snapshot not found at ${this.runtime}. Proceeding with creation.`);
 
-    let container = "";
+    let containerExists = true;
+    let containerTemp = "";
     let ok = false;
 
     try {
@@ -55,47 +56,82 @@ export class Image {
 
       await this.#exec("sudo apt install -y buildah qemu-utils e2fsprogs");
 
-      this.#logger.info("Pulling Alpine base image via buildah...");
+      try {
+        await this.#exec(`buildah inspect ${RUNTIME_IMAGE_CONTAINER_NAME}`);
+      } catch {
+        containerExists = false;
+      }
 
-      await this.#exec("buildah from alpine:latest").then(({ stdout }) => {
-        container = stdout.trim();
-      });
+      if (!containerExists) {
+        this.#logger.info("No existing container found, starting fresh build...");
+        this.#logger.info("Pulling alpine base image via buildah...");
+
+        await this.#exec("buildah from alpine:latest").then(({ stdout }) => {
+          containerTemp = stdout.trim();
+        });
+
+        this.#logger.info("Injecting DNS configurations into container...");
+
+        await this.#exec(`buildah copy ${containerTemp} /etc/resolv.conf /etc/resolv.conf`);
+
+        this.#logger.info("Installing internal packages...");
+
+        const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
+
+        await this.#exec(`buildah run --net=host ${containerTemp} -- apk update --repository=${MIRROR_MAIN}`);
+        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ca-certificates --repository=${MIRROR_MAIN}`);
+        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add tini nodejs curl fuse bubblewrap --repository=${MIRROR_MAIN}`);
+
+        this.#logger.info(`Renaming container to ${RUNTIME_IMAGE_CONTAINER_NAME} for future caching...`);
+
+        await this.#exec(`buildah rename ${containerTemp} ${RUNTIME_IMAGE_CONTAINER_NAME}`);
+
+        containerTemp = "";
+      }
+
+      let juicefsExists = true;
+
+      try {
+        await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- juicefs --help`);
+      } catch {
+        juicefsExists = false;
+      }
+
+      if (!juicefsExists) {
+        this.#logger.info("Installing JuiceFS ...");
+
+        await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- ls -al /usr/local/bin`).then(console.log);
+
+        await this.#exec(
+          `buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- sh -c "curl -sSL https://d.juicefs.com/install | sh -"`,
+        ).then(console.log);
+      }
 
       this.#logger.info("Injecting DNS configurations and init scripts into container...");
 
-      await this.#exec(`buildah copy ${container} /etc/resolv.conf /etc/resolv.conf`);
-      await this.#exec(`buildah copy ${container} ${join(process.cwd(), "resources/init.sh")} /init`);
-      await this.#exec(`buildah copy ${container} ${join(process.cwd(), "resources/app")} /app`);
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/app")} /app`);
 
-      this.#logger.info("Setting executable permissions and installing internal packages...");
-
-      await this.#exec(`buildah run --net=host ${container} chmod +x /init`);
-      await this.#exec(`buildah run --net=host ${container} mkdir /workspace`);
-      await this.#exec(
-        `buildah run --net=host ${container} -- sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories`,
-      );
-
-      await this.#exec(`buildah run --net=host ${container} -- apk update`);
-      await this.#exec(`buildah run --net=host ${container} -- apk add --no-cache tini nodejs`);
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} chmod +x /init`);
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);
 
       await this.#exec(
-        `buildah unshare sh -c 'set -e && m=$(buildah mount ${container}) && mksquashfs "$m" "${this.base}" -comp xz -noappend'`,
+        `buildah unshare sh -c 'set -e && m=$(buildah mount ${RUNTIME_IMAGE_CONTAINER_NAME}) && mksquashfs "$m" "${this.runtime}" -comp xz -noappend'`,
       );
 
       ok = true;
     } catch (error) {
       this.#logger.errorFrom(error, "An error occurred during rootfs initialization.");
     } finally {
-      if (container) {
-        this.#logger.debug(`Destroying buildah container [${container}]...`);
+      if (containerTemp) {
+        this.#logger.debug(`Destroying buildah container [${containerTemp}]...`);
 
-        await this.#exec(`buildah unmount ${container}`).catch((err) => {
-          this.#logger.warn(`Failed to unmount container [${container}]: ${ErrorHelpers.as(err).message}`);
+        await this.#exec(`buildah unmount ${containerTemp}`).catch((err) => {
+          this.#logger.warn(`Failed to unmount container [${containerTemp}]: ${ErrorHelpers.as(err).message}`);
         });
-        await this.#exec(`buildah rm ${container}`).catch((err) => {
-          this.#logger.warn(`Failed to remove container [${container}]: ${ErrorHelpers.as(err).message}`);
+        await this.#exec(`buildah rm ${containerTemp}`).catch((err) => {
+          this.#logger.warn(`Failed to remove container [${containerTemp}]: ${ErrorHelpers.as(err).message}`);
         });
       }
     }
@@ -103,7 +139,16 @@ export class Image {
     if (!ok) {
       process.exit(1);
     } else {
-      this.#logger.info(`Base image snapshot archived successfully at: ${this.base}`);
+      this.#logger.info(`Base image snapshot archived successfully at: ${this.runtime}`);
     }
+  }
+
+  async createScratchFS(dest: string, size = 1024 * 2) {
+    this.#logger.info(`Creating a writable scratch FS of ${size} MiB at: ${dest}`);
+
+    await this.#exec(`truncate -s ${size}M ${dest}`);
+    await this.#exec(`mkfs.ext4 -F -b 4096 ${dest}`);
+
+    this.#logger.info(`ScratchFS created successfully.`);
   }
 }

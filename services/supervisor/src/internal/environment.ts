@@ -1,8 +1,9 @@
-import { createWriteStream } from "node:fs";
-import { chmod, cp, mkdir, rm, stat } from "node:fs/promises";
-import { arch, homedir, platform, tmpdir } from "node:os";
+import { mkdir, rm, stat } from "node:fs/promises";
+import { arch, homedir, platform } from "node:os";
 import { basename, join } from "node:path";
-import { Writable } from "node:stream";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { x } from "tar";
 
 import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
@@ -37,11 +38,11 @@ export class Environment {
   }
 
   get firecracker() {
-    return join(this.workdir, "bin/firecracker");
+    return join(this.workdir, `bin/firecracker-${Environment.FIRECRACKER_VERSION}-${this.arch === "x64" ? "x86_64" : "aarch64"}`);
   }
 
   get jailer() {
-    return join(this.workdir, "bin/jailer");
+    return join(this.workdir, `bin/jailer-${Environment.FIRECRACKER_VERSION}-${this.arch === "x64" ? "x86_64" : "aarch64"}`);
   }
 
   get kernel() {
@@ -61,10 +62,6 @@ export class Environment {
         description: "work",
       },
       {
-        path: join(this.workdir, "sessions"),
-        description: "sessions",
-      },
-      {
         path: join(this.workdir, "bin"),
         description: "bin",
       },
@@ -76,98 +73,60 @@ export class Environment {
         path: join(this.workdir, "images"),
         description: "images",
       },
-      {
-        path: join(this.workdir, "layer"),
-        description: "layer",
-      },
     ];
 
     for (const directory of directories) {
-      try {
-        await mkdir(directory.path, { recursive: true });
-      } catch (error) {
-        this.#logger.errorFrom(error, `Failed to create ${directory.description} directory`);
-
-        return process.exit(1);
-      }
+      await mkdir(directory.path, { recursive: true });
     }
 
     const arch = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : "";
 
     if (!arch) {
-      this.#logger.error(`Unsupported architecture: Node.js reports '${process.arch}' but Firecracker requires x64 or arm64.`);
-      return process.exit(1);
+      throw new Error(`Unsupported architecture: Node.js reports '${process.arch}' but Firecracker requires x64 or arm64.`);
     }
 
-    for (const item of Environment.FIRECRACKER_RESOURCES) {
-      let exists = false;
+    let exists = true;
 
+    try {
+      await stat(this.firecracker);
+      await stat(this.jailer);
+    } catch {
+      exists = false;
+    }
+
+    if (exists) {
+      return this.#logger.info(`Resources already exists. Skipping download.`);
+    }
+
+    const url = Environment.FIRECRACKER_RELEASE_DOWNLOAD_URL.replaceAll("<V>", Environment.FIRECRACKER_VERSION).replaceAll("<ARCH>", arch);
+
+    const body = await fetch(url).then((response) => {
+      if (!response.ok) {
+        throw new Error(`Download failed (${basename(url)}): ${response.statusText}`);
+      }
+
+      if (!response.body) {
+        throw new Error(`Download failed (${basename(url)}): Response body is null`);
+      }
+
+      return response.body;
+    });
+
+    try {
+      await rm(join(this.workdir, "bin"), { force: true, recursive: true });
+      await mkdir(join(this.workdir, "bin"), { recursive: true });
+      await pipeline(Readable.fromWeb(body), x({ cwd: join(this.workdir, "bin"), strip: 1 }));
+    } catch (error) {
       try {
-        exists = Boolean(await stat(join(this.workdir, item.install)));
+        await rm(join(this.workdir, "bin"), { force: true, recursive: true });
       } catch {}
 
-      if (exists) {
-        this.#logger.info(`Resource [${item.name}] already exists. Skipping download.`);
-        continue;
-      }
-
-      const url = `${Environment.FIRECRACKER_AWS_BUCKET_URL}/${item.key.replace("<ARCH>", arch)}`;
-      const dst = join(tmpdir(), `firecracker-download-${crypto.randomUUID()}`);
-
-      this.#logger.info(`Downloading resource [${item.name}]...`, { url });
-
-      try {
-        const body = await fetch(url).then((response) => {
-          if (!response.ok) {
-            throw new Error(`Download failed (${basename(url)}): ${response.statusText}`);
-          }
-
-          if (!response.body) {
-            throw new Error(`Download failed (${basename(url)}): Response body is null`);
-          }
-
-          return response.body;
-        });
-
-        const path = join(this.workdir, item.install);
-
-        await body.pipeTo(Writable.toWeb(createWriteStream(dst)));
-        await cp(dst, path);
-
-        this.#logger.info(`Successfully installed [${item.name}] to ${path}`);
-
-        if (item.install.startsWith("/bin")) {
-          await chmod(path, 0o755);
-        }
-      } catch (error) {
-        this.#logger.errorFrom(error, `Failed to fetch or install resource [${item.name}] from ${url}`);
-        return process.exit(1);
-      } finally {
-        try {
-          await rm(dst, { force: true });
-        } catch {}
-      }
+      throw error;
     }
   }
 }
 
 export namespace Environment {
-  export const FIRECRACKER_AWS_BUCKET_URL = "https://s3.amazonaws.com/spec.ccfc.min";
-  export const FIRECRACKER_RESOURCES = [
-    {
-      key: "firecracker-ci/v1.15/<ARCH>/firecracker/firecracker-v1.14.0",
-      name: "firecracker",
-      install: "/bin/firecracker",
-    },
-    {
-      key: "firecracker-ci/v1.15/<ARCH>/firecracker/jailer-v1.14.0",
-      name: "jailer",
-      install: "/bin/jailer",
-    },
-    {
-      key: "firecracker-ci/v1.15/<ARCH>/vmlinux-6.1.155",
-      name: "vmlinux",
-      install: "/kernel/vmlinux",
-    },
-  ] as const;
+  export const FIRECRACKER_VERSION = "v1.16.0";
+  export const FIRECRACKER_RELEASE_DOWNLOAD_URL = `https://github.com/firecracker-microvm/firecracker/releases/download/<V>/firecracker-<V>-<ARCH>.tgz`;
 }

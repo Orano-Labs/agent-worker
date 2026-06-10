@@ -260,7 +260,10 @@ export class Firecracker {
         baseUrl: "http://localhost",
         fetch: (input) => {
           // @ts-expect-error
-          return fetch(input, { dispatcher: this.#agent });
+          return fetch(input, { dispatcher: this.#agent }).then((resp) => {
+            console.log(resp);
+            return resp;
+          });
         },
       }),
     );
@@ -278,7 +281,11 @@ export class Firecracker {
   async describeBalloonHinting() {}
   async describeBalloonStats() {}
   async describeInstance() {}
-  async getExportVmConfig() {}
+
+  async getExportVmConfig() {
+    return getExportVmConfig({ throwOnError: true, client: this.#client });
+  }
+
   async getFirecrackerVersion() {}
   async getMachineConfiguration() {}
   async getMemoryHotplug() {}

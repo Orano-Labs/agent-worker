@@ -45,9 +45,28 @@ mount /dev/vdb /mnt/scratch || log_fatal "ScratchFS device missing!"
 
 mount -t nfs -o nfsvers=4,async,rsize=1048576,wsize=1048576,nocto,actimeo=60 10.123.0.1:/exports/aw-mount /workspace
 
+
+echo always > /sys/kernel/mm/transparent_hugepage/enabled || true
+
 # nc -zv 10.123.0.1 2049
 
 log_info "All file systems mounted successfully."
+
+log_info "Current System Metrics before starting target application:"
+
+if command -v free >/dev/null 2>&1; then
+    free -h | sed 's/^/[AW-INIT] /'
+else
+    log_info "MemTotal: $(awk '/MemTotal/ {print $2" "$3}' /proc/meminfo)"
+    log_info "MemAvailable: $(awk '/MemAvailable/ {print $2" "$3}' /proc/meminfo)"
+fi
+
+if command -v uptime >/dev/null 2>&1; then
+    log_info "CPU Load: $(uptime)"
+else
+    log_info "CPU Load (1/5/15 min): $(cat /proc/loadavg | awk '{print $1", "$2", "$3}')"
+fi
+
 log_info "Starting target application..."
 
 # Temporarily disable 'set -e' to safely capture the Node.js exit status code

@@ -1,6 +1,5 @@
 import { exec } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Container } from "@/helpers/container";
@@ -89,30 +88,13 @@ export class Image {
         containerTemp = "";
       }
 
-      let juicefsExists = true;
-
-      try {
-        await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- juicefs --help`);
-      } catch {
-        juicefsExists = false;
-      }
-
-      if (!juicefsExists) {
-        this.#logger.info("Installing JuiceFS ...");
-
-        await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- ls -al /usr/local/bin`).then(console.log);
-
-        await this.#exec(
-          `buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- sh -c "curl -sSL https://d.juicefs.com/install | sh -"`,
-        ).then(console.log);
-      }
-
       this.#logger.info("Injecting DNS configurations and init scripts into container...");
 
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/app")} /app`);
 
-      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} chmod +x /init`);
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /init`);
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- mkdir -p /workspace`);
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);
 
@@ -143,7 +125,7 @@ export class Image {
     }
   }
 
-  async createScratchFS(dest: string, size = 1024 * 2) {
+  async createScratchFS(dest: string, size = 512) {
     this.#logger.info(`Creating a writable scratch FS of ${size} MiB at: ${dest}`);
 
     await this.#exec(`truncate -s ${size}M ${dest}`);

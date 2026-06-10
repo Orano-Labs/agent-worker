@@ -156,7 +156,7 @@ export class Network {
           // 隔离与出入网控制
           `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${Network.TAP} drop`,
           `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${slot.veth.guest.name} ip protocol icmp accept`,
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${slot.veth.guest.name} tcp dport { 22, 80, 443 } accept`,
+          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${slot.veth.guest.name} tcp dport { 22, 80, 443, 2049 } accept`,
           `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${slot.veth.guest.name} oifname ${Network.TAP} accept`,
         ],
       );
@@ -167,6 +167,7 @@ export class Network {
           `${nft} add chain ip ${Network.NFT_TABLE_NAT} prerouting '{ type nat hook prerouting priority -100 ; }'`,
           `${nft} add chain ip ${Network.NFT_TABLE_NAT} postrouting '{ type nat hook postrouting priority 100 ; }'`,
           `${nft} add rule ip ${Network.NFT_TABLE_NAT} postrouting oifname ${slot.veth.guest.name} masquerade`,
+          `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} tcp dport 2049 dnat to ${slot.veth.host.ip}`,
           `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${slot.veth.guest.name} ip daddr ${slot.veth.guest.ip} dnat to ${Network.TAP_VM_IP}`,
         ],
       );

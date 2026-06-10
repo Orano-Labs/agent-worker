@@ -186,6 +186,7 @@ export class Orchestrator {
           vcpu_count: cpuCapacity > 1 ? Math.ceil(cpuCapacity / 2) * 2 : 1,
           track_dirty_pages: false,
           smt: false,
+          huge_pages: "2M",
         }),
         fc.putGuestBootSource({
           kernel_image_path: "./kernel",
@@ -208,6 +209,10 @@ export class Orchestrator {
           io_engine: "Async",
         }),
       ]);
+
+      await fc.getExportVmConfig().then((resp) => {
+        this.#logger.info("Full vm config", resp?.data);
+      });
 
       await fc.createSyncAction({
         action_type: "InstanceStart",

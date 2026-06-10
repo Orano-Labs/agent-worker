@@ -4,7 +4,7 @@ import { createWriteStream } from "node:fs";
 import { cp, mkdir, readFile, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createInterface as createReadLineInterface } from "node:readline";
 import { asError } from "catch-unknown";
 import { customAlphabet } from "nanoid";
@@ -45,13 +45,13 @@ export class Orchestrator {
       return `02:${bytes.join(":")}`;
     })();
 
-    const cpuCapacity = options?.cpuCapacity ?? 1;
-    const memory = options?.memory ?? 512;
+    const cpuCapacity = options?.cpuCapacity ?? 4;
+    const memory = options?.memory ?? 1024;
 
     const args = [this.#env.jailer];
 
     args.push("--exec-file", this.#env.firecracker);
-    args.push("--chroot-base-dir", this.#env.workdir);
+    args.push("--chroot-base-dir", join(this.#env.workdir, "jailer"));
     args.push("--netns", `/var/run/netns/${net.name}`);
     args.push("--gid", `${user.gid}`);
     args.push("--uid", `${user.uid}`);
@@ -86,7 +86,7 @@ export class Orchestrator {
     args.push("--");
     args.push("--api-sock", "/firecracker.sock");
 
-    const root = join(this.#env.workdir, "firecracker", id, "root");
+    const root = join(this.#env.workdir, "jailer", basename(this.#env.firecracker), id, "root");
 
     let pid: number | undefined;
 
@@ -176,37 +176,36 @@ export class Orchestrator {
       const fc = new Firecracker(socket);
 
       await Promise.all([
-        fc.setLogger({ log_path: "./firecracker.log", level: "Debug", show_level: true, show_log_origin: true }),
-        fc.setNetworkInterface("eth0", { iface_id: "eth0", guest_mac: mac, host_dev_name: Network.TAP }),
-        fc.setMmds({ latest: { "meta-data": options?.metadata ?? {} } }),
-        fc.setMmdsConfig({ version: "V2", network_interfaces: ["eth0"], ipv4_address: "169.254.169.254", imds_compat: false }),
-        fc.setVsock({ guest_cid: 1, uds_path: "./v.sock" }),
-        fc.setMachineConfiguration({
+        fc.putLogger({ log_path: "./firecracker.log", level: "Debug", show_level: true, show_log_origin: true }),
+        fc.putGuestNetworkInterfaceById("eth0", { iface_id: "eth0", guest_mac: mac, host_dev_name: Network.TAP }),
+        fc.putMmdsConfig({ version: "V2", network_interfaces: ["eth0"], ipv4_address: "169.254.169.254", imds_compat: false }),
+        fc.putMmds({ latest: { "meta-data": options?.metadata ?? {} } }),
+        fc.putMachineConfiguration({
           cpu_template: "None",
           mem_size_mib: memory,
           vcpu_count: cpuCapacity > 1 ? Math.ceil(cpuCapacity / 2) * 2 : 1,
           track_dirty_pages: false,
           smt: false,
         }),
-        fc.setBootSource({
+        fc.putGuestBootSource({
           kernel_image_path: "./kernel",
           boot_args: `console=ttyS0 reboot=k panic=1 ip=${Network.TAP_VM_IP}:${Network.TAP_NS_IP}:${Network.TAP_NS_IP}:255.255.255.0::eth0:off ${process.arch === "arm64" ? "keep_bootcon" : ""} init=/init`,
         }),
-        fc.setDrive("runtime", {
+        fc.putGuestDriveById("runtime", {
           drive_id: "runtime",
           path_on_host: "./runtime.squashfs",
           is_root_device: true,
           is_read_only: true,
           cache_type: "Writeback",
-          io_engine: "Sync",
+          io_engine: "Async",
         }),
-        fc.setDrive("scratch", {
+        fc.putGuestDriveById("scratch", {
           drive_id: "scratch",
           path_on_host: "./scratch.ext4",
           is_root_device: false,
           is_read_only: false,
           cache_type: "Writeback",
-          io_engine: "Sync",
+          io_engine: "Async",
         }),
       ]);
 
@@ -232,10 +231,8 @@ export class Orchestrator {
           //
         }
       }
-
       await this.#net.release(net).catch(() => {});
-      await rm(join(this.#env.workdir, "firecracker", id)).catch(() => {});
-
+      await rm(join(this.#env.workdir, basename(this.#env.firecracker), id)).catch(() => {});
       throw error;
     }
   }

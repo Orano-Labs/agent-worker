@@ -102,6 +102,8 @@ export class Network {
   }
 
   async #install(slot: Network.Slot) {
+    this.#logger.info(`Starting network workspace deployment for slot [${slot.id}] (Namespace: ${slot.name})...`);
+
     const locked = this.#kv.db.get(`network-${slot.name}-locked`);
 
     if (!locked) {
@@ -115,7 +117,11 @@ export class Network {
     }
 
     try {
+      this.#logger.info(`Allocating topological addresses: Host VETH: ${slot.veth.host.ip}/30, Guest VETH: ${slot.veth.guest.ip}/30`);
+
       const commands = [
+        // 创建硬隔离的网络命名空间，并建立一对连接宿主机与该命名空间的虚拟网线（veth pair）
+        // 分配 /30 精简子网 IP 并激活宿主机端网卡，将 MTU 统一设为 1500
         `sudo ip netns add ${slot.name}`,
         `sudo ip link add ${slot.veth.host.name} type veth peer name ${slot.veth.guest.name}`,
         `sudo ip link set ${slot.veth.guest.name} netns ${slot.name}`,
@@ -123,76 +129,140 @@ export class Network {
         `sudo ip link set ${slot.veth.host.name} up`,
         `sudo ip link set ${slot.veth.host.name} mtu 1500`,
 
+        // 进入命名空间内部，配置并激活虚拟网线出口端（guest）的 IP 和 MTU
+        // 同时激活本地回环接口（lo），保障内部网络栈基础进程的正常运转
         `sudo ip netns exec ${slot.name} ip link set ${slot.veth.guest.name} mtu 1500`,
         `sudo ip netns exec ${slot.name} ip addr add ${slot.veth.guest.ip}/30 dev ${slot.veth.guest.name}`,
         `sudo ip netns exec ${slot.name} ip link set ${slot.veth.guest.name} up`,
         `sudo ip netns exec ${slot.name} ip link set lo up`,
 
+        // 创建并激活二层虚拟网卡（TAP 设备）用以桥接虚机，并分配 /24 子网 IP 作为其内网网关
         `sudo ip netns exec ${slot.name} ip tuntap add ${Network.TAP} mode tap`,
         `sudo ip netns exec ${slot.name} ip addr add ${Network.TAP_NS_IP}/24 dev ${Network.TAP}`,
         `sudo ip netns exec ${slot.name} ip link set ${Network.TAP} up`,
 
+        // 配置全局默认路由，将命名空间内所有去往外网的流量定向到虚拟网线的宿主机端
         `sudo ip netns exec ${slot.name} ip route add default via ${slot.veth.host.ip}`,
+
+        // 开启内核 IP 转发使其具备路由能力，并启用严格的反向路径过滤（rp_filter）防范 IP 欺骗
         `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.ip_forward=1`,
+        // `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.conf.all.rp_filter=1`,
+        // `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.conf.default.rp_filter=1`,
       ];
 
       const nft = `sudo ip netns exec ${slot.name} nft`;
-      // 💡 修复：精简 DNS 数组拼接，去除花括号内部的空格防止 Shell 展开错误
-      const dnsSet = `{${Network.DNS_RESOLVERS.join(",")}}`;
+      const dnsSet = `{ ${Network.DNS_RESOLVERS.join(", ")} }`;
+      const privateCIDRSet = `{ ${Network.PRIVATE_CIDRS.join(", ")} }`;
+
+      this.#logger.info(`Compiling security isolation firewalls for ${slot.name} (Table: ${Network.NFT_TABLE_FILTER})...`);
 
       commands.push(
         ...[
+          // 初始化 nftables 过滤表并挂载转发链，优先放行已建立或关联的连接回包以提升吞吐
           `${nft} delete table inet ${Network.NFT_TABLE_FILTER} 2>/dev/null || true`,
           `${nft} add table inet ${Network.NFT_TABLE_FILTER}`,
-          `${nft} add chain inet ${Network.NFT_TABLE_FILTER} forward '{ type filter hook forward priority 0 ; policy accept ; }'`,
+          `${nft} add chain inet ${Network.NFT_TABLE_FILTER} forward '{ type filter hook forward priority 0; policy drop; }'`,
+
+          // 放行所有已建立连接及其回包
           `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward ct state established,related accept`,
 
-          // DNS 白名单及阻断规则
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} udp dport 53 ip daddr ${dnsSet} accept`,
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} tcp dport 53 ip daddr ${dnsSet} accept`,
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} udp dport 53 drop`,
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} tcp dport 53 drop`,
+          // 硬拦截去往宿主机及物理私网的所有流量，彻底斩断对内网的窥探
+          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${privateCIDRSet} drop`,
 
-          // 隔离与出入网控制
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${Network.TAP} drop`,
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${slot.veth.guest.name} ip protocol icmp accept`,
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} oifname ${slot.veth.guest.name} tcp dport { 22, 80, 443, 2049 } accept`,
+          // 仅允许虚机访问白名单中的 DNS 服务器
+          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} udp dport 53 ip daddr ${dnsSet} accept`,
+
+          // 出网放行
+          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} accept`,
+
+          // 入网放行，无条件接受外部流向虚机（TAP）的所有合法响应流量
           `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${slot.veth.guest.name} oifname ${Network.TAP} accept`,
         ],
       );
 
+      this.#logger.info(`Compiling dynamic NAT topology rules for ${slot.name} (Table: ${Network.NFT_TABLE_NAT})...`);
+
       commands.push(
         ...[
+          // 初始化 NAT 表并挂载路由前/后钩子链，用于后续处理虚机的出网伪装与入网映射
           `${nft} add table ip ${Network.NFT_TABLE_NAT}`,
           `${nft} add chain ip ${Network.NFT_TABLE_NAT} prerouting '{ type nat hook prerouting priority -100 ; }'`,
           `${nft} add chain ip ${Network.NFT_TABLE_NAT} postrouting '{ type nat hook postrouting priority 100 ; }'`,
+
+          // 出网执行 Masquerade (SNAT) 隐蔽虚机内网，入网执行 DNAT 将外网流量映射至虚机真实 IP
           `${nft} add rule ip ${Network.NFT_TABLE_NAT} postrouting oifname ${slot.veth.guest.name} masquerade`,
-          `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} tcp dport 2049 dnat to ${slot.veth.host.ip}`,
           `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${slot.veth.guest.name} ip daddr ${slot.veth.guest.ip} dnat to ${Network.TAP_VM_IP}`,
         ],
       );
 
+      // 向虚拟机暴露宿主机上的 TCP / UDP 端口
+      // 1. 在 PREROUTING 阶段将发往网关固定 IP (10.123.0.1) 的流量，重定向到宿主机专属 veth IP
+      // 2. 在 FORWARD 阶段通过 insert 强行置顶，确保被改写目的地后的私网流量不被后续的私网硬拦截规则杀掉
+
+      if (Network.EXPOSED_HOST_TCP_PORTS.length > 0) {
+        const ports = `{ ${Network.EXPOSED_HOST_TCP_PORTS.join(", ")} }`;
+
+        this.#logger.info(`Injecting host TCP port safe-exposure hooks: ${ports} -> ${slot.veth.host.ip}`);
+
+        commands.push(
+          ...[
+            `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} tcp dport ${ports} dnat to ${slot.veth.host.ip}`,
+            `${nft} insert rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${slot.veth.host.ip} tcp dport ${ports} accept`,
+          ],
+        );
+      }
+
+      if (Network.EXPOSED_HOST_UDP_PORTS.length > 0) {
+        const ports = `{ ${Network.EXPOSED_HOST_UDP_PORTS.join(", ")} }`;
+
+        this.#logger.info(`Injecting host UDP port safe-exposure hooks: ${ports} -> ${slot.veth.host.ip}`);
+
+        commands.push(
+          ...[
+            `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} udp dport ${ports} dnat to ${slot.veth.host.ip}`,
+            `${nft} insert rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${slot.veth.host.ip} udp dport ${ports} accept`,
+          ],
+        );
+      }
+
+      this.#logger.info(`Executing assembly sequence (${commands.length} structural operations) for ${slot.name}...`);
+
+      console.log(commands);
+
       for (const cmd of commands) {
         await this.#exec(cmd);
       }
+
+      this.#logger.info(`Network pipeline for slot [${slot.id}] has been successfully established and locked.`);
     } catch (e) {
+      this.#logger.errorFrom(e, `Critical failure deploying network slot [${slot.id}]. Initiating rollback recovery...`);
+
       await Promise.all([
         this.#exec(`sudo ip link del ${slot.veth.host.name}`).catch(() => {}),
         this.#exec(`sudo ip netns del ${slot.name}`).catch(() => {}),
         this.#kv.db.remove(`network-${slot.name}-locked`).catch(() => {}),
       ]);
+
       throw e;
     }
   }
 
   async release(slot: Network.Slot) {
+    this.#logger.info(`Decommissioning network pipeline for slot [${slot.id}] (${slot.name})...`);
+
     const commands = [`sudo ip link del ${slot.veth.host.name}`, `sudo ip netns del ${slot.name}`];
 
     for (const cmd of commands) {
-      await this.#exec(cmd).catch(() => {});
+      await this.#exec(cmd).catch((err) => {
+        this.#logger.warn(`Non-fatal warning during command teardown [${cmd}]`, { err });
+      });
     }
 
-    await this.#kv.db.remove(`network-${slot.name}-locked`).catch(() => {});
+    await this.#kv.db.remove(`network-${slot.name}-locked`).catch((err) => {
+      this.#logger.warn(`Failed to safely wipe memory lock for ${slot.name}`, { err });
+    });
+
+    this.#logger.info(`Slot [${slot.id}] sandbox environment cleanly deleted.`);
   }
 
   async random() {
@@ -217,6 +287,10 @@ export class Network {
   }
 
   async init() {
+    this.#logger.info("Initializing global host network fabric...");
+
+    let cleanCount = 0;
+
     // init 时应该清理所有已创建的网络命名空间
     for (let s = Network.NS_MIN_SLOT; s <= Network.NS_MAX_SLOT; s++) {
       const slot = this.slot(s);
@@ -224,11 +298,15 @@ export class Network {
       const exists = this.#kv.db.get(key) !== undefined;
 
       if (exists) {
-        await this.release(slot);
+        await this.release(slot).then(() => {
+          cleanCount++;
+        });
       }
     }
 
-    this.#logger.info("Network slots lock storage initialized.");
+    if (cleanCount > 0) {
+      this.#logger.info(`Purged ${cleanCount} legacy/stale network namespaces during bootstrap initialization.`);
+    }
 
     const iface = await this.#findDefaultInterface();
     const exists = await this.#exec(`sudo nft list table ip ${Network.NFT_TABLE_NAT}`)
@@ -236,8 +314,10 @@ export class Network {
       .catch(() => false);
 
     if (exists) {
-      return this.#logger.info(`Nat table ${Network.NFT_TABLE_NAT} already exists, skipping init.`);
+      return this.#logger.info(`Root nat table ${Network.NFT_TABLE_NAT} already exists, skipping init.`);
     }
+
+    this.#logger.info(`Compiling root host routing masquerade tables bound to WAN interface: [${iface}]...`);
 
     const commands = [
       // 启用宿主机的内核参数 IP 转发功能
@@ -259,6 +339,8 @@ export class Network {
     for (const cmd of commands) {
       await this.#exec(cmd);
     }
+
+    this.#logger.info("Global host network infrastructure ready. Sandboxing fabric initialized.");
   }
 }
 
@@ -278,10 +360,25 @@ export namespace Network {
   export const TAP_NS_IP = "10.123.0.1";
   export const TAP_VM_IP = "10.123.0.2";
 
-  export const DNS_RESOLVERS = ["8.8.8.8", "8.8.4.4"];
+  export const DNS_RESOLVERS = ["8.8.8.8", "8.8.4.4", "114.114.114.114"];
 
   export const NFT_TABLE_FILTER = "aw-filter";
   export const NFT_TABLE_NAT = "aw-nat";
+
+  /**
+   * 私有网段
+   */
+  export const PRIVATE_CIDRS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8"];
+
+  /**
+   * 需要开放给虚机的宿主机 TCP 服务端口
+   */
+  export const EXPOSED_HOST_TCP_PORTS = [2049];
+
+  /**
+   * 需要开放给虚机的宿主机 UDP 服务端口
+   */
+  export const EXPOSED_HOST_UDP_PORTS = [];
 
   export type Slot = {
     id: number;

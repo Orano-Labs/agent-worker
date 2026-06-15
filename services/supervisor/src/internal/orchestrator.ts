@@ -16,18 +16,21 @@ import { Environment } from "@/internal/environment";
 import { Image } from "@/internal/image";
 import { Logger } from "@/internal/logger";
 import { Network } from "@/internal/network";
+import { FS } from "./fs";
 
 export class Orchestrator {
   #env: Environment;
   #logger: Logger;
   #net: Network;
   #image: Image;
+  #fs: FS;
 
   constructor() {
     this.#env = Container.inject(Environment);
     this.#logger = Container.inject(Logger).scope("Orchestrator");
     this.#net = Container.inject(Network);
     this.#image = Container.inject(Image);
+    this.#fs = Container.inject(FS);
   }
 
   async create(options?: Orchestrator.VMOptions) {
@@ -89,6 +92,7 @@ export class Orchestrator {
     const root = join(this.#env.workdir, "jailer", basename(this.#env.firecracker), id, "root");
 
     let pid: number | undefined;
+    let fspid: number | undefined;
 
     try {
       await mkdir(root, { recursive: true });
@@ -101,8 +105,11 @@ export class Orchestrator {
       const stdout = createWriteStream(join(root, "firecracker.stdout"));
       const stderr = createWriteStream(join(root, "firecracker.stderr"));
 
+      const fs = await this.#fs.create("/mnt/test", root, net);
+
       const child = spawn("sudo", args, { stdio: ["inherit", "pipe", "pipe"] });
 
+      fspid = fs.pid;
       pid = child.pid;
 
       createReadLineInterface(child.stderr).on("line", (line) => {
@@ -134,6 +141,16 @@ export class Orchestrator {
           this.#logger.info("vm has shut down cleanly.");
         } else {
           this.#logger.warn(`terminated unexpectedly with exit code ${code}.`);
+        }
+
+        console.log(fspid);
+
+        if (fspid) {
+          try {
+            process.kill(fspid, "SIGTERM");
+          } catch (error) {
+            //
+          }
         }
       });
 
@@ -190,7 +207,7 @@ export class Orchestrator {
         }),
         fc.putGuestBootSource({
           kernel_image_path: "./kernel",
-          boot_args: `console=ttyS0 reboot=k panic=1 ip=${Network.TAP_VM_IP}:${Network.TAP_NS_IP}:${Network.TAP_NS_IP}:255.255.255.0::eth0:off ${process.arch === "arm64" ? "keep_bootcon" : ""} init=/init`,
+          boot_args: `console=ttyS0 reboot=k panic=1 ip=${Network.TAP_VM_IP}:${Network.TAP_NS_IP}:${Network.TAP_NS_IP}:255.255.255.0::eth0:off ${process.arch === "arm64" ? "keep_bootcon" : ""} init=/init aw.audit_net=1 quiet loglevel=3`,
         }),
         fc.putGuestDriveById("runtime", {
           drive_id: "runtime",
@@ -210,9 +227,9 @@ export class Orchestrator {
         }),
       ]);
 
-      await fc.getExportVmConfig().then((resp) => {
-        this.#logger.info("Full vm config", resp?.data);
-      });
+      // await fc.getExportVmConfig().then((resp) => {
+      //   // this.#logger.info("Full vm config", resp?.data);
+      // });
 
       await fc.createSyncAction({
         action_type: "InstanceStart",
@@ -236,8 +253,18 @@ export class Orchestrator {
           //
         }
       }
+
+      if (fspid) {
+        try {
+          process.kill(fspid, "SIGKILL");
+        } catch (error) {
+          //
+        }
+      }
+
       await this.#net.release(net).catch(() => {});
       await rm(join(this.#env.workdir, basename(this.#env.firecracker), id)).catch(() => {});
+
       throw error;
     }
   }

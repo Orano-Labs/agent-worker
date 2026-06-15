@@ -17,7 +17,7 @@
     "build": "tsdown",
     "build:watch": "tsdown --watch",
     "lint": "biome check --write --changed",
-    "format": "biome format --write ./",
+    "format": "biome format --write ./src ./scripts",
     "typecheck": "tsc",
     "test": "vitest",
     "generate": "drizzle-kit generate",

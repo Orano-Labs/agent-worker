@@ -78,7 +78,8 @@ mkdir -p /mnt/scratch/tmp
 
 mount /dev/vdb /mnt/scratch || log_fatal "ScratchFS device missing!"
 
-mount -t nfs -o nfsvers=4,async,rsize=1048576,wsize=1048576,nocto,actimeo=60 10.123.0.1:/exports/aw-mount /workspace
+# curl http://10.123.0.1:2049
+mount -t nfs -o nfsvers=4,async,rsize=1048576,wsize=1048576,nocto,actimeo=60 10.123.0.1:/workspace /workspace
 
 log_info "All file systems mounted successfully."
 

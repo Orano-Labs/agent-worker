@@ -40,7 +40,6 @@ Container.singleton(FS, () => new FS());
   await environment.init();
   await kv.init();
   await net.init();
-  // await fs.init();
   await image.init();
 
   orchestrator.create();

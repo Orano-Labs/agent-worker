@@ -53,13 +53,9 @@ async function bootstrap() {
 
   console.log("CWD", process.cwd());
 
+  console.log("WORKSPACE", fs.readdirSync("/workspace"));
+
   runBenchmark();
-
-  const http = require("node:http");
-
-  const server = http.createServer(() => {});
-
-  server.listen(3000);
 }
 
 bootstrap();
@@ -97,5 +93,3 @@ function runBenchmark() {
   console.log("\n当前目录文件:", files);
   console.log("====================");
 }
-
-runBenchmark();

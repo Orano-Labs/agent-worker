@@ -227,8 +227,6 @@ export class Network {
 
       this.#logger.info(`Executing assembly sequence (${commands.length} structural operations) for ${slot.name}...`);
 
-      console.log(commands);
-
       for (const cmd of commands) {
         await this.#exec(cmd);
       }
@@ -379,6 +377,8 @@ export namespace Network {
    * 需要开放给虚机的宿主机 UDP 服务端口
    */
   export const EXPOSED_HOST_UDP_PORTS = [];
+
+  export const EXPOSED_NS_TCP_PORTS = [8000];
 
   export type Slot = {
     id: number;

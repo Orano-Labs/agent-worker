@@ -258,10 +258,9 @@ export class Firecracker {
     this.#client = createClient(
       createConfig({
         baseUrl: "http://localhost",
-        fetch: (input) => {
+        fetch: async (input) => {
           // @ts-expect-error
           return fetch(input, { dispatcher: this.#agent }).then((resp) => {
-            console.log(resp);
             return resp;
           });
         },

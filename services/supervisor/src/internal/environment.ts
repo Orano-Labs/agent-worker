@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { cp, mkdir, rm, stat } from "node:fs/promises";
 import { arch, homedir, platform, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Readable } from "node:stream";
@@ -122,58 +122,6 @@ export class Environment {
     }
   }
 
-  async #installJuiceFS() {
-    const arch = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : "";
-
-    if (!arch) {
-      throw new Error(`Unsupported architecture: Node.js reports '${process.arch}' but JuiceFS requires x64 or arm64.`);
-    }
-
-    let exists = true;
-
-    try {
-      await stat(this.juicefs);
-    } catch {
-      exists = false;
-    }
-
-    if (exists) {
-      return this.#logger.info("JuiceFS binary already exists. Skipping download.");
-    }
-
-    const url = Environment.JUICEFS_RELEASE_DOWNLOAD_URL.replaceAll("<ARCH>", arch);
-    const dst = join(tmpdir(), `jfs-download-${crypto.randomUUID()}`);
-
-    this.#logger.info(`Downloading JuiceFS ${Environment.JUICEFS_VERSION} from ${url}...`);
-
-    const body = await fetch(url).then((response) => {
-      if (!response.ok) {
-        throw new Error(`Download failed (${url}): ${response.statusText}`);
-      }
-
-      if (!response.body) {
-        throw new Error(`Download failed (${url}): Response body is null`);
-      }
-
-      return response.body;
-    });
-
-    try {
-      this.#logger.info(`Extracting JuiceFS assets to temporary directory: ${dst}`);
-
-      await mkdir(dst, { recursive: true });
-      await pipeline(Readable.fromWeb(body), x({ cwd: dst }));
-
-      this.#logger.info(`Copying JuiceFS binary to production bin directory...`);
-
-      await cp(join(dst, "juicefs"), join(this.workdir, "bin", basename(this.juicefs)));
-
-      this.#logger.info(`JuiceFS binary installed successfully.`);
-    } finally {
-      await rm(dst).catch(() => {});
-    }
-  }
-
   async init() {
     this.#logger.info(`Working directory base path: ${this.workdir}`);
 
@@ -194,6 +142,10 @@ export class Environment {
         path: join(this.workdir, "images"),
         description: "images",
       },
+      {
+        path: join(this.workdir, "fs"),
+        description: "juice-fs mount point",
+      },
     ];
 
     for (const directory of directories) {
@@ -203,7 +155,6 @@ export class Environment {
     this.#logger.info(`Verifying and installing core component dependencies...`);
 
     await this.#installFirecracker();
-    await this.#installJuiceFS();
 
     this.#logger.info(`Environment initialization completed successfully.`);
   }
@@ -213,8 +164,4 @@ export namespace Environment {
   export const FIRECRACKER_REPO = "https://github.com/firecracker-microvm/firecracker";
   export const FIRECRACKER_VERSION = "v1.16.0";
   export const FIRECRACKER_RELEASE_DOWNLOAD_URL = `${FIRECRACKER_REPO}/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-<ARCH>.tgz`;
-
-  export const JUICEFS_REPO = "https://github.com/juicedata/juicefs";
-  export const JUICEFS_VERSION = "v1.3.1";
-  export const JUICEFS_RELEASE_DOWNLOAD_URL = `${JUICEFS_REPO}/releases/download/${JUICEFS_VERSION}/juicefs-${JUICEFS_VERSION.slice(1)}-linux-<ARCH>.tar.gz`;
 }

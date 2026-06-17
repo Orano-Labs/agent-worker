@@ -11,6 +11,7 @@ import { FS } from "./internal/fs";
 import { Image } from "./internal/image";
 import { KVStorage } from "./internal/kv-storage";
 import { Orchestrator } from "./internal/orchestrator";
+import { Runner } from "./internal/runner";
 
 Container.singleton(CommandLine, () => new CommandLine());
 Container.singleton(Logger, () => new Logger());
@@ -24,6 +25,7 @@ Container.singleton(KVStorage, () => new KVStorage());
 Container.singleton(Network, () => new Network());
 Container.singleton(Orchestrator, () => new Orchestrator());
 Container.singleton(FS, () => new FS());
+Container.singleton(Runner, () => new Runner());
 
 (async () => {
   const variables = Container.inject(Variables);
@@ -40,7 +42,25 @@ Container.singleton(FS, () => new FS());
   await environment.init();
   await kv.init();
   await net.init();
+  await fs.init();
   await image.init();
 
-  orchestrator.create();
-})();
+  const taskId = await orchestrator.create({
+    config: {
+      machineTier: "minimal",
+      projectId: crypto.randomUUID(),
+      env: {},
+      metadata: {},
+    },
+  });
+
+  // await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  // await orchestrator.kill(taskId).then(() => {
+  //   console.log("Done !!!!!")
+  // })
+})().catch((error) => {
+  console.log(error);
+});
+
+process.on("unhandledRejection", console.log);

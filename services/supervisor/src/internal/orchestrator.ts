@@ -1,22 +1,15 @@
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { cp, mkdir, readFile, rm } from "node:fs/promises";
-import { createConnection } from "node:net";
-import { userInfo } from "node:os";
-import { basename, join } from "node:path";
-import { createInterface as createReadLineInterface } from "node:readline";
-import { asError } from "catch-unknown";
 import { customAlphabet } from "nanoid";
 import { alphanumeric } from "nanoid-dictionary";
 
 import { Container } from "@/helpers/container";
-import { Firecracker } from "@/helpers/firecracker";
 import { Environment } from "@/internal/environment";
 import { Image } from "@/internal/image";
 import { Logger } from "@/internal/logger";
 import { Network } from "@/internal/network";
 import { FS } from "./fs";
+import { Runner } from "./runner";
+
+// sudo sysctl -w vm.nr_hugepages=2048
 
 export class Orchestrator {
   #env: Environment;
@@ -24,6 +17,7 @@ export class Orchestrator {
   #net: Network;
   #image: Image;
   #fs: FS;
+  #runner: Runner;
 
   constructor() {
     this.#env = Container.inject(Environment);
@@ -31,258 +25,181 @@ export class Orchestrator {
     this.#net = Container.inject(Network);
     this.#image = Container.inject(Image);
     this.#fs = Container.inject(FS);
+    this.#runner = Container.inject(Runner);
+
+    this.#tasks = new Map();
   }
 
-  async create(options?: Orchestrator.VMOptions) {
+  #tasks: Map<string, Orchestrator.Task>;
+
+  async kill(taskId: string, signal: NodeJS.Signals = "SIGKILL") {
+    this.#tasks.get(taskId)?.runner.process.kill(signal);
+
+    return this.taskClosed(taskId);
+  }
+
+  async taskClosed(taskId: string) {
+    await this.#tasks.get(taskId)?.closed;
+  }
+
+  async create(options: Orchestrator.Options) {
     const id = customAlphabet(alphanumeric, 12)();
-    const user = userInfo();
-    const net = await this.#net.random();
-    const mac = (() => {
-      const hash = createHash("sha256").update(id).digest();
-      const bytes: string[] = [];
 
-      for (let i = 0; i < 5; i++) {
-        bytes.push(hash[i].toString(16).padStart(2, "0"));
-      }
+    const logger = this.#logger.scope(`TASK(${id})`);
 
-      return `02:${bytes.join(":")}`;
-    })();
-
-    const cpuCapacity = options?.cpuCapacity ?? 4;
-    const memory = options?.memory ?? 1024;
-
-    const args = [this.#env.jailer];
-
-    args.push("--exec-file", this.#env.firecracker);
-    args.push("--chroot-base-dir", join(this.#env.workdir, "jailer"));
-    args.push("--netns", `/var/run/netns/${net.name}`);
-    args.push("--gid", `${user.gid}`);
-    args.push("--uid", `${user.uid}`);
-    args.push("--id", `${id}`);
-
-    const CPU_CFS_PERIOD_US = 100000;
-    const VMM_OVERHEAD_MIB = 64;
-
-    let version = 2;
+    let net: Network.Namespace;
+    let runner: Runner.Instance;
+    let fs: FS.Instance;
 
     try {
-      await readFile("/sys/fs/cgroup/cgroup.controllers", "utf-8");
-    } catch {
-      version = 1;
-    }
-
-    const cpuPeriodUs = CPU_CFS_PERIOD_US;
-    const cpuQuotaUs = cpuCapacity * CPU_CFS_PERIOD_US;
-
-    const memoryLimitBytes = (memory + VMM_OVERHEAD_MIB) * 1024 * 1024;
-
-    if (version === 2) {
-      args.push("--cgroup-version", "2");
-      args.push("--cgroup", `cpu.max=${cpuQuotaUs} ${cpuPeriodUs}`);
-      args.push("--cgroup", `memory.max=${memoryLimitBytes}`);
-    } else {
-      args.push("--cgroup", `cpu.cfs_quota_us=${cpuQuotaUs}`);
-      args.push("--cgroup", `cpu.cfs_period_us=${cpuPeriodUs}`);
-      args.push("--cgroup", `memory.limit_in_bytes=${memoryLimitBytes}`);
-    }
-
-    args.push("--");
-    args.push("--api-sock", "/firecracker.sock");
-
-    const root = join(this.#env.workdir, "jailer", basename(this.#env.firecracker), id, "root");
-
-    let pid: number | undefined;
-    let fspid: number | undefined;
-
-    try {
-      await mkdir(root, { recursive: true });
-
-      await cp(this.#env.kernel, join(root, "kernel"));
-      await cp(this.#image.runtime, join(root, "runtime.squashfs"));
-
-      await this.#image.createScratchFS(join(root, "scratch.ext4"));
-
-      const stdout = createWriteStream(join(root, "firecracker.stdout"));
-      const stderr = createWriteStream(join(root, "firecracker.stderr"));
-
-      const fs = await this.#fs.create("/mnt/test", root, net);
-
-      const child = spawn("sudo", args, { stdio: ["inherit", "pipe", "pipe"] });
-
-      fspid = fs.pid;
-      pid = child.pid;
-
-      createReadLineInterface(child.stderr).on("line", (line) => {
-        if (process.env.NODE_ENV !== "production") {
-          this.#logger.debug(line);
-        }
-
-        stderr.write(`${line}\n`);
-      });
-
-      createReadLineInterface(child.stdout).on("line", (line) => {
-        if (process.env.NODE_ENV !== "production") {
-          this.#logger.debug(line);
-        }
-
-        stdout.write(`${line}\n`);
-      });
-
-      await new Promise<void>((resolve, reject) => {
-        child.on("spawn", resolve);
-        child.on("error", reject);
-      });
-
-      child.on("close", (code) => {
-        stderr.end();
-        stdout.end();
-
-        if (code === 0) {
-          this.#logger.info("vm has shut down cleanly.");
-        } else {
-          this.#logger.warn(`terminated unexpectedly with exit code ${code}.`);
-        }
-
-        console.log(fspid);
-
-        if (fspid) {
-          try {
-            process.kill(fspid, "SIGTERM");
-          } catch (error) {
-            //
-          }
-        }
-      });
-
-      const socket = join(root, "firecracker.sock");
-      const timeoutSignal = AbortSignal.timeout(1000 * 2);
-
-      await new Promise<void>((resolve, reject) => {
-        let error: unknown;
-
-        const attempt = () => {
-          if (timeoutSignal.aborted) {
-            return reject(new Error(`Socket ${socket} not ready.${error ? ` Last error: ${asError(error).message}` : ""}`));
-          }
-
-          const connection = createConnection({ path: socket });
-
-          const cleanup = () => {
-            connection.removeAllListeners();
-            connection.destroy();
-          };
-
-          connection.once("connect", () => {
-            cleanup();
-            resolve();
-          });
-
-          connection.once("error", (e) => {
-            cleanup();
-            setTimeout(attempt, 50);
-
-            // this.#logger.errorFrom(e, "xxx");
-
-            error = e;
-          });
-        };
-
-        attempt();
-      });
-
-      const fc = new Firecracker(socket);
-
-      await Promise.all([
-        fc.putLogger({ log_path: "./firecracker.log", level: "Debug", show_level: true, show_log_origin: true }),
-        fc.putGuestNetworkInterfaceById("eth0", { iface_id: "eth0", guest_mac: mac, host_dev_name: Network.TAP }),
-        fc.putMmdsConfig({ version: "V2", network_interfaces: ["eth0"], ipv4_address: "169.254.169.254", imds_compat: false }),
-        fc.putMmds({ latest: { "meta-data": options?.metadata ?? {} } }),
-        fc.putMachineConfiguration({
-          cpu_template: "None",
-          mem_size_mib: memory,
-          vcpu_count: cpuCapacity > 1 ? Math.ceil(cpuCapacity / 2) * 2 : 1,
-          track_dirty_pages: false,
-          smt: false,
-          huge_pages: "2M",
-        }),
-        fc.putGuestBootSource({
-          kernel_image_path: "./kernel",
-          boot_args: `console=ttyS0 reboot=k panic=1 ip=${Network.TAP_VM_IP}:${Network.TAP_NS_IP}:${Network.TAP_NS_IP}:255.255.255.0::eth0:off ${process.arch === "arm64" ? "keep_bootcon" : ""} init=/init aw.audit_net=1 quiet loglevel=3`,
-        }),
-        fc.putGuestDriveById("runtime", {
-          drive_id: "runtime",
-          path_on_host: "./runtime.squashfs",
-          is_root_device: true,
-          is_read_only: true,
-          cache_type: "Writeback",
-          io_engine: "Async",
-        }),
-        fc.putGuestDriveById("scratch", {
-          drive_id: "scratch",
-          path_on_host: "./scratch.ext4",
-          is_root_device: false,
-          is_read_only: false,
-          cache_type: "Writeback",
-          io_engine: "Async",
-        }),
-      ]);
-
-      // await fc.getExportVmConfig().then((resp) => {
-      //   // this.#logger.info("Full vm config", resp?.data);
-      // });
-
-      await fc.createSyncAction({
-        action_type: "InstanceStart",
-      });
-
-      const vm: Orchestrator.VM = {
+      net = await this.#net.random();
+      runner = await this.#runner.create({
         id,
-        ip: net.veth.host.ip,
-        root,
-        chroot: join(this.#env.workdir, "firecracker", id),
-        fc,
-        abortController: new AbortController(),
-      };
+        net,
+        config: options.config,
+      });
+      fs = await this.#fs.create({
+        id,
+        net,
+        config: options.config,
+        root: runner.root,
+        password: runner.fs.password,
+        username: runner.fs.username,
+      });
 
-      return vm;
+      await runner.fc.createSyncAction({ action_type: "InstanceStart" });
     } catch (error) {
-      if (pid) {
+      logger.errorFrom(error, "Failed to initialize task instances, starting forced resource cleanup...");
+
+      // @ts-expect-error
+      if (net) {
+        await this.#net.release(net).catch((err) => {
+          logger.warn("Failed to release network namespace", { err });
+        });
+      }
+
+      // @ts-expect-error
+      if (fs && fs.process.exitCode !== null) {
         try {
-          process.kill(pid, "SIGKILL");
-        } catch (error) {
-          //
+          fs.process.kill("SIGKILL");
+        } catch (err) {
+          logger.warn(`Exception occurred while killing FS child process (PID: ${fs.process.pid})`, { err });
         }
       }
 
-      if (fspid) {
+      // @ts-expect-error
+      if (runner && runner.process.exitCode !== null) {
         try {
-          process.kill(fspid, "SIGKILL");
-        } catch (error) {
-          //
+          runner.process.kill("SIGKILL");
+        } catch (err) {
+          logger.warn(`Exception occurred while killing Runner child process (PID: ${runner.process.pid})`, { err });
         }
       }
-
-      await this.#net.release(net).catch(() => {});
-      await rm(join(this.#env.workdir, basename(this.#env.firecracker), id)).catch(() => {});
 
       throw error;
     }
+
+    const closed = (async () => {
+      const status = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        runner.process.once("close", (code, signal) => {
+          resolve({ code, signal });
+        });
+      });
+
+      if (fs && fs.process && fs.process.exitCode === null) {
+        logger.info("Runner closed. Initiating graceful shutdown for FS...");
+
+        try {
+          fs.process.kill("SIGINT");
+
+          const fsClosed = new Promise<void>((resolve) => {
+            fs!.process.once("close", (...args) => {
+              resolve();
+            });
+          });
+
+          const fallbackTimeout = new Promise<"TIMEOUT">((resolve) => {
+            setTimeout(() => resolve("TIMEOUT"), 30000);
+          });
+
+          const result = await Promise.race([fsClosed, fallbackTimeout]);
+
+          if (result === "TIMEOUT") {
+            if (fs.process.exitCode === null) {
+              logger.warn("FS graceful shutdown timed out after 30s. Forcing SIGKILL...");
+              fs.process.kill("SIGKILL");
+            }
+          } else {
+            logger.info("FS exited gracefully within 30s.");
+          }
+        } catch (err) {
+          logger.warn("Exception occurred during FS graceful shutdown phase", { err });
+        }
+      }
+
+      return status;
+    })();
+
+    const task: Orchestrator.Task = {
+      net,
+      runner,
+      fs,
+      config: options.config,
+      closed,
+    };
+
+    this.#tasks.set(id, task);
+
+    return id;
   }
+
+  async unmount() {}
 }
 
 export namespace Orchestrator {
-  export type VM = {
-    id: string;
-    abortController: AbortController;
-    ip: string;
-    root: string;
-    chroot: string;
-    fc: Firecracker;
+  export type Options = {
+    config: TaskConfig;
   };
 
-  export type VMOptions = {
-    cpuCapacity?: number;
-    memory?: number;
-    metadata?: Record<string, unknown>;
+  export type Task = {
+    /**
+     * NetNamespace
+     */
+    readonly net: Network.Namespace;
+    /**
+     * 用于运行该任务的虚拟机实例
+     */
+    readonly runner: Runner.Instance;
+    /**
+     * 该任务的文件系统的 NFS 服务
+     */
+    readonly fs: FS.Instance;
+    /**
+     * 任务运行配置
+     */
+    readonly config: TaskConfig;
+    /**
+     * 一个 Promise 当任务结束时 resolve
+     */
+    readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  };
+
+  export type TaskConfig = {
+    /**
+     * 项目 ID
+     */
+    readonly projectId: string;
+    /**
+     * 任务运行时环境变量
+     */
+    readonly env: Record<string, string>;
+    /**
+     * 机器规格
+     */
+    readonly machineTier: "minimal" | "standard" | "performance";
+    /**
+     * 元数据
+     */
+    readonly metadata: Record<string, unknown>;
   };
 }

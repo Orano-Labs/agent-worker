@@ -27,16 +27,13 @@ export class Image {
   }
 
   async init() {
-    let exists = false;
+    const exists = false;
 
     try {
-      await stat(this.runtime).then((stats) => {
-        exists = stats.isFile();
-      });
+      await stat(this.runtime);
     } catch (e) {
       if (e instanceof Error && "code" in e && e.code !== "ENOENT") {
-        this.#logger.errorFrom(e, `Failed to check status for runtime image path: ${this.runtime}`);
-        process.exit(1);
+        throw new Error(`Failed to check status for runtime image path: ${this.runtime}`);
       }
     }
 
@@ -48,7 +45,6 @@ export class Image {
 
     let containerExists = true;
     let containerTemp = "";
-    let ok = false;
 
     try {
       this.#logger.info("Installing required packages (buildah, qemu-utils, e2fsprogs)...");
@@ -79,7 +75,7 @@ export class Image {
 
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk update --repository=${MIRROR_MAIN}`);
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ca-certificates --repository=${MIRROR_MAIN}`);
-        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add tini nodejs curl fuse bubblewrap --repository=${MIRROR_MAIN}`);
+        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add tini nodejs curl fuse davfs2 --repository=${MIRROR_MAIN}`);
 
         this.#logger.info(`Renaming container to ${RUNTIME_IMAGE_CONTAINER_NAME} for future caching...`);
 
@@ -91,9 +87,11 @@ export class Image {
       this.#logger.info("Injecting DNS configurations and init scripts into container...");
 
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/app")} /app`);
 
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /init`);
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /entrypoint`);
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- mkdir -p /workspace`);
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);
@@ -101,10 +99,6 @@ export class Image {
       await this.#exec(
         `buildah unshare sh -c 'set -e && m=$(buildah mount ${RUNTIME_IMAGE_CONTAINER_NAME}) && mksquashfs "$m" "${this.runtime}" -comp xz -noappend'`,
       );
-
-      ok = true;
-    } catch (error) {
-      this.#logger.errorFrom(error, "An error occurred during rootfs initialization.");
     } finally {
       if (containerTemp) {
         this.#logger.debug(`Destroying buildah container [${containerTemp}]...`);
@@ -118,11 +112,7 @@ export class Image {
       }
     }
 
-    if (!ok) {
-      process.exit(1);
-    } else {
-      this.#logger.info(`Base image snapshot archived successfully at: ${this.runtime}`);
-    }
+    this.#logger.info(`Base image snapshot archived successfully at: ${this.runtime}`);
   }
 
   async createScratchFS(dest: string, size = 512) {

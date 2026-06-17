@@ -9,24 +9,15 @@ const PRODUCTION = process.env.NODE_ENV === "production";
 
 export class Logger {
   #logger: ReturnType<typeof pino>;
-  #scope: string[];
 
   #cli: CommandLine;
 
   constructor(options?: Logger.Options) {
     this.#cli = Container.inject(CommandLine);
 
-    this.#scope = [];
-
     if (options?.parent) {
-      this.#scope = [...options.parent.#scope];
-
-      if (options.scope) {
-        this.#scope.push(options.scope);
-      }
-
       this.#logger = options.parent.#logger.child(options.context || {}, {
-        msgPrefix: `[${this.#scope.join("::")}] `,
+        msgPrefix: options.scope ? `[${options.scope}] ` : undefined,
       });
     } else {
       this.#logger = pino(

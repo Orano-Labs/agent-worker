@@ -74,17 +74,17 @@ export class Network {
     throw new Error("Unable to find default WAN interface. Please check network configuration.");
   }
 
-  slot(id: number) {
-    if (!Number.isInteger(id) || id < Network.NS_MIN_SLOT || id > Network.NS_MAX_SLOT) {
-      throw new Error(`Invalid slot: ${id}. Range: ${Network.NS_MIN_SLOT}-${Network.NS_MAX_SLOT}`);
+  namespace(slot: number) {
+    if (!Number.isInteger(slot) || slot < Network.NS_MIN_SLOT || slot > Network.NS_MAX_SLOT) {
+      throw new Error(`Invalid slot: ${slot}. Range: ${Network.NS_MIN_SLOT}-${Network.NS_MAX_SLOT}`);
     }
 
-    const octet = Math.floor(id / 64);
-    const start = (id % 64) * 4;
-    const hex = id.toString(16).padStart(4, "0");
+    const octet = Math.floor(slot / 64);
+    const start = (slot % 64) * 4;
+    const hex = slot.toString(16).padStart(4, "0");
 
-    const slot: Network.Slot = {
-      id,
+    const ns: Network.Namespace = {
+      slot: slot,
       name: `aw-${hex}`,
       veth: {
         host: {
@@ -98,63 +98,63 @@ export class Network {
       },
     };
 
-    return slot;
+    return ns;
   }
 
-  async #install(slot: Network.Slot) {
-    this.#logger.info(`Starting network workspace deployment for slot [${slot.id}] (Namespace: ${slot.name})...`);
+  async #install(ns: Network.Namespace) {
+    this.#logger.info(`Starting network workspace deployment for slot [${ns.slot}] (Namespace: ${ns.name})...`);
 
-    const locked = this.#kv.db.get(`network-${slot.name}-locked`);
+    const locked = this.#kv.db.get(`network-${ns.name}-locked`);
 
     if (!locked) {
-      const ok = await this.#kv.db.ifNoExists(`network-${slot.name}-locked`, () => {
-        this.#kv.db.put(`network-${slot.name}-locked`, 1);
+      const ok = await this.#kv.db.ifNoExists(`network-${ns.name}-locked`, () => {
+        this.#kv.db.put(`network-${ns.name}-locked`, 1);
       });
 
       if (!ok) {
-        throw new Error(`Slot ${slot.id} is already deployed or locked.`);
+        throw new Error(`Slot ${ns.slot} is already deployed or locked.`);
       }
     }
 
     try {
-      this.#logger.info(`Allocating topological addresses: Host VETH: ${slot.veth.host.ip}/30, Guest VETH: ${slot.veth.guest.ip}/30`);
+      this.#logger.info(`Allocating topological addresses: Host VETH: ${ns.veth.host.ip}/30, Guest VETH: ${ns.veth.guest.ip}/30`);
 
       const commands = [
         // 创建硬隔离的网络命名空间，并建立一对连接宿主机与该命名空间的虚拟网线（veth pair）
         // 分配 /30 精简子网 IP 并激活宿主机端网卡，将 MTU 统一设为 1500
-        `sudo ip netns add ${slot.name}`,
-        `sudo ip link add ${slot.veth.host.name} type veth peer name ${slot.veth.guest.name}`,
-        `sudo ip link set ${slot.veth.guest.name} netns ${slot.name}`,
-        `sudo ip addr add ${slot.veth.host.ip}/30 dev ${slot.veth.host.name}`,
-        `sudo ip link set ${slot.veth.host.name} up`,
-        `sudo ip link set ${slot.veth.host.name} mtu 1500`,
+        `sudo ip netns add ${ns.name}`,
+        `sudo ip link add ${ns.veth.host.name} type veth peer name ${ns.veth.guest.name}`,
+        `sudo ip link set ${ns.veth.guest.name} netns ${ns.name}`,
+        `sudo ip addr add ${ns.veth.host.ip}/30 dev ${ns.veth.host.name}`,
+        `sudo ip link set ${ns.veth.host.name} up`,
+        `sudo ip link set ${ns.veth.host.name} mtu 1500`,
 
         // 进入命名空间内部，配置并激活虚拟网线出口端（guest）的 IP 和 MTU
         // 同时激活本地回环接口（lo），保障内部网络栈基础进程的正常运转
-        `sudo ip netns exec ${slot.name} ip link set ${slot.veth.guest.name} mtu 1500`,
-        `sudo ip netns exec ${slot.name} ip addr add ${slot.veth.guest.ip}/30 dev ${slot.veth.guest.name}`,
-        `sudo ip netns exec ${slot.name} ip link set ${slot.veth.guest.name} up`,
-        `sudo ip netns exec ${slot.name} ip link set lo up`,
+        `sudo ip netns exec ${ns.name} ip link set ${ns.veth.guest.name} mtu 1500`,
+        `sudo ip netns exec ${ns.name} ip addr add ${ns.veth.guest.ip}/30 dev ${ns.veth.guest.name}`,
+        `sudo ip netns exec ${ns.name} ip link set ${ns.veth.guest.name} up`,
+        `sudo ip netns exec ${ns.name} ip link set lo up`,
 
         // 创建并激活二层虚拟网卡（TAP 设备）用以桥接虚机，并分配 /24 子网 IP 作为其内网网关
-        `sudo ip netns exec ${slot.name} ip tuntap add ${Network.TAP} mode tap`,
-        `sudo ip netns exec ${slot.name} ip addr add ${Network.TAP_NS_IP}/24 dev ${Network.TAP}`,
-        `sudo ip netns exec ${slot.name} ip link set ${Network.TAP} up`,
+        `sudo ip netns exec ${ns.name} ip tuntap add ${Network.TAP} mode tap`,
+        `sudo ip netns exec ${ns.name} ip addr add ${Network.TAP_NS_IP}/24 dev ${Network.TAP}`,
+        `sudo ip netns exec ${ns.name} ip link set ${Network.TAP} up`,
 
         // 配置全局默认路由，将命名空间内所有去往外网的流量定向到虚拟网线的宿主机端
-        `sudo ip netns exec ${slot.name} ip route add default via ${slot.veth.host.ip}`,
+        `sudo ip netns exec ${ns.name} ip route add default via ${ns.veth.host.ip}`,
 
         // 开启内核 IP 转发使其具备路由能力，并启用严格的反向路径过滤（rp_filter）防范 IP 欺骗
-        `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.ip_forward=1`,
+        `sudo ip netns exec ${ns.name} sysctl -w net.ipv4.ip_forward=1`,
         // `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.conf.all.rp_filter=1`,
         // `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.conf.default.rp_filter=1`,
       ];
 
-      const nft = `sudo ip netns exec ${slot.name} nft`;
+      const nft = `sudo ip netns exec ${ns.name} nft`;
       const dnsSet = `{ ${Network.DNS_RESOLVERS.join(", ")} }`;
       const privateCIDRSet = `{ ${Network.PRIVATE_CIDRS.join(", ")} }`;
 
-      this.#logger.info(`Compiling security isolation firewalls for ${slot.name} (Table: ${Network.NFT_TABLE_FILTER})...`);
+      this.#logger.info(`Compiling security isolation firewalls for ${ns.name} (Table: ${Network.NFT_TABLE_FILTER})...`);
 
       commands.push(
         ...[
@@ -176,11 +176,11 @@ export class Network {
           `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} accept`,
 
           // 入网放行，无条件接受外部流向虚机（TAP）的所有合法响应流量
-          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${slot.veth.guest.name} oifname ${Network.TAP} accept`,
+          `${nft} add rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${ns.veth.guest.name} oifname ${Network.TAP} accept`,
         ],
       );
 
-      this.#logger.info(`Compiling dynamic NAT topology rules for ${slot.name} (Table: ${Network.NFT_TABLE_NAT})...`);
+      this.#logger.info(`Compiling dynamic NAT topology rules for ${ns.name} (Table: ${Network.NFT_TABLE_NAT})...`);
 
       commands.push(
         ...[
@@ -190,8 +190,8 @@ export class Network {
           `${nft} add chain ip ${Network.NFT_TABLE_NAT} postrouting '{ type nat hook postrouting priority 100 ; }'`,
 
           // 出网执行 Masquerade (SNAT) 隐蔽虚机内网，入网执行 DNAT 将外网流量映射至虚机真实 IP
-          `${nft} add rule ip ${Network.NFT_TABLE_NAT} postrouting oifname ${slot.veth.guest.name} masquerade`,
-          `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${slot.veth.guest.name} ip daddr ${slot.veth.guest.ip} dnat to ${Network.TAP_VM_IP}`,
+          `${nft} add rule ip ${Network.NFT_TABLE_NAT} postrouting oifname ${ns.veth.guest.name} masquerade`,
+          `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${ns.veth.guest.name} ip daddr ${ns.veth.guest.ip} dnat to ${Network.TAP_VM_IP}`,
         ],
       );
 
@@ -202,12 +202,12 @@ export class Network {
       if (Network.EXPOSED_HOST_TCP_PORTS.length > 0) {
         const ports = `{ ${Network.EXPOSED_HOST_TCP_PORTS.join(", ")} }`;
 
-        this.#logger.info(`Injecting host TCP port safe-exposure hooks: ${ports} -> ${slot.veth.host.ip}`);
+        this.#logger.info(`Injecting host TCP port safe-exposure hooks: ${ports} -> ${ns.veth.host.ip}`);
 
         commands.push(
           ...[
-            `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} tcp dport ${ports} dnat to ${slot.veth.host.ip}`,
-            `${nft} insert rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${slot.veth.host.ip} tcp dport ${ports} accept`,
+            `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} tcp dport ${ports} dnat to ${ns.veth.host.ip}`,
+            `${nft} insert rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${ns.veth.host.ip} tcp dport ${ports} accept`,
           ],
         );
       }
@@ -215,40 +215,40 @@ export class Network {
       if (Network.EXPOSED_HOST_UDP_PORTS.length > 0) {
         const ports = `{ ${Network.EXPOSED_HOST_UDP_PORTS.join(", ")} }`;
 
-        this.#logger.info(`Injecting host UDP port safe-exposure hooks: ${ports} -> ${slot.veth.host.ip}`);
+        this.#logger.info(`Injecting host UDP port safe-exposure hooks: ${ports} -> ${ns.veth.host.ip}`);
 
         commands.push(
           ...[
-            `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} udp dport ${ports} dnat to ${slot.veth.host.ip}`,
-            `${nft} insert rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${slot.veth.host.ip} udp dport ${ports} accept`,
+            `${nft} add rule ip ${Network.NFT_TABLE_NAT} prerouting iifname ${Network.TAP} ip daddr ${Network.TAP_NS_IP} udp dport ${ports} dnat to ${ns.veth.host.ip}`,
+            `${nft} insert rule inet ${Network.NFT_TABLE_FILTER} forward iifname ${Network.TAP} ip daddr ${ns.veth.host.ip} udp dport ${ports} accept`,
           ],
         );
       }
 
-      this.#logger.info(`Executing assembly sequence (${commands.length} structural operations) for ${slot.name}...`);
+      this.#logger.info(`Executing assembly sequence (${commands.length} structural operations) for ${ns.name}...`);
 
       for (const cmd of commands) {
         await this.#exec(cmd);
       }
 
-      this.#logger.info(`Network pipeline for slot [${slot.id}] has been successfully established and locked.`);
+      this.#logger.info(`Network pipeline for slot [${ns.slot}] has been successfully established and locked.`);
     } catch (e) {
-      this.#logger.errorFrom(e, `Critical failure deploying network slot [${slot.id}]. Initiating rollback recovery...`);
+      this.#logger.errorFrom(e, `Critical failure deploying network slot [${ns.slot}]. Initiating rollback recovery...`);
 
       await Promise.all([
-        this.#exec(`sudo ip link del ${slot.veth.host.name}`).catch(() => {}),
-        this.#exec(`sudo ip netns del ${slot.name}`).catch(() => {}),
-        this.#kv.db.remove(`network-${slot.name}-locked`).catch(() => {}),
+        this.#exec(`sudo ip link del ${ns.veth.host.name}`).catch(() => {}),
+        this.#exec(`sudo ip netns del ${ns.name}`).catch(() => {}),
+        this.#kv.db.remove(`network-${ns.name}-locked`).catch(() => {}),
       ]);
 
       throw e;
     }
   }
 
-  async release(slot: Network.Slot) {
-    this.#logger.info(`Decommissioning network pipeline for slot [${slot.id}] (${slot.name})...`);
+  async release(ns: Network.Namespace) {
+    this.#logger.info(`Decommissioning network pipeline for slot [${ns.slot}] (${ns.name})...`);
 
-    const commands = [`sudo ip link del ${slot.veth.host.name}`, `sudo ip netns del ${slot.name}`];
+    const commands = [`sudo ip link del ${ns.veth.host.name}`, `sudo ip netns del ${ns.name}`];
 
     for (const cmd of commands) {
       await this.#exec(cmd).catch((err) => {
@@ -256,16 +256,16 @@ export class Network {
       });
     }
 
-    await this.#kv.db.remove(`network-${slot.name}-locked`).catch((err) => {
-      this.#logger.warn(`Failed to safely wipe memory lock for ${slot.name}`, { err });
+    await this.#kv.db.remove(`network-${ns.name}-locked`).catch((err) => {
+      this.#logger.warn(`Failed to safely wipe memory lock for ${ns.name}`, { err });
     });
 
-    this.#logger.info(`Slot [${slot.id}] sandbox environment cleanly deleted.`);
+    this.#logger.info(`Slot [${ns.slot}] sandbox environment cleanly deleted.`);
   }
 
   async random() {
     for (let s = Network.NS_MIN_SLOT; s <= Network.NS_MAX_SLOT; s++) {
-      const current = this.slot(s);
+      const current = this.namespace(s);
       const key = `network-${current.name}-locked`;
 
       if (this.#kv.db.get(key) !== undefined) {
@@ -281,7 +281,7 @@ export class Network {
       }
     }
 
-    throw new Error("No available network slots left.");
+    throw new Error("No available network namespace left.");
   }
 
   async init() {
@@ -291,8 +291,8 @@ export class Network {
 
     // init 时应该清理所有已创建的网络命名空间
     for (let s = Network.NS_MIN_SLOT; s <= Network.NS_MAX_SLOT; s++) {
-      const slot = this.slot(s);
-      const key = `network-${this.slot(s).name}-locked`;
+      const slot = this.namespace(s);
+      const key = `network-${this.namespace(s).name}-locked`;
       const exists = this.#kv.db.get(key) !== undefined;
 
       if (exists) {
@@ -376,13 +376,20 @@ export namespace Network {
   /**
    * 需要开放给虚机的宿主机 UDP 服务端口
    */
-  export const EXPOSED_HOST_UDP_PORTS = [];
+  export const EXPOSED_HOST_UDP_PORTS = [2049];
 
-  export const EXPOSED_NS_TCP_PORTS = [8000];
-
-  export type Slot = {
-    id: number;
-    name: string;
-    veth: Record<"host" | "guest", { name: string; ip: string }>;
+  /**
+   * 表示一个命名空间
+   */
+  export type Namespace = {
+    readonly slot: number;
+    readonly name: string;
+    readonly veth: Record<
+      "host" | "guest",
+      {
+        readonly name: string;
+        readonly ip: string;
+      }
+    >;
   };
 }

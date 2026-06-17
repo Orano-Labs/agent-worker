@@ -51,45 +51,11 @@ async function bootstrap() {
     return null;
   }
 
-  console.log("CWD", process.cwd());
+  setInterval(() => {
+    console.log("CWD", process.cwd());
+  }, 10000);
 
-  console.log("WORKSPACE", fs.readdirSync("/workspace"));
-
-  runBenchmark();
+  require("./dav-benchmark");
 }
 
 bootstrap();
-
-const ph = require("node:perf_hooks");
-
-function runBenchmark() {
-  console.log("=== 开始性能测试 ===");
-
-  // 1. 测试小文件写入
-  const t0 = ph.performance.now();
-  fs.writeFileSync("/workspace/test", "Hello!!!", "utf8");
-  const t1 = ph.performance.now();
-  console.log(`1. 小文件写入耗时: ${(t1 - t0).toFixed(2)} ms`);
-
-  // 2. 测试大文件内存分配开销
-  const t2 = ph.performance.now();
-  // Buffer.alloc 会在内存中把 100MB 全部用 'A' 填充，这本身就很消耗 CPU
-  const largeBuffer = Buffer.alloc(100 * 1024 * 1024, "A");
-  const t3 = ph.performance.now();
-  console.log(`2. 100MB Buffer 内存分配耗时: ${(t3 - t2).toFixed(2)} ms`);
-
-  // 3. 测试大文件同步写入
-  const t4 = ph.performance.now();
-  fs.writeFileSync("/workspace/large.bin", largeBuffer);
-  const t5 = ph.performance.now();
-  console.log(`3. 100MB 大文件同步写入耗时: ${(t5 - t4).toFixed(2)} ms`);
-
-  // 4. 测试读取目录
-  const t6 = ph.performance.now();
-  const files = fs.readdirSync("/workspace");
-  const t7 = ph.performance.now();
-  console.log(`4. 读取目录耗时: ${(t7 - t6).toFixed(2)} ms`);
-
-  console.log("\n当前目录文件:", files);
-  console.log("====================");
-}

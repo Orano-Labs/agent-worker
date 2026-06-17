@@ -258,7 +258,7 @@ export class Firecracker {
     this.#client = createClient(
       createConfig({
         baseUrl: "http://localhost",
-        fetch: async (input) => {
+        fetch: (input) => {
           // @ts-expect-error
           return fetch(input, { dispatcher: this.#agent }).then((resp) => {
             return resp;
@@ -320,7 +320,10 @@ export class Firecracker {
   }
 
   async putGuestPmemById() {}
-  async putGuestVsock() {}
+
+  async putGuestVsock(body: FirecrackerVsock) {
+    return putGuestVsock({ throwOnError: true, client: this.#client, body });
+  }
 
   async putLogger(body: Firecracker.Logger) {
     return putLogger({ throwOnError: true, client: this.#client, body });

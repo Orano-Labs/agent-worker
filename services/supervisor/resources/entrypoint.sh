@@ -7,56 +7,56 @@ set -eu
 # Custom logging function
 
 info() {
-    echo "[AW-ENTRYPOINT] $*"
+  echo "[AW-ENTRYPOINT] $*"
 }
 
 error() {
-    echo "[AW-ENTRYPOINT] ERROR: $*" >&2
+  echo "[AW-ENTRYPOINT] ERROR: $*" >&2
 }
 
 fatal() {
-    echo "[AW-ENTRYPOINT] FATAL: $*" >&2
-    exit 1
+  echo "[AW-ENTRYPOINT] FATAL: $*" >&2
+  exit 1
 }
 
 # Lifecycle & Lifecycle Teardown Management
 # Triggers an immediate kernel-level poweroff.
 # This forces the Firecracker vCPU loop to exit cleanly and instantly.
 power_off_now() {
-    info "Triggering forced kernel poweroff..."
-    info "Enforcing WebDAV sync on /workspace via recursive traversal before abrupt shutdown..."
+  info "Triggering forced kernel poweroff..."
+  info "Enforcing WebDAV sync on /workspace via recursive traversal before abrupt shutdown..."
 
-    # Recursively traverse the WebDAV mount point.
-    # Since davfs2 is configured with 'delay_upload 0' (instant upload on close),
-    # this forces davfs2 to flush all local caches, pending uploads, and metadata
-    # back to the remote storage before the OS cuts the power.
-    ls -R /workspace > /dev/null 2>&1
+  # Recursively traverse the WebDAV mount point.
+  # Since davfs2 is configured with 'delay_upload 0' (instant upload on close),
+  # this forces davfs2 to flush all local caches, pending uploads, and metadata
+  # back to the remote storage before the OS cuts the power.
+  ls -R /workspace > /dev/null 2>&1
 
-    # -f forces immediate poweroff/reboot bypassing sysvinit/systemd.
-    # Essential for microVMs to prevent hanging on teardown.
-    poweroff -f || reboot -f || exit 1
+  # -f forces immediate poweroff/reboot bypassing sysvinit/systemd.
+  # Essential for microVMs to prevent hanging on teardown.
+  poweroff -f || reboot -f || exit 1
 }
 
 # Global exit handler triggered by any trap event (EXIT, ERR, SIGTERM, SIGINT).
 # This functions as a "bulletproof" firewall ensuring the VM ALWAYS powers off.
 cleanup_and_poweroff() {
-    # CRITICAL STEP: Immediately capture the exit status code.
-    # Must be the absolute first line to prevent subsequent commands from overwriting $?.
-    _actual_exit_code=${NODE_EXIT_CODE:-$?}
+  # CRITICAL STEP: Immediately capture the exit status code.
+  # Must be the absolute first line to prevent subsequent commands from overwriting $?.
+  _actual_exit_code=${NODE_EXIT_CODE:-$?}
 
-    # Detach all traps to prevent accidental infinite recursion loops during teardown.
-    # '|| true' ensures that even if unbinding fails, 'set -e' won't halt the execution.
-    trap - EXIT SIGTERM SIGINT ERR || true
+  # Detach all traps to prevent accidental infinite recursion loops during teardown.
+  # '|| true' ensures that even if unbinding fails, 'set -e' won't halt the execution.
+  trap - EXIT SIGTERM SIGINT ERR || true
 
-    if [ "$_actual_exit_code" -eq 0 ]; then
-        info "MicroVM execution completed successfully (Exit Code: 0)." || true
-    else
-        error "MicroVM terminated abnormally! (Last Exit Code: $_actual_exit_code)." || true
-    fi
+  if [ "$_actual_exit_code" -eq 0 ]; then
+    info "MicroVM execution completed successfully (Exit Code: 0)." || true
+  else
+    error "MicroVM terminated abnormally! (Last Exit Code: $_actual_exit_code)." || true
+  fi
 
-    info "Preparing to tear down MicroVM..." || true
+  info "Preparing to tear down MicroVM..." || true
 
-    power_off_now
+  power_off_now
 }
 
 # Intercept VM termination signals and shell exits.
@@ -87,39 +87,41 @@ rm -rf /entrypoint
 info "Configuring WebDAV (davfs2)..."
 
 # Inject secrets required for davfs2 auto-authentication
-echo "http://10.123.0.1:2049 $AW_RUNNER_FS_USERNAME $AW_RUNNER_FS_PASSWORD" >> /etc/davfs2/secrets
+echo "http://10.123.0.1:26088 $AW_RUNNER_FS_USERNAME $AW_RUNNER_FS_PASSWORD" >> /etc/davfs2/secrets
 
 # Optimize davfs2 parameters for low-latency, real-time sync environments:
 # - delay_upload 0: Instantly upload files on close (no delayed caching).
 # - dir_refresh / file_refresh: Minimal aggressive caching for metadata sync.
 # - cache_dir / cache_size: Cap memory/disk footprints in constraints of MicroVMs.
 echo "delay_upload 0" >> /etc/davfs2/davfs2.conf
-echo "dir_refresh 10" >> /etc/davfs2/davfs2.conf
-echo "file_refresh 1" >> /etc/davfs2/davfs2.conf
+echo "dir_refresh 20" >> /etc/davfs2/davfs2.conf
+echo "file_refresh 2" >> /etc/davfs2/davfs2.conf
 echo "cache_dir /tmp/davfs2-cache" >> /etc/davfs2/davfs2.conf
 echo "cache_size 64" >> /etc/davfs2/davfs2.conf
 echo "table_size 512" >> /etc/davfs2/davfs2.conf
 echo "use_locks 0" >> /etc/davfs2/davfs2.conf
-echo "debug locks,cache,kernel" >> /etc/davfs2/davfs2.conf
+echo "read_timeout 120" >> /etc/davfs2/davfs2.conf
+echo "retry 3" >> /etc/davfs2/davfs2.conf
+echo "max_retry 600" >> /etc/davfs2/davfs2.conf
 
 info "Mounting remote file system to /workspace..."
 
-mount.davfs http://10.123.0.1:2049 /workspace
+mount.davfs http://10.123.0.1:26088 /workspace
 
 info "All file systems mounted successfully."
 info "Current System Metrics before starting target application:"
 
 if command -v free >/dev/null 2>&1; then
-    free -h | sed 's/^/[AW-ENTRYPOINT] /'
+  free -h | sed 's/^/[AW-ENTRYPOINT] /'
 else
-    info "MemTotal: $(awk '/MemTotal/ {print $2" "$3}' /proc/meminfo)"
-    info "MemAvailable: $(awk '/MemAvailable/ {print $2" "$3}' /proc/meminfo)"
+  info "MemTotal: $(awk '/MemTotal/ {print $2" "$3}' /proc/meminfo)"
+  info "MemAvailable: $(awk '/MemAvailable/ {print $2" "$3}' /proc/meminfo)"
 fi
 
 if command -v uptime >/dev/null 2>&1; then
-    info "CPU Load: $(uptime)"
+  info "CPU Load: $(uptime)"
 else
-    info "CPU Load (1/5/15 min): $(cat /proc/loadavg | awk '{print $1", "$2", "$3}')"
+  info "CPU Load (1/5/15 min): $(cat /proc/loadavg | awk '{print $1", "$2", "$3}')"
 fi
 
 info "Starting target application..."

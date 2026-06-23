@@ -6,19 +6,19 @@ set -eu
 
 # Custom Logging Functions
 log() {
-    echo "[AW-INIT] $*"
+  echo "[AW-INIT] $*"
 }
 
 fatal() {
-    echo "[AW-INIT] FATAL: $*" >&2
-    exit 1
+  echo "[AW-INIT] FATAL: $*" >&2
+  exit 1
 }
 
 # Define the scratch block device assigned to the VM
 SCRATCH_DEV=vdb
 
 if [ ! -b "/dev/$SCRATCH_DEV" ]; then
-    fatal "Scratch device /dev/$SCRATCH_DEV does not exist!"
+  fatal "Scratch device /dev/$SCRATCH_DEV does not exist!"
 fi
 
 log "Preparing temporary mount environment and mounting /dev/$SCRATCH_DEV..."
@@ -45,8 +45,8 @@ mkdir -p "$OVERLAY_UPPER" "$OVERLAY_WORK" "$OVERLAY_ROOT"
 
 # Assemble the OverlayFS
 mount \
-    -o noatime,lowerdir=${OVERLAY_LOWER},upperdir=${OVERLAY_UPPER},workdir=${OVERLAY_WORK} \
-    -t overlay "overlayfs" ${OVERLAY_ROOT}
+  -o noatime,lowerdir=${OVERLAY_LOWER},upperdir=${OVERLAY_UPPER},workdir=${OVERLAY_WORK} \
+  -t overlay "overlayfs" ${OVERLAY_ROOT}
 
 # Create a placeholder directory inside the new root to house the old read-only rootfs
 mkdir -p "$OVERLAY_ROOT/rom"

@@ -1,0 +1,11 @@
+{
+  "extends": ["@aw/shared-config-typescript/tsconfig.common.json"],
+  "include": ["lib", "tsdown.config.ts", "vitest.config.ts"],
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./lib/*"]
+    },
+    "moduleResolution": "NodeNext",
+    "module": "NodeNext"
+  }
+}

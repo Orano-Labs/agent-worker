@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -124,6 +125,14 @@ func NewServer(root string, port int, socket string) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		AddSource: true,
 		Level:     slog.LevelInfo,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+      if a.Key == slog.SourceKey {
+        if source, ok := a.Value.Any().(*slog.Source); ok {
+          return slog.String(slog.SourceKey, fmt.Sprintf("%s:%d", filepath.Base(source.File), source.Line))
+        }
+      }
+      return a
+    },
 	}))
 
 	return &Server{

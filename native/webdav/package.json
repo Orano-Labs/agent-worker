@@ -1,0 +1,31 @@
+{
+  "name": "@aw/webdav",
+  "version": "0.0.1",
+  "description": "",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "mkdir -p dist &&  go build -o ./dist/webdav .  && tsdown",
+    "build:watch": "tsdown --watch",
+    "lint": "biome check --write --changed",
+    "format": "biome format --write ./",
+    "typecheck": "tsc",
+    "test": "vitest",
+    "dev": "tsx watch --include \"./src/**/*\" src/index.ts --env-file ./.env"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "packageManager": "pnpm@10.14.0",
+  "dependencies": {},
+  "devDependencies": {}
+}

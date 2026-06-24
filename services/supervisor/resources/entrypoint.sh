@@ -75,7 +75,6 @@ info "Mounting core file systems completed successfully."
 
 # Log configuration metadata for troubleshooting/auditing
 info "RUNNER ID: ${AW_RUNNER_ID}"
-info "RUNNER FS USERNAME: ${AW_RUNNER_FS_USERNAME}"
 info "RUNNER FS PASSWORD: ${AW_RUNNER_FS_PASSWORD}"
 info "RUNNER PROJECT: ${AW_RUNNER_PROJECT}"
 
@@ -87,7 +86,7 @@ rm -rf /entrypoint
 info "Configuring WebDAV (davfs2)..."
 
 # Inject secrets required for davfs2 auto-authentication
-echo "http://10.123.0.1:26088 $AW_RUNNER_FS_USERNAME $AW_RUNNER_FS_PASSWORD" >> /etc/davfs2/secrets
+echo "http://10.123.0.1:26088 $AW_RUNNER_ID $AW_RUNNER_FS_PASSWORD" >> /etc/davfs2/secrets
 
 # Optimize davfs2 parameters for low-latency, real-time sync environments:
 # - delay_upload 0: Instantly upload files on close (no delayed caching).

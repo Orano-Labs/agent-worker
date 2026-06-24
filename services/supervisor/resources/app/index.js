@@ -51,10 +51,6 @@ async function bootstrap() {
     return null;
   }
 
-  setInterval(() => {
-    console.log("CWD", process.cwd());
-  }, 10000);
-
   require("./dav-benchmark");
 }
 

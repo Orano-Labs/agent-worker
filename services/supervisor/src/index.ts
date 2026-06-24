@@ -54,6 +54,29 @@ Container.singleton(Runner, () => new Runner());
     },
   });
 
+  // console.log(taskId)
+
+  // const tasks = await Promise.all([
+  //   orchestrator.create({
+  //     config: {
+  //       machineTier: "minimal",
+  //       projectId: crypto.randomUUID(),
+  //       env: {},
+  //       metadata: {},
+  //     },
+  //   }),
+  //   orchestrator.create({
+  //     config: {
+  //       machineTier: "minimal",
+  //       projectId: crypto.randomUUID(),
+  //       env: {},
+  //       metadata: {},
+  //     },
+  //   })
+  // ]);
+
+  // console.log(tasks)
+
   // await new Promise((resolve) => setTimeout(resolve, 3000));
 
   // await orchestrator.kill(taskId).then(() => {

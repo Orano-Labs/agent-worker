@@ -87,5 +87,7 @@ export namespace Variables {
     `${TRUSTED_PREFIX}JFS_BUCKET_ENDPOINT`,
     `${TRUSTED_PREFIX}JFS_ACCESS_KEY_ID`,
     `${TRUSTED_PREFIX}JFS_ACCESS_KEY_SECRET`,
+
+    `${TRUSTED_PREFIX}FS_ROOT`,
   ] as const;
 }

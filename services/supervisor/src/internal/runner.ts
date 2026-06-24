@@ -153,8 +153,7 @@ export class Runner {
       const bootArgs = [] as string[];
 
       const fs = {
-        username: Buffer.from(crypto.getRandomValues(new Uint8Array(4))).toString("hex"),
-        password: Buffer.from(crypto.getRandomValues(new Uint8Array(8))).toString("hex"),
+        password: Buffer.from(crypto.getRandomValues(new Uint8Array(12))).toString("hex"),
       };
 
       bootArgs.push("console=ttyS0");
@@ -170,7 +169,6 @@ export class Runner {
       bootArgs.push("init=/init");
 
       bootArgs.push(`AW_RUNNER_ID=${options.id}`);
-      bootArgs.push(`AW_RUNNER_FS_USERNAME=${fs.username}`);
       bootArgs.push(`AW_RUNNER_FS_PASSWORD=${fs.password}`);
       bootArgs.push(`AW_RUNNER_PROJECT=${options.config.projectId}`);
 
@@ -212,8 +210,6 @@ export class Runner {
         }),
       ]);
 
-      console.log(join(root, "firecracker.vsock"));
-
       logger.info("MicroVM initialized and boot sequence started successfully.");
 
       ps.on("close", (code, signal) => {
@@ -226,12 +222,6 @@ export class Runner {
           logger.warn(`VM was terminated unexpectedly by signal: ${signal}`);
         } else {
           logger.warn(`VM terminated unexpectedly with exit code ${code}.`);
-        }
-      });
-
-      ps.on("exit", (code, signal) => {
-        if (code !== 0 && code !== null) {
-          logger.warn(`VM process exited unexpectedly`, { code, signal });
         }
       });
 
@@ -268,6 +258,6 @@ export namespace Runner {
     readonly process: ChildProcessByStdio<null, Readable, Readable>;
     readonly fc: Firecracker;
     readonly root: string;
-    readonly fs: Record<"username" | "password", string>;
+    readonly fs: Record<"password", string>;
   };
 }

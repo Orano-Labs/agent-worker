@@ -371,12 +371,12 @@ export namespace Network {
   /**
    * 需要开放给虚机的宿主机 TCP 服务端口
    */
-  export const EXPOSED_HOST_TCP_PORTS = [2049];
+  export const EXPOSED_HOST_TCP_PORTS = [26088 /** WEB-DAV */];
 
   /**
    * 需要开放给虚机的宿主机 UDP 服务端口
    */
-  export const EXPOSED_HOST_UDP_PORTS = [2049];
+  export const EXPOSED_HOST_UDP_PORTS = [];
 
   /**
    * 表示一个命名空间

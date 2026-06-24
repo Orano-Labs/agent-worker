@@ -2,28 +2,22 @@ import { customAlphabet } from "nanoid";
 import { alphanumeric } from "nanoid-dictionary";
 
 import { Container } from "@/helpers/container";
-import { Environment } from "@/internal/environment";
-import { Image } from "@/internal/image";
+import { FS } from "@/internal/fs";
 import { Logger } from "@/internal/logger";
 import { Network } from "@/internal/network";
-import { FS } from "./fs";
-import { Runner } from "./runner";
+import { Runner } from "@/internal/runner";
 
 // sudo sysctl -w vm.nr_hugepages=2048
 
 export class Orchestrator {
-  #env: Environment;
   #logger: Logger;
   #net: Network;
-  #image: Image;
   #fs: FS;
   #runner: Runner;
 
   constructor() {
-    this.#env = Container.inject(Environment);
     this.#logger = Container.inject(Logger).scope("Orchestrator");
     this.#net = Container.inject(Network);
-    this.#image = Container.inject(Image);
     this.#fs = Container.inject(FS);
     this.#runner = Container.inject(Runner);
 
@@ -60,11 +54,8 @@ export class Orchestrator {
       });
       fs = await this.#fs.create({
         id,
-        net,
         config: options.config,
-        root: runner.root,
         password: runner.fs.password,
-        username: runner.fs.username,
       });
 
       await runner.fc.createSyncAction({ action_type: "InstanceStart" });
@@ -79,12 +70,10 @@ export class Orchestrator {
       }
 
       // @ts-expect-error
-      if (fs && fs.process.exitCode !== null) {
-        try {
-          fs.process.kill("SIGKILL");
-        } catch (err) {
-          logger.warn(`Exception occurred while killing FS child process (PID: ${fs.process.pid})`, { err });
-        }
+      if (fs) {
+        await fs.release().catch((err) => {
+          logger.warn("Failed to release web dav server exposed", { err });
+        });
       }
 
       // @ts-expect-error
@@ -106,35 +95,10 @@ export class Orchestrator {
         });
       });
 
-      if (fs && fs.process && fs.process.exitCode === null) {
-        logger.info("Runner closed. Initiating graceful shutdown for FS...");
-
-        try {
-          fs.process.kill("SIGINT");
-
-          const fsClosed = new Promise<void>((resolve) => {
-            fs!.process.once("close", (...args) => {
-              resolve();
-            });
-          });
-
-          const fallbackTimeout = new Promise<"TIMEOUT">((resolve) => {
-            setTimeout(() => resolve("TIMEOUT"), 30000);
-          });
-
-          const result = await Promise.race([fsClosed, fallbackTimeout]);
-
-          if (result === "TIMEOUT") {
-            if (fs.process.exitCode === null) {
-              logger.warn("FS graceful shutdown timed out after 30s. Forcing SIGKILL...");
-              fs.process.kill("SIGKILL");
-            }
-          } else {
-            logger.info("FS exited gracefully within 30s.");
-          }
-        } catch (err) {
-          logger.warn("Exception occurred during FS graceful shutdown phase", { err });
-        }
+      if (fs) {
+        await fs.release().catch((err) => {
+          logger.warn("Failed to release web dav server exposed", { err });
+        });
       }
 
       return status;
@@ -152,8 +116,6 @@ export class Orchestrator {
 
     return id;
   }
-
-  async unmount() {}
 }
 
 export namespace Orchestrator {

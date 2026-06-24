@@ -38,7 +38,7 @@ export class Image {
     }
 
     if (exists) {
-      // return this.#logger.info("Base image snapshot exists. Skipping initialization.");
+      return this.#logger.info("Base image snapshot exists. Skipping initialization.");
     }
 
     this.#logger.debug(`Runtime image snapshot not found at ${this.runtime}. Proceeding with creation.`);
@@ -72,10 +72,11 @@ export class Image {
         this.#logger.info("Installing internal packages...");
 
         const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
+        const DEPS = ["tini", "nodejs", "curl", "fuse", "bubblewrap", "davfs2"];
 
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk update --repository=${MIRROR_MAIN}`);
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ca-certificates --repository=${MIRROR_MAIN}`);
-        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add tini nodejs curl fuse davfs2 --repository=${MIRROR_MAIN}`);
+        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ${DEPS.join(" ")} --repository=${MIRROR_MAIN}`);
 
         this.#logger.info(`Renaming container to ${RUNTIME_IMAGE_CONTAINER_NAME} for future caching...`);
 

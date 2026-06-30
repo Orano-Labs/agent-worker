@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package api.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// 用户身份标识
+// 用于表示发起请求的终端用户
+message SignatureUserIdentity {
+  // 用户唯一标识，固定长度 24 字符（MongoDB ObjectId 格式）
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+
+// 管理员身份标识
+// 管理员无需额外 id，存在即为管理员身份
+message SignatureManagerIdentity {}
+
+// Worker 身份标识
+// 用于表示执行任务的 Supervisor 节点
+message SignatureSupervisorIdentity {
+  // Worker 唯一标识，固定长度 24 字符
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+
+// 签名身份类型联合体
+// 请求者必须属于且仅属于以下三种身份之一：用户、管理员或 Worker
+message SignatureIdentity {
+  oneof identity {
+    option (buf.validate.oneof).required = true;
+
+    // 终端用户身份
+    SignatureUserIdentity user = 1;
+    // 管理员身份
+    SignatureManagerIdentity manager = 2;
+    // Supervisor 节点身份
+    SignatureSupervisorIdentity supervisor = 3;
+  }
+}
+
+// 签名载荷
+// 包含防重放随机数、时间戳和请求者身份，是签名计算的原始数据部分
+message SignaturePayload {
+  // 防重放攻击随机数，32 字节；签名原文中以其十六进制字符串形式参与计算
+  bytes nonce = 1 [
+    (buf.validate.field).bytes = {
+      len: 32
+    }
+  ];
+  // 请求时间戳，用于校验请求时效性，防止过期请求被重放
+  google.protobuf.Timestamp timestamp = 2 [
+    (buf.validate.field).required = true
+  ];
+  // 请求者身份标识，明确请求来源类型
+  SignatureIdentity identity = 3 [
+    (buf.validate.field).required = true
+  ];
+}
+
+// 完整请求签名
+// 由载荷（SignaturePayload）和对该载荷的 ed25519 数字签名组成
+// 序列化后 Base64 编码，嵌入请求头 x-request-signature
+message Signature {
+  // 签名载荷，包含 nonce、时间戳和身份信息
+  SignaturePayload payload = 1 [
+    (buf.validate.field).required = true
+  ];
+  // ed25519 数字签名，固定 64 字节
+  // 签名原文构造规则：
+  //   User / Worker：Hex(nonce) + ":" + UnixTimestamp(Second) + ":" + id
+  //   Manager：      Hex(nonce) + ":" + UnixTimestamp(Second)
+  bytes signature = 2 [
+    (buf.validate.field).bytes = {
+      len: 64
+    }
+  ];
+}

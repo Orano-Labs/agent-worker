@@ -69,10 +69,6 @@ export class Logger {
     this.#write("fatal", message, context);
   }
 
-  fatalFrom(error: unknown, message?: string) {
-    this.#logger.fatal(ErrorHelpers.as(error), message);
-  }
-
   error(message: string, context?: Record<string, unknown>) {
     this.#write("error", message, context);
   }
@@ -134,12 +130,22 @@ export class Logger {
   }
 
   async flush() {
-    this.#logger.flush();
+    return new Promise<void>((resolve, reject) => {
+      this.#logger.flush((error) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
+    });
   }
 }
 
 export namespace Logger {
   export type Context = Record<string, unknown>;
+
+  export type Engine = ReturnType<typeof pino>;
 
   export type Level = "info" | "debug" | "warn" | "trace" | "fatal" | "error";
 

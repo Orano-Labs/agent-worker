@@ -1,15 +1,16 @@
-import { IncomingMessage, Server, ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import { createSecureServer } from "node:http2";
 import type { Socket } from "node:net";
+import { resolve } from "node:path";
 import { default as Router } from "find-my-way";
 import { Container } from "@/helpers/container";
-import { ErrorHelpers } from "@/helpers/error-helpers";
+import { Result } from "@/helpers/result";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
 
 export class HTTPServer {
-  #status: HTTPServer.Status;
-  #server: Server;
-  #router: Router.Instance<Router.HTTPVersion.V1>;
+  #server?: ReturnType<typeof createSecureServer>;
+  #router: Router.Instance<Router.HTTPVersion.V2>;
   #variables: Variables;
   #logger: Logger;
 
@@ -28,32 +29,12 @@ export class HTTPServer {
   #shuttingDown: boolean;
 
   constructor() {
-    this.#status = {
-      type: "error",
-      message: "Not initialized",
-    };
-
     this.#router = Router();
-
-    this.#server = new Server((req, res) => {
-      this.#router.lookup(req, res);
-    });
-
     this.#variables = Container.inject(Variables);
     this.#logger = Container.inject(Logger).scope("HTTPServer");
 
     this.#connections = new Map();
     this.#shuttingDown = false;
-
-    this.#setupConnectionTracking();
-  }
-
-  get ready() {
-    return this.#status.type === "ready";
-  }
-
-  get status() {
-    return this.#status;
   }
 
   get router() {
@@ -61,6 +42,10 @@ export class HTTPServer {
   }
 
   get server() {
+    if (!this.#server) {
+      throw new Error("Server is not initialized.");
+    }
+
     return this.#server;
   }
 
@@ -89,10 +74,10 @@ export class HTTPServer {
       });
     };
 
-    this.#server.on("connection", onConnection);
-    this.#server.on("secureConnection", onConnection);
+    this.server.on("connection", onConnection);
+    this.server.on("secureConnection", onConnection);
 
-    this.#server.on("request", (req, res) => {
+    this.server.on("request", (req, res) => {
       const socket = req.socket;
       const current = this.#connections.get(socket) || 0;
 
@@ -109,6 +94,12 @@ export class HTTPServer {
         // the socket will be safely disconnected right here.
         this.#destroy(socket);
       });
+    });
+  }
+
+  #setupRouter() {
+    this.server.on("request", (req, res) => {
+      this.#router.lookup(req, res);
     });
   }
 
@@ -129,7 +120,7 @@ export class HTTPServer {
       }, 3000);
 
       // Stop accepting new incoming TCP connections and wait for pre-existing requests to finish naturally
-      this.#server.close((err) => {
+      this.server.close((err) => {
         clearTimeout(timer);
 
         if (err) {
@@ -149,71 +140,84 @@ export class HTTPServer {
     });
   }
 
-  async init() {
-    this.#logger.info("Initializing...");
-
+  async init(): Promise<Result<void, Error>> {
     const port = this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008);
     const host = this.#variables.get("AW_DIRECTOR_HTTP_HOST");
 
-    return new Promise<void>((resolve) => {
-      const callback = async () => {
-        this.#logger.info(`HTTP server is running on port ${port}`);
+    const keyFile = this.#variables.get("AW_DIRECTOR_GRPC_CA_KEY");
+    const certFile = this.#variables.get("AW_DIRECTOR_GRPC_CA_CERTIFICATE");
 
-        if (host) {
-          this.#logger.info(`Server is explicitly bound to host: http://${host}:${port}`);
-        } else {
-          const os = await import("node:os");
-          const interfaces = os.networkInterfaces();
+    if (!keyFile || !certFile) {
+      return Result.error(new Error("GRPC_CA_KEY and GRPC_CA_CERTIFICATE must be set to enable http2."));
+    }
 
-          const endpoints: unknown[] = [];
+    const keyPath = resolve(keyFile);
+    const certPath = resolve(certFile);
 
-          for (const [_, ifaces] of Object.entries(interfaces)) {
-            if (!ifaces) continue;
+    let key: string;
+    let cert: string;
 
-            for (const iface of ifaces) {
-              if (iface.family === "IPv4") {
-                endpoints.push(`http://${iface.address}:${port}`);
+    try {
+      key = await readFile(keyPath, "utf-8");
+      cert = await readFile(certPath, "utf-8");
+    } catch (error) {
+      return Result.error(new Error("Failed to read key or cert file.", { cause: error }));
+    }
+
+    const server = createSecureServer({
+      key,
+      cert,
+      allowHTTP1: true,
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const callback = async () => {
+          this.#logger.info(`HTTP server is running on port ${port}`);
+
+          if (host) {
+            this.#logger.info(`Server is explicitly bound to host: http://${host}:${port}`);
+          } else {
+            const os = await import("node:os");
+            const interfaces = os.networkInterfaces();
+
+            const endpoints: unknown[] = [];
+
+            for (const [_, ifaces] of Object.entries(interfaces)) {
+              if (!ifaces) continue;
+
+              for (const iface of ifaces) {
+                if (iface.family === "IPv4") {
+                  endpoints.push(`http://${iface.address}:${port}`);
+                }
               }
             }
+
+            this.#logger.info("Server is listening on all interfaces. Available endpoints:", {
+              endpoints,
+            });
           }
 
-          this.#logger.info("Server is listening on all interfaces. Available endpoints:", {
-            endpoints,
-          });
+          resolve();
+        };
+
+        if (host) {
+          server.listen(port, host, callback);
+        } else {
+          server.listen(port, callback);
         }
 
-        this.#status = {
-          type: "ready",
-        };
-
-        resolve();
-      };
-
-      if (host) {
-        this.#server.listen(port, host, callback);
-      } else {
-        this.#server.listen(port, callback);
-      }
-
-      this.#server.on("error", (err) => {
-        this.#logger.errorFrom(err, "Failed to start the HTTP server.");
-
-        this.#status = {
-          type: "error",
-          message: `Failed to start the HTTP server: ${ErrorHelpers.as(err).message}`,
-        };
+        server.on("error", reject);
       });
-    });
-  }
-}
+    } catch (error) {
+      return Result.error(new Error("Failed to start HTTP server.", { cause: error }));
+    }
 
-export namespace HTTPServer {
-  export type Status =
-    | {
-        type: "ready";
-      }
-    | {
-        type: "error";
-        message: string;
-      };
+    this.#server = server;
+
+    this.#setupConnectionTracking();
+    this.#setupRouter();
+
+    return Result.ok();
+  }
 }

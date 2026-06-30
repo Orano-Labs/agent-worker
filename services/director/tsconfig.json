@@ -8,10 +8,12 @@
     "drizzle.config.ts"
   ],
   "compilerOptions": {
+    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     },
-    "moduleResolution": "NodeNext",
-    "module": "NodeNext"
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
+    "target": "ESNext"
   }
 }

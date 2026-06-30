@@ -1,0 +1,159 @@
+syntax = "proto3";
+
+package api.v1;
+
+import "buf/validate/validate.proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+message User {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+  bytes public_key = 2 [
+    (buf.validate.field).bytes = {
+      min_len: 16,
+      max_len: 128,
+    }
+  ];
+  google.protobuf.BytesValue metadata = 3 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+  bool disabled = 7;
+
+  google.protobuf.Timestamp create_time = 4 [
+    (buf.validate.field).required = true
+  ];
+  google.protobuf.Timestamp update_time = 5 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message UserServiceCreateRequest {
+  google.protobuf.BoolValue disabled = 1;
+  google.protobuf.BytesValue metadata = 2 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+};
+message UserServiceCreateResponse {
+  User user = 1 [
+    (buf.validate.field).required = true
+  ];
+  bytes private_key = 2 [
+    (buf.validate.field).bytes = {
+      min_len: 16,
+      max_len: 128,
+    }
+  ];
+};
+
+message UserServiceUpdateMetadataRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+  google.protobuf.BytesValue metadata = 2 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+}
+message UserServiceUpdateMetadataResponse {
+  User user = 1 [
+    (buf.validate.field).required = true
+  ];
+};
+
+message UserServiceDeleteRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+message UserServiceDeleteResponse {};
+
+message UserServiceEnableRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+message UserServiceEnableResponse {
+  User user = 1 [
+    (buf.validate.field).required = true
+  ];
+};
+
+message UserServiceDisableRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+message UserServiceDisableResponse {
+  User user = 1 [
+    (buf.validate.field).required = true
+  ];
+};
+
+message UserServiceGetRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+message UserServiceGetResponse {
+  User user = 1 [
+    (buf.validate.field).required = true
+  ];
+};
+
+message UserServiceListRequest {
+  int32 page = 1 [
+    (buf.validate.field).int32 = {
+      gt: 0,
+    }
+  ];
+  int32 page_size = 2 [
+    (buf.validate.field).int32 = {
+      gt: 0,
+      lte: 100,
+    }
+  ];
+  google.protobuf.BoolValue disabled = 3;
+}
+message UserServiceListResponse {
+  repeated User users = 1 [
+    (buf.validate.field).repeated = {
+      min_items: 0,
+    }
+  ];
+  int32 total = 2 [
+    (buf.validate.field).int32 = {
+      gte: 0,
+    }
+  ];
+};
+
+// 由 Manager 消费
+service UserService {
+  rpc Create(UserServiceCreateRequest) returns (UserServiceCreateResponse);
+  rpc Get(UserServiceGetRequest) returns (UserServiceGetResponse);
+  rpc List(UserServiceListRequest) returns (UserServiceListResponse);
+  rpc UpdateMetadata(UserServiceUpdateMetadataRequest) returns (UserServiceUpdateMetadataResponse);
+  rpc Delete(UserServiceDeleteRequest) returns (UserServiceDeleteResponse);
+  rpc Enable(UserServiceEnableRequest) returns (UserServiceEnableResponse);
+  rpc Disable(UserServiceDisableRequest) returns (UserServiceDisableResponse);
+}

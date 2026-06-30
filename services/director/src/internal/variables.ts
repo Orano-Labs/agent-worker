@@ -2,13 +2,16 @@ import { readFile } from "node:fs/promises";
 import { parseEnv } from "node:util";
 
 import { Container } from "@/helpers/container";
+import { Result } from "@/helpers/result";
 import { CommandLine } from "@/internal/command-line";
+import { Key } from "@/internal/key";
 import { Logger } from "@/internal/logger";
 
 export class Variables {
   #cli: CommandLine;
   #logger: Logger;
   #env: NodeJS.Dict<string>;
+  #key: Key;
 
   constructor() {
     this.#env = {};
@@ -22,11 +25,10 @@ export class Variables {
 
     this.#cli = Container.inject(CommandLine);
     this.#logger = Container.inject(Logger).scope("Variables");
+    this.#key = Container.inject(Key);
   }
 
-  async init() {
-    this.#logger.info("Initializing...");
-
+  async init(): Promise<Result<void, Error>> {
     if (this.#cli.envFiles.length > 0) {
       for (const file of this.#cli.envFiles) {
         let content: string;
@@ -34,7 +36,7 @@ export class Variables {
         try {
           content = await readFile(file, "utf-8");
         } catch (error) {
-          return this.#logger.errorFrom(error, `Failed to read environment file: ${file}`);
+          return Result.error(new Error(`Failed to read environment file: ${file}`, { cause: error }));
         }
 
         let parsed: NodeJS.Dict<string>;
@@ -42,18 +44,17 @@ export class Variables {
         try {
           parsed = parseEnv(content);
         } catch (error) {
-          return this.#logger.errorFrom(error, `Failed to parse environment file: ${file}`);
+          return Result.error(new Error(`Failed to parse environment file: ${file}`, { cause: error }));
         }
 
         for (const [key, value] of Object.entries(parsed)) {
           if (value === undefined) {
-            break;
+            continue;
           }
 
           // @ts-expect-error
           if (!Variables.TRUSTED.includes(key)) {
-            this.#logger.warn(`Skipping untrusted environment variable ${key} from ${file}`);
-            break;
+            continue;
           }
 
           if (this.#env[key] !== undefined) {
@@ -73,21 +74,33 @@ export class Variables {
       HTTP_PORT: this.get("AW_DIRECTOR_HTTP_PORT") || null,
       HTTP_HOST: this.get("AW_DIRECTOR_HTTP_HOST") || null,
       MYSQL_URL: this.get("AW_DIRECTOR_MYSQL_URL") || null,
-      GITEA_URL: this.get("AW_DIRECTOR_GITEA_URL") || null,
-      GITEA_ACCESS_TOKEN: this.get("AW_DIRECTOR_GITEA_ACCESS_TOKEN") || null,
+      MANAGER_PUBLIC_KEY: this.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY") || null,
+      GRPC_CA_KEY: this.get("AW_DIRECTOR_GRPC_CA_KEY") || null,
+      GRPC_CA_CERTIFICATE: this.get("AW_DIRECTOR_GRPC_CA_CERTIFICATE") || null,
     };
-
-    if (variables.GITEA_ACCESS_TOKEN) {
-      variables.GITEA_ACCESS_TOKEN = this.#logger.mask(variables.GITEA_ACCESS_TOKEN);
-    }
 
     if (variables.MYSQL_URL) {
       variables.MYSQL_URL = this.#logger.mask(variables.MYSQL_URL);
     }
 
+    if (!variables.MANAGER_PUBLIC_KEY) {
+      const keys = await this.#key.generateED25519();
+      const publicKey = keys[0].toString("hex");
+      const privateKey = keys[1].toString("hex");
+
+      this.#env.AW_DIRECTOR_MANAGER_PUBLIC_KEY = publicKey;
+
+      this.#logger.warn("Generated new manager key pair. Keys logged for initial setup only.", {
+        PRIVATE: privateKey,
+        PUBLIC: publicKey,
+      });
+    }
+
     this.#logger.info("Loaded environment variables", {
       env: variables,
     });
+
+    return Result.ok();
   }
 
   get(key: (typeof Variables.TRUSTED)[number]) {
@@ -125,7 +138,11 @@ export namespace Variables {
 
     `${TRUSTED_PREFIX}MYSQL_URL`,
 
-    `${TRUSTED_PREFIX}GITEA_URL`,
-    `${TRUSTED_PREFIX}GITEA_ACCESS_TOKEN`,
+    `${TRUSTED_PREFIX}MANAGER_PUBLIC_KEY`,
+
+    `${TRUSTED_PREFIX}GRPC_CA_KEY`,
+    `${TRUSTED_PREFIX}GRPC_CA_CERTIFICATE`,
+
+    `${TRUSTED_PREFIX}MQ_URL`,
   ] as const;
 }

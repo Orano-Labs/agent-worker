@@ -3,6 +3,7 @@ import { arch, homedir, platform } from "node:os";
 import { join } from "node:path";
 
 import { Container } from "@/helpers/container";
+import { Result } from "@/helpers/result";
 import { CommandLine } from "@/internal/command-line";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
@@ -10,7 +11,6 @@ import { Variables } from "@/internal/variables";
 declare const VERSION: string;
 
 export class Environment {
-  #status: Environment.Status;
   #logger: Logger;
   #cli: CommandLine;
   #variables: Variables;
@@ -23,16 +23,8 @@ export class Environment {
     return arch();
   }
 
-  get ready() {
-    return this.#status.type === "ready";
-  }
-
   get workdir() {
     return this.#variables.get("AW_DIRECTOR_ROOT_DIR") || join(homedir(), ".aw-director");
-  }
-
-  get status() {
-    return this.#status;
   }
 
   get version() {
@@ -44,24 +36,12 @@ export class Environment {
   }
 
   constructor() {
-    this.#status = {
-      type: "error",
-      message: "Not initialized",
-    };
-
     this.#logger = Container.inject(Logger).scope("Environment");
     this.#cli = Container.inject(CommandLine);
     this.#variables = Container.inject(Variables);
   }
 
-  async init() {
-    this.#logger.info("Initializing...", {
-      workdir: this.workdir,
-      platform: this.platform,
-      arch: this.arch,
-      cwd: this.cwd,
-    });
-
+  async init(): Promise<Result<void, Error>> {
     const directories = [
       {
         path: this.workdir,
@@ -77,32 +57,15 @@ export class Environment {
       try {
         await mkdir(directory.path, { recursive: true });
       } catch (error) {
-        this.#logger.errorFrom(error, `Failed to create ${directory.description} directory`);
-
-        this.#status = {
-          type: "error",
-          message: `Failed to create ${directory.description} directory`,
-        };
-
-        return;
+        return Result.error(new Error(`Failed to create ${directory.description} directory`, { cause: error }));
       }
     }
 
-    this.#status = {
-      type: "ready",
-    };
+    this.#logger.info("Initialization completed", {
+      workdir: this.workdir,
+      cwd: this.cwd,
+    });
 
-    this.#logger.info("Initialization completed");
+    return Result.ok();
   }
-}
-
-export namespace Environment {
-  export type Status =
-    | {
-        type: "ready";
-      }
-    | {
-        type: "error";
-        message: string;
-      };
 }

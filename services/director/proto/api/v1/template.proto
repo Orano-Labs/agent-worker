@@ -1,0 +1,180 @@
+syntax = "proto3";
+
+package api.v1;
+
+import "buf/validate/validate.proto";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+enum TemplateStatus {
+  TEMPLATE_STATUS_UNSPECIFIED = 0;
+  TEMPLATE_STATUS_DRAFT = 1;
+  TEMPLATE_STATUS_PUBLISHED = 2;
+  TEMPLATE_STATUS_ARCHIVED = 3;
+}
+
+message Template {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+  google.protobuf.BytesValue metadata = 2 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+  google.protobuf.Timestamp create_time = 3 [
+    (buf.validate.field).required = true
+  ];
+  google.protobuf.Timestamp update_time = 4 [
+    (buf.validate.field).required = true
+  ];
+  TemplateStatus status = 5 [
+    (buf.validate.field).enum = {
+      defined_only: true,
+      not_in: [0]
+    }
+  ];
+  google.protobuf.StringValue forked_from = 6 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+
+message TemplateServiceCreateRequest {
+  google.protobuf.BytesValue metadata = 1 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+}
+message TemplateServiceCreateResponse {
+  Template template = 1 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message TemplateServiceUpdateMetadataRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+  google.protobuf.BytesValue metadata = 2 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+}
+message TemplateServiceUpdateMetadataResponse {
+  Template template = 1 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message TemplateServiceUpdateStatusRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+  TemplateStatus status = 2 [
+    (buf.validate.field).enum = {
+      defined_only: true,
+      not_in: [0]
+    }
+  ];
+}
+message TemplateServiceUpdateStatusResponse {
+  Template template = 1 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message TemplateServiceForkRequest {
+  string from = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+  google.protobuf.BytesValue metadata = 2 [
+    (buf.validate.field).bytes = {
+      max_len: 2048,
+    }
+  ];
+}
+message TemplateServiceForkResponse {
+  Template template = 1 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message TemplateServiceGetRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+message TemplateServiceGetResponse {
+  Template template = 1 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message TemplateServiceListRequest {
+  int32 page = 1 [
+    (buf.validate.field).int32 = {
+      gt: 0,
+    }
+  ];
+  int32 page_size = 2 [
+    (buf.validate.field).int32 = {
+      gt: 0,
+      lte: 100,
+    }
+  ];
+  TemplateStatus status = 3 [
+    (buf.validate.field).enum = {
+      defined_only: true,
+    }
+  ];
+}
+message TemplateServiceListResponse {
+  repeated Template templates = 1 [
+    (buf.validate.field).repeated = {
+      min_items: 0,
+    }
+  ];
+  int32 total = 2 [
+    (buf.validate.field).int32 = {
+      gte: 0,
+    }
+  ];
+}
+
+message TemplateServiceDeleteRequest {
+  string id = 1 [
+    (buf.validate.field).string = {
+      len: 24,
+    }
+  ];
+}
+message TemplateServiceDeleteResponse {
+  Template template = 1 [
+    (buf.validate.field).required = true
+  ];
+}
+
+service TemplateService {
+  rpc Create(TemplateServiceCreateRequest) returns (TemplateServiceCreateResponse);
+  rpc UpdateMetadata(TemplateServiceUpdateMetadataRequest) returns (TemplateServiceUpdateMetadataResponse);
+  rpc UpdateStatus(TemplateServiceUpdateStatusRequest) returns (TemplateServiceUpdateStatusResponse);
+  rpc Fork(TemplateServiceForkRequest) returns (TemplateServiceForkResponse);
+  rpc Get(TemplateServiceGetRequest) returns (TemplateServiceGetResponse);
+  rpc List(TemplateServiceListRequest) returns (TemplateServiceListResponse);
+  rpc Delete(TemplateServiceDeleteRequest) returns (TemplateServiceDeleteResponse);
+}

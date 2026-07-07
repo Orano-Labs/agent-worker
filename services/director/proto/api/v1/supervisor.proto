@@ -7,8 +7,6 @@ import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
-
-// 由 Manager 消费
 message Supervisor {
   string id = 1 [
     (buf.validate.field).string = {
@@ -21,33 +19,21 @@ message Supervisor {
       max_len: 128,
     }
   ];
-  string name = 3 [
-    (buf.validate.field).string = {
-      min_len: 1,
-      max_len: 128,
-    }
-  ];
-  google.protobuf.BytesValue metadata = 4 [
+  google.protobuf.BytesValue metadata = 3 [
     (buf.validate.field).bytes = {
       max_len: 2048,
     }
   ];
-  google.protobuf.Timestamp create_time = 5 [
+  google.protobuf.Timestamp create_time = 4 [
     (buf.validate.field).required = true
   ];
-  google.protobuf.Timestamp update_time = 6 [
+  google.protobuf.Timestamp update_time = 5 [
     (buf.validate.field).required = true
   ];
 }
 
 message SupervisorServiceCreateRequest {
-  string name = 1 [
-    (buf.validate.field).string = {
-      min_len: 1,
-      max_len: 128,
-    }
-  ];
-  google.protobuf.BytesValue metadata = 2 [
+  google.protobuf.BytesValue metadata = 1 [
     (buf.validate.field).bytes = {
       max_len: 2048,
     }
@@ -78,25 +64,6 @@ message SupervisorServiceUpdateMetadataRequest {
   ];
 }
 message SupervisorServiceUpdateMetadataResponse {
-  Supervisor supervisor = 1 [
-    (buf.validate.field).required = true
-  ];
-};
-
-message SupervisorServiceUpdateNameRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
-  string name = 2 [
-    (buf.validate.field).string = {
-      min_len: 1,
-      max_len: 128,
-    }
-  ];
-}
-message SupervisorServiceUpdateNameResponse {
   Supervisor supervisor = 1 [
     (buf.validate.field).required = true
   ];
@@ -151,11 +118,15 @@ message SupervisorServiceListResponse {
   ];
 };
 
+message SupervisorServiceStatusRequest {};
+message SupervisorServiceStatusResponse {};
+
+// SupervisorService
 service SupervisorService {
   rpc Create(SupervisorServiceCreateRequest) returns (SupervisorServiceCreateResponse);
   rpc UpdateMetadata(SupervisorServiceUpdateMetadataRequest) returns (SupervisorServiceUpdateMetadataResponse);
-  rpc UpdateName(SupervisorServiceUpdateNameRequest) returns (SupervisorServiceUpdateNameResponse);
   rpc Delete(SupervisorServiceDeleteRequest) returns (SupervisorServiceDeleteResponse);
   rpc Get(SupervisorServiceGetRequest) returns (SupervisorServiceGetResponse);
   rpc List(SupervisorServiceListRequest) returns (SupervisorServiceListResponse);
+  rpc Status(SupervisorServiceStatusRequest) returns (SupervisorServiceStatusResponse);
 }

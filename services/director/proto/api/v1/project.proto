@@ -3,7 +3,6 @@ syntax = "proto3";
 package api.v1;
 
 import "buf/validate/validate.proto";
-
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
@@ -14,149 +13,101 @@ enum ProjectResourceTier {
   PROJECT_RESOURCE_TIER_PERFORMANCE = 3;
 }
 
-message ProjectDeploymentPending {
-  bool processing = 1;
-}
+message ProjectInstanceStatusPending {}
 
-message ProjectDeploymentSuccess {}
+message ProjectInstanceStatusRunning {}
 
-message ProjectDeploymentFailed {
-  string message = 1 [
-    (buf.validate.field).string = {
-      max_len: 512,
-    }
-  ];
-}
+message ProjectInstanceStatusPulling {}
 
-message Project {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
-  string name = 2 [
-    (buf.validate.field).string = {
-      min_len: 1,
-      max_len: 128,
-    }
-  ];
-  google.protobuf.StringValue description = 3 [
-    (buf.validate.field).string = {
-      max_len: 512,
-    }
-  ];
-  google.protobuf.Timestamp create_time = 4 [
-    (buf.validate.field).required = true
-  ];
-  google.protobuf.Timestamp update_time = 5 [
-    (buf.validate.field).required = true
-  ];
-  ProjectResourceTier resource_tier = 6 [
-    (buf.validate.field).enum = {
-      defined_only: true,
-    }
-  ];
-  oneof deployment {
-    ProjectDeploymentPending pending = 7;
-    ProjectDeploymentSuccess success = 8;
-    ProjectDeploymentFailed failed = 9;
+message ProjectInstanceStatusTerminated {}
+
+message ProjectInstance {
+  oneof status {
+    option (buf.validate.oneof).required = true;
+
+    ProjectInstanceStatusPending pending = 1;
+    ProjectInstanceStatusPulling pulling = 2;
+    ProjectInstanceStatusRunning running = 3;
+    ProjectInstanceStatusTerminated terminated = 4;
   }
 }
 
+message Project {
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+  google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
+  google.protobuf.Timestamp create_time = 3 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp update_time = 4 [(buf.validate.field).required = true];
+  ProjectResourceTier resource_tier = 5 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  google.protobuf.StringValue template_id = 6 [(buf.validate.field).string = {len: 24}];
+  ProjectInstance instance = 7 [(buf.validate.field).required = true];
+}
+
 message ProjectServiceCreateRequest {
-  string name = 1 [
-    (buf.validate.field).string = {
-      min_len: 1,
-      max_len: 128,
-    }
-  ];
-  google.protobuf.StringValue description = 2 [
-    (buf.validate.field).string = {
-      max_len: 512,
-    }
-  ];
-  ProjectResourceTier resource_tier = 3 [
-    (buf.validate.field).enum = {
-      defined_only: true,
-    }
-  ];
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
+  ProjectResourceTier resource_tier = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  google.protobuf.StringValue template_id = 4 [(buf.validate.field).string = {len: 24}];
 }
 
 message ProjectServiceCreateResponse {
-  Project project = 1 [
-    (buf.validate.field).required = true
-  ];
+  Project project = 1 [(buf.validate.field).required = true];
 }
 
 message ProjectServiceListRequest {
-  int32 page = 1 [
-    (buf.validate.field).int32 = {
-      gt: 0,
-    }
-  ];
-  int32 page_size = 2 [
-    (buf.validate.field).int32 = {
-      gt: 0,
-      lte: 100,
-    }
-  ];
+  int32 page = 1 [(buf.validate.field).int32 = {gt: 0}];
+  int32 page_size = 2 [(buf.validate.field).int32 = {
+    gt: 0
+    lte: 100
+  }];
 }
-
 message ProjectServiceListResponse {
-  repeated Project projects = 1 [
-    (buf.validate.field).repeated = {
-      min_items: 0,
-    }
-  ];
-  int32 total = 2 [
-    (buf.validate.field).int32 = {
-      gte: 0,
-    }
-  ];
+  repeated Project projects = 1 [(buf.validate.field).repeated = {min_items: 0}];
+  int32 total = 2 [(buf.validate.field).int32 = {gte: 0}];
 }
 
 message ProjectServiceGetRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
-
 message ProjectServiceGetResponse {
-  Project project = 1 [
-    (buf.validate.field).required = true
-  ];
+  Project project = 1 [(buf.validate.field).required = true];
 }
 
-message ProjectServiceDeploymentRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
+message ProjectServiceUpdateMetadataRequest {
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+  google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
 }
-message ProjectServiceDeploymentResponse {}
+message ProjectServiceUpdateMetadataResponse {
+  Project project = 1 [(buf.validate.field).required = true];
+}
 
 message ProjectServiceDeleteRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
-message ProjectServiceDeleteResponse {
-  Project project = 1 [
-    (buf.validate.field).required = true
-  ];
+message ProjectServiceDeleteResponse {}
+
+message ProjectServiceLaunchRequest {
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
+message ProjectServiceLaunchResponse {}
 
+message ProjectServiceConnectRequest {}
+message ProjectServiceConnectResponse {}
 
-// 由 User 消费
 service ProjectService {
   rpc Create(ProjectServiceCreateRequest) returns (ProjectServiceCreateResponse);
   rpc List(ProjectServiceListRequest) returns (ProjectServiceListResponse);
   rpc Get(ProjectServiceGetRequest) returns (ProjectServiceGetResponse);
-  rpc Deployment(ProjectServiceDeploymentRequest) returns (ProjectServiceDeploymentResponse);
   rpc Delete(ProjectServiceDeleteRequest) returns (ProjectServiceDeleteResponse);
+  rpc UpdateMetadata(ProjectServiceUpdateMetadataRequest) returns (ProjectServiceUpdateMetadataResponse);
+  rpc Launch(ProjectServiceLaunchRequest) returns (ProjectServiceLaunchResponse);
+  rpc Connect(ProjectServiceConnectRequest) returns (ProjectServiceConnectResponse);
 }

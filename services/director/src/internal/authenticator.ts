@@ -1,6 +1,5 @@
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
-import { Code, ConnectError } from "@connectrpc/connect";
 import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
@@ -44,7 +43,7 @@ export class Authenticator {
     const raw = this.#parseHeader(headers);
 
     if (raw === null) {
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Missing signature header");
     }
 
     const [value, dev] = raw;
@@ -83,7 +82,7 @@ export class Authenticator {
         err: error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Invalid signature Base64 encoding");
     }
   }
 
@@ -97,7 +96,7 @@ export class Authenticator {
         err: error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Invalid development identity protobuf");
     }
 
     const validation = Protobuf.validate(SignatureIdentitySchema, identity);
@@ -107,7 +106,7 @@ export class Authenticator {
         err: validation.error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Development identity validation failed");
     }
 
     return this.#toIdentity(validation.message);
@@ -123,7 +122,7 @@ export class Authenticator {
         err: error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Invalid signature protobuf");
     }
 
     const validation = Protobuf.validate(SignatureSchema, signature);
@@ -133,7 +132,7 @@ export class Authenticator {
         err: validation.error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Signature protobuf validation failed");
     }
 
     const { payload, signature: sigBytes } = validation.message;
@@ -164,7 +163,7 @@ export class Authenticator {
         windowMs: TIMESTAMP_WINDOW_MS,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Request timestamp outside allowed window");
     }
   }
 
@@ -179,31 +178,26 @@ export class Authenticator {
           nonceKey: this.#logger.mask(nonceKey),
         });
 
-        throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+        throw new Error("Nonce already used");
       }
     } catch (error) {
-      if (error instanceof ConnectError) throw error;
+      if (error instanceof Error && error.message.startsWith("Nonce")) throw error;
 
       this.#logger.error("Failed to persist nonce in Redis. Failing closed.", {
         err: error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Nonce persistence failed");
     }
   }
 
-  async #resolvePublicKey(
-    identityCase: SignatureIdentityValid["identity"]["case"],
-    identity: SignatureIdentityValid,
-    nonceHex: string,
-    unixSeconds: number,
-  ) {
-    switch (identityCase) {
+  async #resolvePublicKey(identity: SignatureIdentityValid, nonceHex: string, unixSeconds: number) {
+    switch (identity.identity.case) {
       case "manager": {
         const pubKeyHex = this.#variables.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY");
 
         if (!pubKeyHex) {
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+          throw new Error("Manager public key not configured");
         }
 
         return {
@@ -225,7 +219,7 @@ export class Authenticator {
             userId: this.#logger.mask(userId),
           });
 
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+          throw new Error("User not found");
         }
 
         return {
@@ -247,7 +241,7 @@ export class Authenticator {
             supervisorId: this.#logger.mask(supervisorId),
           });
 
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+          throw new Error("Supervisor not found");
         }
 
         return {
@@ -258,10 +252,10 @@ export class Authenticator {
 
       default:
         this.#logger.warn("Unknown identity case.", {
-          case: identityCase,
+          case: identity.identity.case,
         });
 
-        throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+        throw new Error("Unknown identity case");
     }
   }
 
@@ -275,7 +269,7 @@ export class Authenticator {
         err: error,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Signature verification error");
     }
 
     if (!verified) {
@@ -283,7 +277,7 @@ export class Authenticator {
         identityCase,
       });
 
-      throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+      throw new Error("Signature verification failed");
     }
   }
 
@@ -302,7 +296,7 @@ export class Authenticator {
           case: identity.case,
         });
 
-        throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+        throw new Error("Unknown identity case");
     }
   }
 

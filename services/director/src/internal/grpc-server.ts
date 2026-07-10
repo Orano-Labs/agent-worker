@@ -9,7 +9,7 @@ import { default as Router } from "find-my-way";
 import type { SignatureIdentityValid } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
-import { Authenticator } from "@/internal/authenticator";
+import { type AuthenticatedIdentity, Authenticator } from "@/internal/authenticator";
 import { Logger } from "@/internal/logger";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
@@ -86,7 +86,17 @@ export class GRPCServer {
         const reqId = req.contextValues.get(REQUEST_ID_CONTEXT) || "??";
         const logger = this.#logger.with({ requestId: reqId });
 
-        const identity = await this.#authenticator.authenticate(req.header);
+        let identity: AuthenticatedIdentity;
+
+        try {
+          identity = await this.#authenticator.authenticate(req.header);
+        } catch (error) {
+          logger.warn("Authentication failed.", {
+            reason: error instanceof Error ? error.message : String(error),
+          });
+
+          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
+        }
 
         switch (identity.case) {
           case "user":

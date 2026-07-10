@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
-import { Code, ConnectError, createContextKey, type HandlerContext, type Interceptor } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
@@ -213,7 +213,7 @@ export class Authenticator {
       }
 
       case "user": {
-        const userId = identity.identity.value!.id;
+        const userId = identity.identity.value.id;
 
         const user = await this.#repository.client.user.findUnique({
           where: { id: userId, deleteTime: null },
@@ -235,7 +235,7 @@ export class Authenticator {
       }
 
       case "supervisor": {
-        const supervisorId = identity.identity.value!.id;
+        const supervisorId = identity.identity.value.id;
 
         const supervisor = await this.#repository.client.supervisor.findUnique({
           where: { id: supervisorId, deleteTime: null },

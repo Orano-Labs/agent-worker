@@ -88,6 +88,10 @@ export class SupervisorServiceImplementation {
   }
 
   async delete(request: SupervisorServiceDeleteRequestValid, _: HandlerContext) {
+    if (this.#registry.isOnline(request.id)) {
+      throw new ConnectError("Cannot delete a supervisor that is currently online.", Code.FailedPrecondition);
+    }
+
     const supervisor = await this.#repository.client.supervisor
       .update({
         where: {

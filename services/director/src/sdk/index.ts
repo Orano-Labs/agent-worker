@@ -10,7 +10,7 @@ import {
   type MessageValidType,
   toBinary,
 } from "@bufbuild/protobuf";
-import type { Timestamp } from "@bufbuild/protobuf/wkt";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { type CallOptions, createClient, type Transport } from "@connectrpc/connect";
 import * as ProjectPB from "@/generated/proto/api/v1/project_pb";
 import { ProjectService } from "@/generated/proto/api/v1/project_pb";
@@ -81,7 +81,7 @@ export class Client {
    * 1. Creates a random 32-byte nonce for replay protection.
    * 2. Signs the payload string `{nonceHex}:{unixSeconds}[:{id}]` with the
    *    identity's Ed25519 private key.
-   * 3. Serializes the {@link SignaturePB.Signature} protobuf and returns it
+   * 3. Serializes the {@link SignaturePB.SignatureSchema} protobuf and returns it
    *    as a Base64-encoded string for the `x-request-signature` header.
    */
   async #generateRequestSignature() {
@@ -102,41 +102,41 @@ export class Client {
       signature,
     });
 
-    return Client.toBase64(toBinary(SignatureSchema, signatureMessage));
+    return this.#toBase64(toBinary(SignatureSchema, signatureMessage));
   }
 
   /**
    * Generate a development request signature (no cryptographic signing).
    *
-   * Simply serializes the {@link SignatureIdentity} and returns it as Base64
+   * Simply serializes the {@link SignaturePB.SignatureIdentitySchema} and returns it as Base64
    * for the `x-request-signature-development` header.  The server will skip
    * signature verification in non-production environments.
    */
   async #generateRequestSignatureDev() {
-    const identity = this.#buildIdentity();
-
-    return Client.toBase64(toBinary(SignatureIdentitySchema, identity));
+    return this.#toBase64(toBinary(SignatureIdentitySchema, this.#buildIdentity()));
   }
 
   /**
-   * Build the {@link SignatureIdentity} protobuf from the client's identity.
+   * Build the {@link SignaturePB.SignatureIdentitySchema} protobuf from the client's identity.
    */
-  #buildIdentity(): SignatureIdentityValid {
+  #buildIdentity() {
     const { type } = this.#identity;
 
-    if (type === "manager") {
-      return create(SignatureIdentitySchema, {
+    let result: SignatureIdentityValid;
+
+    if (this.#identity.type === "manager") {
+      result = {
+        $typeName: "api.v1.SignatureIdentity",
         identity: {
           case: "manager",
           value: {
             $typeName: "api.v1.SignatureManagerIdentity",
           },
         },
-      }) as SignatureIdentityValid;
-    }
-
-    if (type === "supervisor") {
-      return create(SignatureIdentitySchema, {
+      };
+    } else if (type === "supervisor") {
+      result = {
+        $typeName: "api.v1.SignatureIdentity",
         identity: {
           case: "supervisor",
           value: {
@@ -144,18 +144,21 @@ export class Client {
             id: this.#identity.id,
           },
         },
-      }) as SignatureIdentityValid;
+      };
+    } else {
+      result = {
+        $typeName: "api.v1.SignatureIdentity",
+        identity: {
+          case: "user",
+          value: {
+            $typeName: "api.v1.SignatureUserIdentity",
+            id: this.#identity.id,
+          },
+        },
+      };
     }
 
-    return create(SignatureIdentitySchema, {
-      identity: {
-        case: "user",
-        value: {
-          $typeName: "api.v1.SignatureUserIdentity",
-          id: this.#identity.id,
-        },
-      },
-    }) as SignatureIdentityValid;
+    return result;
   }
 
   /**
@@ -166,7 +169,7 @@ export class Client {
    *   User/Worker:`{nonceHex}:{unixSeconds}:{id}`
    */
   #buildPayloadString(nonce: Uint8Array, unixSeconds: number) {
-    const nonceHex = Client.toHex(nonce);
+    const nonceHex = this.#toHex(nonce);
 
     if (this.#identity.type === "manager") {
       return `${nonceHex}:${unixSeconds}`;
@@ -182,7 +185,7 @@ export class Client {
    * the PKCS#8 DER envelope around it so the Web Crypto API can import it.
    */
   async #sign(payload: string) {
-    const seed = Client.hexToUint8Array(this.#identity.privateKey);
+    const seed = this.#hexToUint8Array(this.#identity.privateKey);
     const pkcs8 = new Uint8Array(PKCS8_ED25519_HEADER.length + seed.length);
 
     pkcs8.set(PKCS8_ED25519_HEADER);
@@ -196,19 +199,15 @@ export class Client {
     return new Uint8Array(signatureBuffer);
   }
 
-  #timestampFromUnix(unixSeconds: number): Timestamp {
-    return {
-      $typeName: "google.protobuf.Timestamp",
-      seconds: BigInt(unixSeconds),
-      nanos: 0,
-    };
+  #timestampFromUnix(unixSeconds: number) {
+    return timestampFromMs(unixSeconds * 1000);
   }
 
-  static toHex(source: Uint8Array) {
+  #toHex(source: Uint8Array) {
     return source.reduce((str, byte) => str + byte.toString(16).padStart(2, "0"), "");
   }
 
-  static toBase64(source: Uint8Array) {
+  #toBase64(source: Uint8Array) {
     if (typeof Buffer !== "undefined") {
       return Buffer.from(source).toString("base64");
     }
@@ -216,7 +215,7 @@ export class Client {
     return btoa(String.fromCharCode(...source));
   }
 
-  static hexToUint8Array(source: string) {
+  #hexToUint8Array(source: string) {
     return new Uint8Array(source.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) ?? []);
   }
 

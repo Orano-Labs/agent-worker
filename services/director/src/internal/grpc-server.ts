@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createSecureServer, type Http2SecureServer } from "node:http2";
 import type { Socket } from "node:net";
@@ -7,15 +6,11 @@ import { Code, ConnectError, createContextKey, type HandlerContext, type Interce
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createValidateInterceptor } from "@connectrpc/validate";
 import { default as Router } from "find-my-way";
-import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
+import type { SignatureIdentityValid } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
-import { Protobuf } from "@/helpers/protobuf";
 import { Result } from "@/helpers/result";
-import { Cache } from "@/internal/cache";
-import { Key } from "@/internal/key";
+import { Authenticator } from "@/internal/authenticator";
 import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Variables } from "@/internal/variables";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
@@ -29,8 +24,6 @@ const REQUEST_ID_CONTEXT = createContextKey<string | null>(null);
 const USER_IDENTITY_CONTEXT = createContextKey<string | null>(null);
 const SUPERVISOR_IDENTITY_CONTEXT = createContextKey<string | null>(null);
 const IDENTITY_CASE_CONTEXT = createContextKey<SignatureIdentityValid["identity"]["case"] | null>(null);
-
-const PRODUCTION = process.env.NODE_ENV === "production";
 
 /**
  * Access control map — service type name → permitted identity cases.
@@ -50,41 +43,20 @@ const SERVICE_ACCESS: Readonly<Record<string, ReadonlyArray<SignatureIdentityVal
 
 export class GRPCServer {
   #logger: Logger;
-  #variables: Variables;
   #server?: Http2SecureServer;
   #sockets: Set<Socket>;
-  #key: Key;
-  #repository: Repository;
-  #cache: Cache;
+  #authenticator: Authenticator;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("GRPCServer");
-    this.#variables = Container.inject(Variables);
     this.#sockets = new Set();
-    this.#key = Container.inject(Key);
-    this.#repository = Container.inject(Repository);
-    this.#cache = Container.inject(Cache);
+    this.#authenticator = Container.inject(Authenticator);
   }
 
   #createRequestIdInterceptor() {
-    /**
-     * Generate an ObjectID-compatible 24-character hex string.
-     *
-     * The timestamp prefix allows extracting the request creation time
-     * without any lookup — useful for debugging and log correlation.
-     */
-    const generateRequestId = () => {
-      const buffer = Buffer.alloc(12);
-
-      buffer.writeUInt32BE(Math.floor(Date.now() / 1000), 0);
-      buffer.set(randomBytes(8), 4);
-
-      return buffer.toString("hex");
-    };
-
     const interceptor: Interceptor = (next) => {
       return async (req) => {
-        req.contextValues.set(REQUEST_ID_CONTEXT, generateRequestId());
+        req.contextValues.set(REQUEST_ID_CONTEXT, Authenticator.createRequestId());
 
         return next(req);
       };
@@ -109,287 +81,26 @@ export class GRPCServer {
   }
 
   #createAuthenticatorInterceptor() {
-    /** Maximum allowed clock skew for request timestamps (5 minutes in ms). */
-    const TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
-
-    /** TTL in seconds for nonce entries in Redis (must ≥ TIMESTAMP_WINDOW). */
-    const NONCE_TTL_SEC = 10 * 60;
-
-    const parseHeaders = (header: Headers) => {
-      let value = header.get("x-request-signature");
-
-      if (value !== null) {
-        return [value, false] as const;
-      }
-
-      if (!PRODUCTION) {
-        value = header.get("x-request-signature-development");
-
-        if (value !== null) {
-          return [value, true] as const;
-        }
-      }
-
-      return null;
-    };
-
-    const managerPubKeyHex = this.#variables.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY");
-
-    if (!managerPubKeyHex) {
-      this.#logger.warn("Manager public key is not configured. Manager identity authentication will be unavailable.");
-    }
-
     const interceptor: Interceptor = (next) => {
       return async (req) => {
         const reqId = req.contextValues.get(REQUEST_ID_CONTEXT) || "??";
-        const headers = parseHeaders(req.header);
         const logger = this.#logger.with({ requestId: reqId });
 
-        if (headers === null) {
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
+        const identity = await this.#authenticator.authenticate(req.header);
 
-        const [raw, dev] = headers;
-
-        let buffer: Buffer;
-
-        try {
-          buffer = Buffer.from(raw, "base64");
-        } catch (error) {
-          logger.warn("Failed to decode Base64 signature header.", {
-            err: error,
-          });
-
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        if (dev) {
-          let identity: SignatureIdentityValid;
-
-          try {
-            identity = Protobuf.decode(SignatureIdentitySchema, buffer);
-          } catch (error) {
-            logger.warn("Failed to decode SignatureIdentity from development header.", {
-              err: error,
-            });
-
-            throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-          }
-
-          const validation = Protobuf.validate(SignatureIdentitySchema, identity);
-
-          if (validation.kind !== "valid") {
-            logger.warn("Development SignatureIdentity validation failed.", {
-              err: validation.error,
-            });
-
-            throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-          }
-
-          const message = validation.message;
-
-          if (message.identity.case === "user") {
-            req.contextValues.set(USER_IDENTITY_CONTEXT, message.identity.value.id);
-          } else if (message.identity.case === "manager") {
-            // Manager has no id — presence alone is sufficient.
-          } else if (message.identity.case === "supervisor") {
-            req.contextValues.set(SUPERVISOR_IDENTITY_CONTEXT, message.identity.value.id);
-          } else {
-            logger.warn("Unknown identity case in development mode.", {
-              case: message.identity.case,
-            });
-
-            throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-          }
-
-          req.contextValues.set(IDENTITY_CASE_CONTEXT, message.identity.case);
-
-          logger.debug("Development request authenticated.", {
-            identityCase: message.identity.case,
-          });
-
-          return next(req);
-        }
-
-        let signature: ReturnType<typeof Protobuf.decode<typeof SignatureSchema>>;
-
-        try {
-          signature = Protobuf.decode(SignatureSchema, buffer);
-        } catch (error) {
-          logger.warn("Failed to decode Signature protobuf from header.", {
-            err: error,
-          });
-
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        // Validate that all required fields conform to the proto spec.
-        const validation = Protobuf.validate(SignatureSchema, signature);
-
-        if (validation.kind !== "valid") {
-          logger.warn("Signature protobuf validation failed.", {
-            err: validation.error,
-          });
-
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        const { payload, signature: sigBytes } = validation.message;
-        const { nonce, timestamp, identity } = payload;
-
-        const tsDate = Protobuf.Timestamp.toDate(timestamp);
-        const now = Date.now();
-        const diffMs = Math.abs(now - tsDate.getTime());
-
-        if (diffMs > TIMESTAMP_WINDOW_MS) {
-          logger.warn("Request timestamp outside allowed window.", {
-            diffMs,
-            windowMs: TIMESTAMP_WINDOW_MS,
-          });
-
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        const nonceHex = Buffer.from(nonce).toString("hex");
-        const nonceKey = `nonce:${nonceHex}`;
-
-        try {
-          const nonceResult = await this.#cache.client.set(nonceKey, "1", "EX", NONCE_TTL_SEC, "NX");
-
-          if (nonceResult !== "OK") {
-            logger.warn("Nonce has already been used — possible replay attack.", {
-              nonceKey: logger.mask(nonceKey),
-            });
-
-            throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-          }
-        } catch (error) {
-          if (error instanceof ConnectError) throw error;
-
-          logger.error("Failed to persist nonce in Redis. Failing closed.", {
-            err: error,
-          });
-
-          // If Redis is unavailable, fail closed rather than silently
-          // allowing potentially replayed requests.
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        const unixSeconds = Math.floor(tsDate.getTime() / 1000);
-        const identityCase = identity.identity.case;
-
-        let messageToVerify: string;
-        let publicKey: Buffer;
-
-        switch (identityCase) {
-          case "manager": {
-            messageToVerify = `${nonceHex}:${unixSeconds}`;
-
-            const managerPubKeyHex = this.#variables.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY");
-
-            if (!managerPubKeyHex) {
-              throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-            }
-
-            publicKey = Buffer.from(managerPubKeyHex, "hex");
-
+        switch (identity.case) {
+          case "user":
+            req.contextValues.set(USER_IDENTITY_CONTEXT, identity.userId);
             break;
-          }
-
-          case "user": {
-            const userId = identity.identity.value.id;
-
-            messageToVerify = `${nonceHex}:${unixSeconds}:${userId}`;
-
-            const user = await this.#repository.client.user.findUnique({
-              where: {
-                id: userId,
-                deleteTime: null,
-              },
-              select: {
-                publicKey: true,
-              },
-            });
-
-            if (!user) {
-              logger.warn("User not found or disabled for signature verification.", {
-                userId: logger.mask(userId),
-              });
-
-              throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-            }
-
-            publicKey = Buffer.from(user.publicKey);
-
+          case "supervisor":
+            req.contextValues.set(SUPERVISOR_IDENTITY_CONTEXT, identity.supervisorId);
             break;
-          }
-
-          case "supervisor": {
-            const supervisorId = identity.identity.value.id;
-
-            messageToVerify = `${nonceHex}:${unixSeconds}:${supervisorId}`;
-
-            const supervisor = await this.#repository.client.supervisor.findUnique({
-              where: {
-                id: supervisorId,
-                deleteTime: null,
-              },
-              select: {
-                publicKey: true,
-              },
-            });
-
-            if (!supervisor) {
-              logger.warn("Supervisor not found for signature verification.", {
-                supervisorId: logger.mask(supervisorId),
-              });
-
-              throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-            }
-
-            publicKey = Buffer.from(supervisor.publicKey);
-
-            break;
-          }
-
-          default:
-            logger.warn("Unknown identity case in production mode.", {
-              case: identityCase,
-            });
-
-            throw new ConnectError("Unauthenticated", Code.Unauthenticated);
         }
 
-        let verified: boolean;
+        req.contextValues.set(IDENTITY_CASE_CONTEXT, identity.case);
 
-        try {
-          verified = this.#key.verifyED25519(publicKey, Buffer.from(messageToVerify, "utf-8"), Buffer.from(sigBytes));
-        } catch (error) {
-          logger.error("Ed25519 signature verification threw an exception.", {
-            err: error,
-          });
-
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        if (!verified) {
-          logger.warn("Ed25519 signature verification failed.", {
-            identityCase,
-          });
-
-          throw new ConnectError("Unauthenticated", Code.Unauthenticated);
-        }
-
-        if (identityCase === "user") {
-          req.contextValues.set(USER_IDENTITY_CONTEXT, identity.identity.value.id);
-        } else if (identityCase === "supervisor") {
-          req.contextValues.set(SUPERVISOR_IDENTITY_CONTEXT, identity.identity.value.id);
-        }
-
-        req.contextValues.set(IDENTITY_CASE_CONTEXT, identityCase);
-
-        logger.debug("Request authenticated successfully.", {
-          identityCase,
+        logger.debug("Request authenticated.", {
+          identityCase: identity.case,
         });
 
         return next(req);

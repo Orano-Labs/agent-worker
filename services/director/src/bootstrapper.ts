@@ -1,6 +1,7 @@
 import { Scheduler } from "@/core/scheduler";
 import { SupervisorRegistry } from "@/core/supervisor-registry";
 import { Container } from "@/helpers/container";
+import { Authenticator } from "@/internal/authenticator";
 import { Cache } from "@/internal/cache";
 import { CommandLine } from "@/internal/command-line";
 import { Environment } from "@/internal/environment";
@@ -156,6 +157,7 @@ Container.singleton(Cache, () => new Cache());
 
 Container.singleton(Scheduler, () => new Scheduler());
 Container.singleton(SupervisorRegistry, () => new SupervisorRegistry());
+Container.singleton(Authenticator, () => new Authenticator());
 
 Container.singleton(HTTPServer, () => new HTTPServer());
 Container.singleton(GRPCServer, () => new GRPCServer());

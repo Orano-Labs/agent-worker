@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createSecureServer, type Http2SecureServer } from "node:http2";
 import type { Socket } from "node:net";
@@ -53,10 +54,19 @@ export class GRPCServer {
     this.#authenticator = Container.inject(Authenticator);
   }
 
+  #createRequestId() {
+    const buffer = Buffer.alloc(12);
+
+    buffer.writeUInt32BE(Math.floor(Date.now() / 1000), 0);
+    buffer.set(randomBytes(8), 4);
+
+    return buffer.toString("hex");
+  }
+
   #createRequestIdInterceptor() {
     const interceptor: Interceptor = (next) => {
       return async (req) => {
-        req.contextValues.set(REQUEST_ID_CONTEXT, Authenticator.createRequestId());
+        req.contextValues.set(REQUEST_ID_CONTEXT, this.#createRequestId());
 
         return next(req);
       };

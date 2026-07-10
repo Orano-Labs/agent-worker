@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer";
-import { randomBytes } from "node:crypto";
 import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
@@ -298,14 +296,5 @@ export class Authenticator {
 
         throw new Error("Unknown identity case");
     }
-  }
-
-  static createRequestId() {
-    const buffer = Buffer.alloc(12);
-
-    buffer.writeUInt32BE(Math.floor(Date.now() / 1000), 0);
-    buffer.set(randomBytes(8), 4);
-
-    return buffer.toString("hex");
   }
 }

@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package api.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+message Task {
+  string project_id = 1;
+  string token = 2;
+}
+
+message TunnelMessageHeartbeal {}
+message TunnelMessageData {
+  string id = 1 [(buf.validate.field).string = {}];
+}
+message TunnelMessageAcknowledge {}
+
+message TunnelMessage {}
+
+message SupervisorState {}
+
+message SupervisorPortalServiceFetchRequest {}
+message SupervisorPortalServiceFetchResponse {
+  Task task = 1;
+}
+
+message SupervisorPortalServiceAcknowledgeRequest {}
+message SupervisorPortalServiceAcknowledgeResponse {}
+
+message SupervisorPortalServiceTunnelRequest {}
+message SupervisorPortalServiceTunnelResponse {}
+
+message SupervisorPortalServiceReportRequest {
+  int32 running_projects = 1;
+  double cpu_usage = 2;
+  double memory_usage = 3;
+  double disk_usage = 4;
+}
+message SupervisorPortalServiceReportResponse {}
+
+service SupervisorPortalService {
+  rpc Fetch(SupervisorPortalServiceFetchRequest) returns (SupervisorPortalServiceFetchResponse);
+  rpc Report(stream SupervisorPortalServiceReportRequest) returns (SupervisorPortalServiceReportResponse);
+  rpc Tunnel(SupervisorPortalServiceTunnelRequest) returns (SupervisorPortalServiceTunnelResponse);
+}

@@ -3,123 +3,97 @@ syntax = "proto3";
 package api.v1;
 
 import "buf/validate/validate.proto";
-
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
 message Supervisor {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
-  bytes public_key = 2 [
-    (buf.validate.field).bytes = {
-      min_len: 16,
-      max_len: 128,
-    }
-  ];
-  google.protobuf.BytesValue metadata = 3 [
-    (buf.validate.field).bytes = {
-      max_len: 2048,
-    }
-  ];
-  google.protobuf.Timestamp create_time = 4 [
-    (buf.validate.field).required = true
-  ];
-  google.protobuf.Timestamp update_time = 5 [
-    (buf.validate.field).required = true
-  ];
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+  bytes public_key = 2 [(buf.validate.field).bytes = {
+    min_len: 16
+    max_len: 128
+  }];
+  google.protobuf.BytesValue metadata = 3 [(buf.validate.field).bytes = {max_len: 2048}];
+  google.protobuf.Timestamp create_time = 4 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp update_time = 5 [(buf.validate.field).required = true];
+  bool online = 6;
 }
 
 message SupervisorServiceCreateRequest {
-  google.protobuf.BytesValue metadata = 1 [
-    (buf.validate.field).bytes = {
-      max_len: 2048,
-    }
-  ];
-};
+  google.protobuf.BytesValue metadata = 1 [(buf.validate.field).bytes = {max_len: 2048}];
+}
 message SupervisorServiceCreateResponse {
-  Supervisor supervisor = 1 [
-    (buf.validate.field).required = true
-  ];
-  bytes private_key = 2 [
-    (buf.validate.field).bytes = {
-      min_len: 16,
-      max_len: 128,
-    }
-  ];
-};
+  Supervisor supervisor = 1 [(buf.validate.field).required = true];
+  bytes private_key = 2 [(buf.validate.field).bytes = {
+    min_len: 16
+    max_len: 128
+  }];
+}
 
 message SupervisorServiceUpdateMetadataRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
-  google.protobuf.BytesValue metadata = 2 [
-    (buf.validate.field).bytes = {
-      max_len: 2048,
-    }
-  ];
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+  google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
 }
 message SupervisorServiceUpdateMetadataResponse {
-  Supervisor supervisor = 1 [
-    (buf.validate.field).required = true
-  ];
-};
+  Supervisor supervisor = 1 [(buf.validate.field).required = true];
+}
 
 message SupervisorServiceDeleteRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
-message SupervisorServiceDeleteResponse {};
+message SupervisorServiceDeleteResponse {}
 
 message SupervisorServiceGetRequest {
-  string id = 1 [
-    (buf.validate.field).string = {
-      len: 24,
-    }
-  ];
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 message SupervisorServiceGetResponse {
-  Supervisor supervisor = 1 [
-    (buf.validate.field).required = true
-  ];
-};
+  Supervisor supervisor = 1 [(buf.validate.field).required = true];
+}
 
 message SupervisorServiceListRequest {
-  int32 page = 1 [
-    (buf.validate.field).int32 = {
-      gt: 0,
-    }
-  ];
-  int32 page_size = 2 [
-    (buf.validate.field).int32 = {
-      gt: 0,
-      lte: 100,
-    }
-  ];
+  int32 page = 1 [(buf.validate.field).int32 = {gt: 0}];
+  int32 page_size = 2 [(buf.validate.field).int32 = {
+    gt: 0
+    lte: 100
+  }];
   google.protobuf.BoolValue disabled = 3;
 }
 message SupervisorServiceListResponse {
-  repeated Supervisor supervisors = 1 [
-    (buf.validate.field).repeated = {
-      min_items: 0,
-    }
-  ];
-  int32 total = 2 [
-    (buf.validate.field).int32 = {
-      gte: 0,
-    }
-  ];
-};
+  repeated Supervisor supervisors = 1 [(buf.validate.field).repeated = {min_items: 0}];
+  int32 total = 2 [(buf.validate.field).int32 = {gte: 0}];
+}
 
-message SupervisorServiceStatusRequest {};
-message SupervisorServiceStatusResponse {};
+message SupervisorStatusOnline {
+  int32 running_projects = 1 [(buf.validate.field).int32 = {gte: 0}];
+  double cpu_usage = 2 [(buf.validate.field).double = {gte: 0}];
+  double memory_usage = 3 [(buf.validate.field).double = {gte: 0}];
+  double disk_usage = 4 [(buf.validate.field).double = {gte: 0}];
+}
+
+message SupervisorStatusOffline {
+  google.protobuf.Timestamp last_online_at = 1 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp last_report_at = 2 [(buf.validate.field).required = true];
+}
+
+message SupervisorStatusNeverOnline {}
+
+message SupervisorStatus {
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+
+  oneof status {
+    option (buf.validate.oneof).required = true;
+
+    SupervisorStatusOnline online = 3;
+    SupervisorStatusOffline offline = 4;
+    SupervisorStatusNeverOnline never_online = 5;
+  }
+}
+
+message SupervisorServiceStatusRequest {
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+}
+message SupervisorServiceStatusResponse {
+  SupervisorStatus status = 1 [(buf.validate.field).required = true];
+}
 
 // SupervisorService
 service SupervisorService {

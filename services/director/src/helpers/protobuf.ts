@@ -2,13 +2,6 @@ import * as pb from "@bufbuild/protobuf";
 import * as pbInternal from "@bufbuild/protobuf/wkt";
 import * as pbValidate from "@bufbuild/protovalidate";
 
-import {
-  EventProjectCreatedSchema,
-  EventProjectDeploymentFailedSchema,
-  EventProjectDeploymentFinishedSchema,
-  EventProjectDeploymentRequestedSchema,
-} from "@/generated/proto/event/v1/project_pb";
-
 export namespace Protobuf {
   const validator = pbValidate.createValidator({
     failFast: true,
@@ -57,11 +50,4 @@ export namespace Protobuf {
       return pbInternal.timestampNow();
     };
   }
-
-  export const events = pb.createRegistry(
-    EventProjectCreatedSchema,
-    EventProjectDeploymentFailedSchema,
-    EventProjectDeploymentFinishedSchema,
-    EventProjectDeploymentRequestedSchema,
-  );
 }

@@ -13,10 +13,10 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
-    "./supervisor": {
-      "types": "./dist/supervisor.d.mts",
-      "import": "./dist/supervisor.mjs",
-      "require": "./dist/supervisor.cjs"
+    "./sdk": {
+      "types": "./dist/sdk.d.mts",
+      "import": "./dist/sdk.mjs",
+      "require": "./dist/sdk.cjs"
     }
   },
   "scripts": {

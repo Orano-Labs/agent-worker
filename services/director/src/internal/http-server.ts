@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
-import { default as Router } from "find-my-way";
 
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
@@ -11,14 +10,12 @@ const SHUTDOWN_GRACE_MS = 5_000;
 
 export class HTTPServer {
   #server: ReturnType<typeof createServer>;
-  #router: Router.Instance<Router.HTTPVersion.V1>;
   #variables: Variables;
   #logger: Logger;
   #sockets: Set<Socket>;
 
   constructor() {
-    this.#router = Router();
-    this.#server = createServer(this.#router.lookup.bind(this.#router));
+    this.#server = createServer();
     this.#variables = Container.inject(Variables);
     this.#logger = Container.inject(Logger).scope("HTTPServer");
     this.#sockets = new Set();
@@ -30,10 +27,6 @@ export class HTTPServer {
         this.#sockets.delete(socket);
       });
     });
-  }
-
-  get router() {
-    return this.#router;
   }
 
   get server() {

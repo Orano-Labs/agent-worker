@@ -10,8 +10,9 @@ import { default as Router } from "find-my-way";
 import type { SignatureIdentityValid } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
-import { type AuthenticatedIdentity, Authenticator } from "@/internal/authenticator";
+import { Authenticator } from "@/internal/authenticator";
 import { Logger } from "@/internal/logger";
+import { Variables } from "@/internal/variables";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
@@ -47,11 +48,13 @@ export class GRPCServer {
   #server?: Http2SecureServer;
   #sockets: Set<Socket>;
   #authenticator: Authenticator;
+  #variables: Variables;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("GRPCServer");
     this.#sockets = new Set();
     this.#authenticator = Container.inject(Authenticator);
+    this.#variables = Container.inject(Variables);
   }
 
   #createRequestId() {
@@ -96,7 +99,7 @@ export class GRPCServer {
         const reqId = req.contextValues.get(REQUEST_ID_CONTEXT) || "??";
         const logger = this.#logger.with({ requestId: reqId });
 
-        let identity: AuthenticatedIdentity;
+        let identity: Authenticator.Identity;
 
         try {
           identity = await this.#authenticator.authenticate(req.header);
@@ -247,13 +250,6 @@ export class GRPCServer {
     return Result.ok();
   }
 
-  /**
-   * Gracefully shut down the gRPC server.
-   *
-   * 1. Stops accepting new connections via {@link Http2SecureServer.close}.
-   * 2. Waits up to {@link SHUTDOWN_GRACE_MS} for in-flight requests to complete.
-   * 3. Force-destroys any remaining sockets.
-   */
   async shutdown(): Promise<void> {
     if (!this.#server) {
       return;

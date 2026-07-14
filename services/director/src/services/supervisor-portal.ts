@@ -1,4 +1,5 @@
 import type { ConnectRouter, HandlerContext } from "@connectrpc/connect";
+import { Scheduler } from "@/core/scheduler";
 import { SupervisorRegistry } from "@/core/supervisor-registry";
 import {
   SupervisorPortalService,
@@ -6,6 +7,7 @@ import {
   SupervisorPortalServiceFetchResponseSchema,
   type SupervisorPortalServiceReportRequestValid,
   SupervisorPortalServiceReportResponseSchema,
+  TaskSchema,
 } from "@/generated/proto/api/v1/supervisor-portal_pb";
 import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
@@ -17,6 +19,7 @@ export class SupervisorPortalServiceImplementation {
   #repository: Repository;
   #server: GRPCServer;
   #registry: SupervisorRegistry;
+  #scheduler: Scheduler;
 
   #logger: Logger;
 
@@ -25,11 +28,22 @@ export class SupervisorPortalServiceImplementation {
     this.#server = Container.inject(GRPCServer);
     this.#registry = Container.inject(SupervisorRegistry);
     this.#logger = Container.inject(Logger).scope("SupervisorPortalService");
+    this.#scheduler = Container.inject(Scheduler);
   }
 
-  async fetch(_: SupervisorPortalServiceFetchRequestValid, __: HandlerContext) {
+  async fetch(_: SupervisorPortalServiceFetchRequestValid, context: HandlerContext) {
+    const supervisorId = this.#server.getSupervisorIdentityContextMust(context);
+    const entry = await this.#scheduler.fetch(supervisorId);
+
+    if (!entry) {
+      return Protobuf.createValid(SupervisorPortalServiceFetchResponseSchema, {});
+    }
+
     return Protobuf.createValid(SupervisorPortalServiceFetchResponseSchema, {
-      // projectId: undefined,
+      task: Protobuf.createValid(TaskSchema, {
+        projectId: entry.job.data.projectId,
+        token: entry.token,
+      }),
     });
   }
 

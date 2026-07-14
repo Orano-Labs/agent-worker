@@ -3,9 +3,13 @@ import { join } from "node:path";
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { createId } from "@orama/cuid2";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/client";
-import { ProjectLaunchQueueStatus, ProjectResourceTier } from "@/generated/prisma/enums";
+import { Scheduler } from "@/core/scheduler";
+import { ProjectResourceTier } from "@/generated/prisma/enums";
 import {
   ProjectInstanceSchema,
+  ProjectInstanceStatusPendingSchema,
+  ProjectInstanceStatusPullingSchema,
+  ProjectInstanceStatusRunningSchema,
   ProjectInstanceStatusTerminatedSchema,
   ProjectResourceTier as ProjectResourceTierPB,
   ProjectSchema,
@@ -36,6 +40,7 @@ export class ProjectServiceImplementation {
 
   #variables: Variables;
   #logger: Logger;
+  #scheduler: Scheduler;
 
   #mapResourceTierToRepository(value: ProjectResourceTierPB) {
     switch (value) {
@@ -69,6 +74,55 @@ export class ProjectServiceImplementation {
     this.#server = Container.inject(GRPCServer);
     this.#variables = Container.inject(Variables);
     this.#logger = Container.inject(Logger).scope("ProjectService");
+    this.#scheduler = Container.inject(Scheduler);
+  }
+
+  async #buildInstance(projectId: string) {
+    const status = await this.#scheduler.getStatus(projectId);
+
+    switch (status.type) {
+      case "pending":
+        return Protobuf.createValid(ProjectInstanceSchema, {
+          status: {
+            case: "pending",
+            value: Protobuf.createValid(ProjectInstanceStatusPendingSchema, {
+              enqueuedAt: Protobuf.Timestamp.fromDate(status.enqueuedAt),
+            }),
+          },
+        });
+
+      case "dispatched":
+        return Protobuf.createValid(ProjectInstanceSchema, {
+          status: {
+            case: "pulling",
+            value: Protobuf.createValid(ProjectInstanceStatusPullingSchema, {
+              dispatchedAt: Protobuf.Timestamp.fromDate(status.dispatchedAt),
+              timeoutRemainingMs: status.timeoutRemaining,
+              supervisorId: status.supervisor,
+            }),
+          },
+        });
+
+      case "running":
+        return Protobuf.createValid(ProjectInstanceSchema, {
+          status: {
+            case: "running",
+            value: Protobuf.createValid(ProjectInstanceStatusRunningSchema, {
+              connectedAt: Protobuf.Timestamp.fromDate(status.connectedAt),
+              runningDurationMs: BigInt(status.runningDuration),
+              supervisorId: status.supervisor,
+            }),
+          },
+        });
+
+      case "idle":
+        return Protobuf.createValid(ProjectInstanceSchema, {
+          status: {
+            case: "terminated",
+            value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
+          },
+        });
+    }
   }
 
   async create(request: ProjectServiceCreateRequestValid, context: HandlerContext) {
@@ -203,6 +257,8 @@ export class ProjectServiceImplementation {
         throw error;
       });
 
+    const instance = await this.#buildInstance(project.id);
+
     return Protobuf.createValid(ProjectServiceGetResponseSchema, {
       project: Protobuf.createValid(ProjectSchema, {
         id: project.id,
@@ -211,12 +267,7 @@ export class ProjectServiceImplementation {
         resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
         metadata: project.metadata === null ? undefined : project.metadata,
         templateId: project.templateId === null ? undefined : project.templateId,
-        instance: Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "terminated",
-            value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
-          },
-        }),
+        instance,
       }),
     });
   }
@@ -248,8 +299,10 @@ export class ProjectServiceImplementation {
       }),
     ]);
 
+    const instances = await Promise.all(projects.map((p) => this.#buildInstance(p.id)));
+
     return Protobuf.createValid(ProjectServiceListResponseSchema, {
-      projects: projects.map((project) => {
+      projects: projects.map((project, i) => {
         return Protobuf.createValid(ProjectSchema, {
           id: project.id,
           createTime: Protobuf.Timestamp.fromDate(project.createTime),
@@ -257,12 +310,7 @@ export class ProjectServiceImplementation {
           resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
           metadata: project.metadata === null ? undefined : project.metadata,
           templateId: project.templateId === null ? undefined : project.templateId,
-          instance: Protobuf.createValid(ProjectInstanceSchema, {
-            status: {
-              case: "terminated",
-              value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
-            },
-          }),
+          instance: instances[i],
         });
       }),
       total,
@@ -271,6 +319,12 @@ export class ProjectServiceImplementation {
 
   async delete(request: ProjectServiceDeleteRequestValid, context: HandlerContext) {
     const user = this.#server.getUserIdentityContextMust(context);
+
+    const status = await this.#scheduler.getStatus(request.id);
+
+    if (status.type !== "idle") {
+      throw new ConnectError("Project must be stopped before it can be deleted", Code.FailedPrecondition);
+    }
 
     const project = await this.#repository.client.project
       .update({
@@ -324,29 +378,11 @@ export class ProjectServiceImplementation {
       throw new ConnectError("Project not found", Code.NotFound);
     }
 
-    await this.#repository.transaction(async (tx) => {
-      await tx.client.$queryRaw`SELECT 1 FROM \`project\` WHERE \`id\` = ${project.id} FOR UPDATE`;
+    const enqueued = await this.#scheduler.enqueue(request.id);
 
-      const activeLaunch = await tx.client.projectLaunchQueue.findFirst({
-        where: {
-          projectId: project.id,
-          status: {
-            not: ProjectLaunchQueueStatus.Terminated,
-          },
-        },
-      });
-
-      if (activeLaunch) {
-        throw new ConnectError("Project already has an active launch", Code.FailedPrecondition);
-      }
-
-      await tx.client.projectLaunchQueue.create({
-        data: {
-          projectId: project.id,
-          status: ProjectLaunchQueueStatus.Pending,
-        },
-      });
-    });
+    if (!enqueued) {
+      throw new ConnectError("Project is already in queue", Code.FailedPrecondition);
+    }
 
     return Protobuf.createValid(ProjectServiceLaunchResponseSchema, {});
   }

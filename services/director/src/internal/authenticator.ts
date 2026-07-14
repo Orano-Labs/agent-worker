@@ -12,8 +12,6 @@ const NONCE_TTL_SEC = 10 * 60;
 
 const PRODUCTION = process.env.NODE_ENV === "production";
 
-export type AuthenticatedIdentity = { case: "user"; userId: string } | { case: "manager" } | { case: "supervisor"; supervisorId: string };
-
 export class Authenticator {
   #logger: Logger;
   #variables: Variables;
@@ -37,7 +35,7 @@ export class Authenticator {
    * Ed25519 signature (or bypasses verification in dev mode), and returns the
    * authenticated identity.
    */
-  async authenticate(headers: Headers): Promise<AuthenticatedIdentity> {
+  async authenticate(headers: Headers) {
     const raw = this.#parseHeader(headers);
 
     if (raw === null) {
@@ -84,7 +82,7 @@ export class Authenticator {
     }
   }
 
-  async #authenticateDev(buffer: Buffer): Promise<AuthenticatedIdentity> {
+  async #authenticateDev(buffer: Buffer) {
     let identity: SignatureIdentityValid;
 
     try {
@@ -110,7 +108,7 @@ export class Authenticator {
     return this.#toIdentity(validation.message);
   }
 
-  async #authenticateProduction(buffer: Buffer): Promise<AuthenticatedIdentity> {
+  async #authenticateProduction(buffer: Buffer) {
     let signature: ReturnType<typeof Protobuf.decode<typeof SignatureSchema>>;
 
     try {
@@ -140,13 +138,11 @@ export class Authenticator {
 
     const nonceHex = Buffer.from(nonce).toString("hex");
     await this.#checkNonce(nonceHex);
-
-    const identityCase = identity.identity.case;
     const unixSeconds = Math.floor(Protobuf.Timestamp.toDate(timestamp).getTime() / 1000);
 
-    const { message, publicKey } = await this.#resolvePublicKey(identityCase, identity, nonceHex, unixSeconds);
+    const { message, publicKey } = await this.#resolvePublicKey(identity, nonceHex, unixSeconds);
 
-    this.#verifySignature(publicKey, message, Buffer.from(sigBytes), identityCase);
+    this.#verifySignature(publicKey, message, Buffer.from(sigBytes));
 
     return this.#toIdentity(identity);
   }
@@ -257,7 +253,7 @@ export class Authenticator {
     }
   }
 
-  #verifySignature(publicKey: Buffer, message: string, sigBytes: Buffer, identityCase: string) {
+  #verifySignature(publicKey: Buffer, message: string, sigBytes: Buffer) {
     let verified: boolean;
 
     try {
@@ -271,15 +267,11 @@ export class Authenticator {
     }
 
     if (!verified) {
-      this.#logger.warn("Ed25519 signature verification failed.", {
-        identityCase,
-      });
-
       throw new Error("Signature verification failed");
     }
   }
 
-  #toIdentity(message: SignatureIdentityValid): AuthenticatedIdentity {
+  #toIdentity(message: SignatureIdentityValid): Authenticator.Identity {
     const { identity } = message;
 
     switch (identity.case) {
@@ -297,4 +289,19 @@ export class Authenticator {
         throw new Error("Unknown identity case");
     }
   }
+}
+
+export namespace Authenticator {
+  export type Identity =
+    | {
+        case: "user";
+        userId: string;
+      }
+    | {
+        case: "manager";
+      }
+    | {
+        case: "supervisor";
+        supervisorId: string;
+      };
 }

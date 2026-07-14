@@ -5,7 +5,63 @@ package api.v1;
 import "buf/validate/validate.proto";
 
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/wrappers.proto";
+
+message FileSystemProjectRoot {}
+message FileSystemTemplateRoot {}
+
+message FileSystemRoot {
+  oneof root {
+    FileSystemProjectRoot project_root = 1;
+    FileSystemTemplateRoot template_root = 2;
+  }
+}
+
+message FileSystemFile {
+  string name = 1 [
+    (buf.validate.field).string = {
+      min_len: 1
+    }
+  ];
+  string path = 2  [
+    (buf.validate.field).string = {
+      min_len: 1
+    }
+  ];
+  int64 size = 3 [
+    (buf.validate.field).int64 = {
+      gte: 0
+    }
+  ];
+  google.protobuf.Timestamp modified_time = 4 [
+    (buf.validate.field).required = true
+  ];
+  google.protobuf.Timestamp created_time = 5 [
+    (buf.validate.field).required = true
+  ];
+}
+
+message FileSystemDirectory {
+  repeated FileSystemNode children = 1;
+}
+
+message FileSystemNode {
+  oneof node {
+    FileSystemFile file = 1;
+    FileSystemDirectory directory = 2;
+  }
+}
+
+message FileSystemServiceReadRequest {}
+message FileSystemServiceReadResponse {}
+
+message FileSystemServiceWriteRequest {}
+message FileSystemServiceWriteResponse {}
+
+message FileSystemServiceRemoveRequest {}
+message FileSystemServiceRemoveResponse {}
+
+message FileSystemServiceReadDirectoryRequest {}
+message FileSystemServiceReadDirectoryResponse {}
 
 // 由 User/Manager 消费
 service FileSystemService {}

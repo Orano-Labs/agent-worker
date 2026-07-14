@@ -3,14 +3,13 @@ import { defineConfig } from "tsdown";
 export default defineConfig({
   entry: {
     index: "src/index.ts",
-    supervisor: "src/contracts/supervisor.ts",
+    sdk: "src/sdk/index.ts",
   },
   format: ["cjs", "esm"],
   dts: true,
   sourcemap: true,
   clean: false,
   target: false,
-  unbundle: true,
   deps: {},
   define: {
     VERSION: JSON.stringify(process.env.npm_package_version),

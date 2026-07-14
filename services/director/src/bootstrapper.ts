@@ -1,5 +1,6 @@
 import { Scheduler } from "@/core/scheduler";
 import { SupervisorRegistry } from "@/core/supervisor-registry";
+import { TunnelManager } from "@/core/tunnel-manager";
 import { Container } from "@/helpers/container";
 import { Authenticator } from "@/internal/authenticator";
 import { Cache } from "@/internal/cache";
@@ -7,11 +8,11 @@ import { CommandLine } from "@/internal/command-line";
 import { Environment } from "@/internal/environment";
 import { GRPCServer } from "@/internal/grpc-server";
 import { HTTPServer } from "@/internal/http-server";
+import { HTTPServerRouter } from "@/internal/http-server-router";
 import { Key } from "@/internal/key";
 import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
 import { Variables } from "@/internal/variables";
-import { WEBSocketServer } from "@/internal/websocket-server";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
@@ -143,7 +144,7 @@ export class Bootstrapper {
         }
       });
 
-    Container.inject(WEBSocketServer).setup();
+    Container.inject(HTTPServerRouter).setup();
   }
 }
 
@@ -157,11 +158,12 @@ Container.singleton(Cache, () => new Cache());
 
 Container.singleton(Scheduler, () => new Scheduler());
 Container.singleton(SupervisorRegistry, () => new SupervisorRegistry());
+Container.singleton(TunnelManager, () => new TunnelManager());
 Container.singleton(Authenticator, () => new Authenticator());
 
 Container.singleton(HTTPServer, () => new HTTPServer());
 Container.singleton(GRPCServer, () => new GRPCServer());
-Container.singleton(WEBSocketServer, () => new WEBSocketServer());
+Container.singleton(HTTPServerRouter, () => new HTTPServerRouter());
 
 Container.singleton(Bootstrapper, () => new Bootstrapper());
 

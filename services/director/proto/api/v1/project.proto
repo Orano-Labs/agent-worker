@@ -13,11 +13,21 @@ enum ProjectResourceTier {
   PROJECT_RESOURCE_TIER_PERFORMANCE = 3;
 }
 
-message ProjectInstanceStatusPending {}
+message ProjectInstanceStatusPending {
+  google.protobuf.Timestamp enqueued_at = 1 [(buf.validate.field).required = true];
+}
 
-message ProjectInstanceStatusRunning {}
+message ProjectInstanceStatusRunning {
+  google.protobuf.Timestamp connected_at = 1 [(buf.validate.field).required = true];
+  int64 running_duration_ms = 2 [(buf.validate.field).int64 = {gte: 0}];
+  string supervisor_id = 3 [(buf.validate.field).string = {len: 24}];
+}
 
-message ProjectInstanceStatusPulling {}
+message ProjectInstanceStatusPulling {
+  google.protobuf.Timestamp dispatched_at = 1 [(buf.validate.field).required = true];
+  int32 timeout_remaining_ms = 2 [(buf.validate.field).int32 = {gte: 0}];
+  string supervisor_id = 3 [(buf.validate.field).string = {len: 24}];
+}
 
 message ProjectInstanceStatusTerminated {}
 
@@ -99,9 +109,6 @@ message ProjectServiceLaunchRequest {
 }
 message ProjectServiceLaunchResponse {}
 
-message ProjectServiceConnectRequest {}
-message ProjectServiceConnectResponse {}
-
 service ProjectService {
   rpc Create(ProjectServiceCreateRequest) returns (ProjectServiceCreateResponse);
   rpc List(ProjectServiceListRequest) returns (ProjectServiceListResponse);
@@ -109,5 +116,4 @@ service ProjectService {
   rpc Delete(ProjectServiceDeleteRequest) returns (ProjectServiceDeleteResponse);
   rpc UpdateMetadata(ProjectServiceUpdateMetadataRequest) returns (ProjectServiceUpdateMetadataResponse);
   rpc Launch(ProjectServiceLaunchRequest) returns (ProjectServiceLaunchResponse);
-  rpc Connect(ProjectServiceConnectRequest) returns (ProjectServiceConnectResponse);
 }

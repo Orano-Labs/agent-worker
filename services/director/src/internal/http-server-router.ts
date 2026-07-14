@@ -5,7 +5,6 @@ import { TunnelManager } from "@/core/tunnel-manager";
 import { Container } from "@/helpers/container";
 import { Authenticator } from "@/internal/authenticator";
 import { HTTPServer } from "@/internal/http-server";
-import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
 
 type UpgradeRouteContext = {
@@ -31,7 +30,6 @@ type RequestRoute = {
 
 export class HTTPServerRouter {
   #http: HTTPServer;
-  #logger: Logger;
   #upgradeRouter: ReturnType<typeof createRouter<UpgradeRoute>>;
   #requestRouter: ReturnType<typeof createRouter<RequestRoute>>;
   #tunnels: TunnelManager;
@@ -40,7 +38,6 @@ export class HTTPServerRouter {
 
   constructor() {
     this.#http = Container.inject(HTTPServer);
-    this.#logger = Container.inject(Logger).scope("HTTPServerRouter");
     this.#upgradeRouter = createRouter();
     this.#requestRouter = createRouter();
     this.#tunnels = Container.inject(TunnelManager);

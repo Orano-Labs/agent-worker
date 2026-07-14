@@ -26,9 +26,10 @@
     "format": "biome format --write ./",
     "typecheck": "tsc",
     "test": "vitest",
-    "generate": "drizzle-kit generate",
+    "generate": "prisma generate && buf generate",
     "dev": "NODE_EXTRA_CA_CERTS=\"$(mkcert -CAROOT)/rootCA.pem\" tsx watch --include \"./src/**/*\" src/index.ts --env-file ./.env",
-    "start": "node ./dist/index.cjs"
+    "start": "node ./dist/index.cjs",
+    "postinstall": "pnpm generate"
   },
   "files": [
     "dist/**/*"

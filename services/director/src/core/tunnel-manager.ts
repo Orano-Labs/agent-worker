@@ -8,12 +8,12 @@ export class TunnelManager {
     this.#tunnels = new Map();
   }
 
-  create(project: string, token: string) {
+  create(project: string, token: string, supervisor: string) {
     if (this.#tunnels.has(project)) {
       throw new Error(`Tunnel for project "${project}" already exists. Delete the existing tunnel first.`);
     }
 
-    const tunnel = new Tunnel(project, token);
+    const tunnel = new Tunnel(project, token, supervisor);
 
     // Clean up when the tunnel goes permanently offline (all sockets closed).
     tunnel.once("offline", () => {

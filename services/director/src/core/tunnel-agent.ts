@@ -1,5 +1,5 @@
 import { Agent, type ClientRequestArgs } from "node:http";
-import type { Duplex } from "node:stream";
+import { Duplex } from "node:stream";
 import type { Tunnel } from "@/core/tunnel";
 
 export class TunnelAgent extends Agent {
@@ -21,7 +21,17 @@ export class TunnelAgent extends Agent {
 
       callback?.(err, undefined as unknown as Duplex);
 
-      return null;
+      // Return a destroyed dummy so Node's HTTP internals don't crash
+      // while the callback propagates the error asynchronously.
+      const dummy = new Duplex({
+        read() {},
+        write(_chunk, _enc, cb) {
+          cb();
+        },
+      });
+      dummy.destroy();
+
+      return dummy;
     }
 
     callback?.(null, socket);

@@ -80,7 +80,20 @@ export class Scheduler {
 
     const projectId = job.data.projectId;
     const dispatchedAt = new Date();
-    const tunnel = this.#tunnels.create(projectId, token);
+
+    let tunnel: Tunnel;
+
+    try {
+      tunnel = this.#tunnels.create(projectId, token, supervisorId);
+    } catch (err) {
+      this.#logger.error("Failed to create tunnel — project may already have an active connection", {
+        projectId,
+        err,
+      });
+
+      return null;
+    }
+
     const entry: Scheduler.Entry = {
       job,
       token,
@@ -187,6 +200,8 @@ export class Scheduler {
       clearTimeout(entry.status.timeoutTimer);
     }
 
+    this.#tunnels.delete(projectId);
+
     try {
       await entry.job.moveToCompleted(null, token);
     } catch (err) {
@@ -207,6 +222,7 @@ export class Scheduler {
           type: "running",
           connectedAt: entry.status.connectedAt,
           runningDuration: Date.now() - entry.status.connectedAt.getTime(),
+          supervisor: entry.supervisor,
         };
       }
 
@@ -214,17 +230,21 @@ export class Scheduler {
         type: "dispatched",
         dispatchedAt: entry.dispatchedAt,
         timeoutRemaining: Math.max(0, Scheduler.CONNECT_TIMEOUT_MS - (Date.now() - entry.dispatchedAt.getTime())),
+        supervisor: entry.supervisor,
       };
     }
 
-    const queueJobs = await this.#queue.getJobs(["waiting", "delayed"], 0, -1, true);
-    const pendingJob = queueJobs.find((job) => job.name === projectId);
+    const jobId = await this.#queue.getDeduplicationJobId(projectId);
 
-    if (pendingJob) {
-      return {
-        type: "pending",
-        enqueuedAt: new Date(pendingJob.timestamp),
-      };
+    if (jobId) {
+      const job = await this.#queue.getJob(jobId);
+
+      if (job) {
+        return {
+          type: "pending",
+          enqueuedAt: new Date(job.timestamp),
+        };
+      }
     }
 
     return { type: "idle" };
@@ -271,29 +291,25 @@ export namespace Scheduler {
     token: string;
   };
 
-  /** Project is waiting in the queue, not yet dispatched to any Supervisor. */
   export type ProjectStatusPending = {
     type: "pending";
     enqueuedAt: Date;
   };
 
-  /** Project was fetched by a Supervisor but the sandbox WebSocket has not connected yet. */
   export type ProjectStatusDispatched = {
     type: "dispatched";
     dispatchedAt: Date;
-    /** Remaining ms before the connection timeout fires and the job returns to queue. */
     timeoutRemaining: number;
+    supervisor: string;
   };
 
-  /** Sandbox WebSocket is connected and the project is executing. */
   export type ProjectStatusRunning = {
     type: "running";
     connectedAt: Date;
-    /** Elapsed ms since the sandbox connected. */
     runningDuration: number;
+    supervisor: string;
   };
 
-  /** Project is not in any active lifecycle stage (never launched, or already completed). */
   export type ProjectStatusIdle = {
     type: "idle";
   };

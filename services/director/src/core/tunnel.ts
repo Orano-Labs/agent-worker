@@ -8,15 +8,17 @@ import { TunnelAgent } from "./tunnel-agent";
 export class Tunnel extends EventEmitter<Tunnel.EventMap> {
   #token: string;
   #project: string;
+  #supervisor: string;
   #connectedSockets: number;
   #sockets: Duplex[];
   #agent: TunnelAgent;
 
-  constructor(project: string, token: string) {
+  constructor(project: string, token: string, supervisor: string) {
     super();
 
     this.#project = project;
     this.#token = token;
+    this.#supervisor = supervisor;
     this.#connectedSockets = 0;
     this.#sockets = [];
     this.#agent = new TunnelAgent(this);
@@ -30,6 +32,10 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     return this.#token;
   }
 
+  get supervisor() {
+    return this.#supervisor;
+  }
+
   get agent() {
     return this.#agent;
   }
@@ -41,8 +47,6 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
         message: "Tunnel connection pool is full",
       };
     }
-
-    socket.on("data", console.log);
 
     const onClose = () => {
       this.#connectedSockets -= 1;
@@ -92,6 +96,9 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
         socket.destroy();
       }
     }
+
+    this.#sockets = [];
+    this.#connectedSockets = 0;
   }
 
   handleHttpRequest(clientReq: IncomingMessage, clientRes: ServerResponse, path: string) {
@@ -124,12 +131,23 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     pump(clientReq, proxyReq);
   }
 
+  #reason(status: number): string {
+    switch (status) {
+      case 502:
+        return "Bad Gateway";
+      case 503:
+        return "Service Unavailable";
+      default:
+        return "Error";
+    }
+  }
+
   handleHttpUpgrade(clientReq: IncomingMessage, clientSocket: Duplex, head: Buffer, path: string): void {
     const tunnelSocket = this.claimSocket();
 
     if (!tunnelSocket) {
       clientSocket.write(
-        "HTTP/1.1 503 Service Unavailable\r\n" +
+        `HTTP/1.1 503 ${this.#reason(503)}\r\n` +
           "Content-Type: text/plain\r\n" +
           "Connection: close\r\n" +
           "\r\n" +

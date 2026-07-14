@@ -72,11 +72,11 @@ export class Variables {
 
     const variables = {
       HTTP_PORT: this.get("AW_DIRECTOR_HTTP_PORT") || null,
-      HTTP_HOST: this.get("AW_DIRECTOR_HTTP_HOST") || null,
       MYSQL_URL: this.get("AW_DIRECTOR_MYSQL_URL") || null,
       MANAGER_PUBLIC_KEY: this.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY") || null,
       GRPC_CA_KEY: this.get("AW_DIRECTOR_GRPC_CA_KEY") || null,
       GRPC_CA_CERTIFICATE: this.get("AW_DIRECTOR_GRPC_CA_CERTIFICATE") || null,
+      GRPC_PORT: this.get("AW_DIRECTOR_GRPC_PORT") || null,
     };
 
     if (variables.MYSQL_URL) {
@@ -134,7 +134,6 @@ export namespace Variables {
   export const TRUSTED = [
     `${TRUSTED_PREFIX}ROOT_DIR`,
     `${TRUSTED_PREFIX}HTTP_PORT`,
-    `${TRUSTED_PREFIX}HTTP_HOST`,
 
     `${TRUSTED_PREFIX}MYSQL_URL`,
 
@@ -143,6 +142,7 @@ export namespace Variables {
 
     `${TRUSTED_PREFIX}GRPC_CA_KEY`,
     `${TRUSTED_PREFIX}GRPC_CA_CERTIFICATE`,
+    `${TRUSTED_PREFIX}GRPC_PORT`,
 
     `${TRUSTED_PREFIX}MQ_URL`,
 

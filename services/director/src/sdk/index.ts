@@ -12,17 +12,11 @@ import {
 } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { type CallOptions, createClient, type Transport } from "@connectrpc/connect";
-import * as ProjectPB from "@/generated/proto/api/v1/project_pb";
 import { ProjectService } from "@/generated/proto/api/v1/project_pb";
-import * as SignaturePB from "@/generated/proto/api/v1/signature_pb";
 import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
-import * as SupervisorPB from "@/generated/proto/api/v1/supervisor_pb";
 import { SupervisorService } from "@/generated/proto/api/v1/supervisor_pb";
-import * as SupervisorPortalPB from "@/generated/proto/api/v1/supervisor-portal_pb";
 import { SupervisorPortalService } from "@/generated/proto/api/v1/supervisor-portal_pb";
-import * as TemplatePB from "@/generated/proto/api/v1/template_pb";
 import { TemplateService } from "@/generated/proto/api/v1/template_pb";
-import * as UserPB from "@/generated/proto/api/v1/user_pb";
 import { UserService } from "@/generated/proto/api/v1/user_pb";
 
 type InferServiceValid<T extends DescService> = {
@@ -255,11 +249,11 @@ export namespace Client {
         type: "manager";
         privateKey: string;
       };
-
-  export const User = UserPB;
-  export const Project = ProjectPB;
-  export const Supervisor = SupervisorPB;
-  export const SupervisorPortal = SupervisorPortalPB;
-  export const Signature = SignaturePB;
-  export const Template = TemplatePB;
 }
+
+export * as ProjectPB from "@/generated/proto/api/v1/project_pb";
+export * as SignaturePB from "@/generated/proto/api/v1/signature_pb";
+export * as SupervisorPB from "@/generated/proto/api/v1/supervisor_pb";
+export * as SupervisorPortalPB from "@/generated/proto/api/v1/supervisor-portal_pb";
+export * as TemplatePB from "@/generated/proto/api/v1/template_pb";
+export * as UserPB from "@/generated/proto/api/v1/user_pb";

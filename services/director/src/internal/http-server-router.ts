@@ -5,6 +5,7 @@ import { TunnelManager } from "@/core/tunnel-manager";
 import { Container } from "@/helpers/container";
 import { Authenticator } from "@/internal/authenticator";
 import { HTTPServer } from "@/internal/http-server";
+import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
 
 type UpgradeRouteContext = {
@@ -28,6 +29,8 @@ type RequestRoute = {
   handler: (context: RequestRouteContext) => void;
 };
 
+const PRODUCTION = process.env.NODE_ENV === "PRODUCTION";
+
 export class HTTPServerRouter {
   #http: HTTPServer;
   #upgradeRouter: ReturnType<typeof createRouter<UpgradeRoute>>;
@@ -35,6 +38,7 @@ export class HTTPServerRouter {
   #tunnels: TunnelManager;
   #auth: Authenticator;
   #repository: Repository;
+  #logger: Logger;
 
   constructor() {
     this.#http = Container.inject(HTTPServer);
@@ -43,6 +47,7 @@ export class HTTPServerRouter {
     this.#tunnels = Container.inject(TunnelManager);
     this.#auth = Container.inject(Authenticator);
     this.#repository = Container.inject(Repository);
+    this.#logger = Container.inject(Logger);
   }
 
   /** Map numeric status to standard HTTP reason phrase. */
@@ -109,6 +114,20 @@ export class HTTPServerRouter {
     return headers;
   }
 
+  /** Establish a tunnel connection (shared logic, no auth). */
+  #doTunnelUpgrade(projectId: string, token: string, socket: Duplex) {
+    const error = this.#tunnels.createTunnelConnection(projectId, token, socket);
+
+    if (error) {
+      this.#respond(socket, error.status, error.message);
+
+      return;
+    }
+
+    // Complete the upgrade handshake so the client knows it succeeded.
+    socket.write("HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: tunnel\r\n" + "Connection: Upgrade\r\n" + "\r\n");
+  }
+
   async #handleTunnelUpgrade(context: UpgradeRouteContext) {
     const projectId = context.params.project;
     const token = context.params.token;
@@ -144,16 +163,39 @@ export class HTTPServerRouter {
       return;
     }
 
-    const error = this.#tunnels.createTunnelConnection(projectId, token, context.socket);
+    this.#doTunnelUpgrade(projectId, token, context.socket);
+  }
 
-    if (error) {
-      this.#respond(context.socket, error.status, error.message);
+  /** Debug: tunnel upgrade without authentication. */
+  async #handleTunnelUpgradeTest(context: UpgradeRouteContext) {
+    const projectId = context.params.project;
+    const token = context.params.token;
+
+    const project = this.#repository.client.project.findFirst({
+      where: { id: projectId },
+    });
+
+    if (!project) {
+      this.#respond(context.socket, 404, `Project "${projectId}" not found`);
 
       return;
     }
 
-    // Complete the upgrade handshake so the client knows it succeeded.
-    context.socket.write("HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: tunnel\r\n" + "Connection: Upgrade\r\n" + "\r\n");
+    this.#doTunnelUpgrade(projectId, token, context.socket);
+  }
+
+  /** Forward an HTTP request through the tunnel (shared logic, no auth). */
+  #doClientRequest(projectId: string, req: IncomingMessage, res: ServerResponse, path: string) {
+    const tunnel = this.#tunnels.get(projectId);
+
+    if (!tunnel) {
+      this.#error(res, 404, `Project "${projectId}" is not connected`);
+
+      return;
+    }
+
+    this.#stripAuthHeaders(req);
+    tunnel.handleHttpRequest(req, res, path);
   }
 
   async #handleClientRequest(context: RequestRouteContext) {
@@ -191,16 +233,29 @@ export class HTTPServerRouter {
       return;
     }
 
+    this.#doClientRequest(projectId, context.req, context.res, path);
+  }
+
+  /** Debug: client request without authentication. */
+  async #handleClientRequestTest(context: RequestRouteContext) {
+    const projectId = context.params.project;
+    const path = context.params.rest;
+
+    this.#doClientRequest(projectId, context.req, context.res, path);
+  }
+
+  /** Forward an upgrade request through the tunnel (shared logic, no auth). */
+  #doClientUpgrade(projectId: string, req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
     const tunnel = this.#tunnels.get(projectId);
 
     if (!tunnel) {
-      this.#error(context.res, 404, `Project "${projectId}" is not connected`);
+      this.#respond(socket, 404, `Project "${projectId}" is not connected`);
 
       return;
     }
 
-    this.#stripAuthHeaders(context.req);
-    tunnel.handleHttpRequest(context.req, context.res, path);
+    this.#stripAuthHeaders(req);
+    tunnel.handleHttpUpgrade(req, socket, head, path);
   }
 
   async #handleClientUpgrade(context: UpgradeRouteContext) {
@@ -238,16 +293,34 @@ export class HTTPServerRouter {
       return;
     }
 
-    const tunnel = this.#tunnels.get(projectId);
+    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, path);
+  }
 
-    if (!tunnel) {
-      this.#respond(context.socket, 404, `Project "${projectId}" is not connected`);
+  /** Debug: client upgrade without authentication. */
+  async #handleClientUpgradeTest(context: UpgradeRouteContext) {
+    const projectId = context.params.project;
+    const path = context.params.rest;
+
+    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, path);
+  }
+
+  /** Debug: create a new tunnel for a project. Returns the tunnel token. */
+  #handleCreateTunnelTest(context: RequestRouteContext) {
+    const projectId = context.params.project;
+    const token = context.params.token;
+
+    this.#logger.info("Creating debug tunnel", { projectId, token });
+
+    try {
+      this.#tunnels.create(projectId, token, "debug");
+    } catch (err) {
+      this.#error(context.res, 409, `Failed to create tunnel: ${err instanceof Error ? err.message : err}`);
 
       return;
     }
 
-    this.#stripAuthHeaders(context.req);
-    tunnel.handleHttpUpgrade(context.req, context.socket, context.head, path);
+    context.res.writeHead(200, { "Content-Type": "application/json" });
+    context.res.end(JSON.stringify({ project: projectId, token }));
   }
 
   /** Remove auth headers from the request before forwarding to the tunnel. */
@@ -272,6 +345,27 @@ export class HTTPServerRouter {
     addRoute(this.#requestRouter, "ALL", "link/:project/**:rest", {
       handler: (ctx) => this.#handleClientRequest(ctx),
     });
+
+    if (!PRODUCTION) {
+      // Debug routes — no authentication required.
+      addRoute(this.#upgradeRouter, "UPGRADE", "_debug/tunnel/:project/:token", {
+        handler: (ctx) => this.#handleTunnelUpgradeTest(ctx),
+      });
+
+      addRoute(this.#upgradeRouter, "UPGRADE", "_debug/link/:project/**:rest", {
+        handler: (ctx) => this.#handleClientUpgradeTest(ctx),
+      });
+
+      addRoute(this.#requestRouter, "ALL", "_debug/link/:project/**:rest", {
+        handler: (ctx) => this.#handleClientRequestTest(ctx),
+      });
+
+      addRoute(this.#requestRouter, "ALL", "_debug/create-tunnel/:project/:token", {
+        handler: (ctx) => this.#handleCreateTunnelTest(ctx),
+      });
+
+      this.#logger.warn("Debug routes enabled — authentication bypassed");
+    }
 
     this.#http.server.on("upgrade", (req, socket, head) => {
       const route = findRoute(this.#upgradeRouter, "UPGRADE", req.url ?? "", {

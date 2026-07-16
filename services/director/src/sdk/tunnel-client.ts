@@ -109,9 +109,6 @@ export class TunnelClient {
         remote.once("connect", () => {
           socket.unshift(chunk);
 
-          // const rewrite = new HTTPHostRewriteTransform(target.hostname);
-          // const stream = rewrite.pipe(remote);
-
           pump(socket, new HTTPHostRewriteTransform(target.hostname), remote);
           pump(remote, socket);
 

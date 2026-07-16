@@ -93,9 +93,6 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     };
 
     socket.once("close", onClose);
-    socket.once("end", () => {
-      console.log("Socket end .........");
-    });
     socket.once("error", (err) => {
       this.#logger.debug("Socket error, destroying", {
         project: this.#project,
@@ -188,8 +185,16 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
       pump(res, clientRes);
     });
 
-    clientReq.once("error", () => {
-      // TODO: if headers not sent - respond with gateway unavailable
+    clientReq.once("error", (err) => {
+      this.#logger.debug("Client request error during proxy", {
+        project: this.#project,
+        err,
+      });
+
+      if (!clientRes.headersSent) {
+        clientRes.writeHead(502, this.#reason(502));
+        clientRes.end("Bad Gateway");
+      }
     });
 
     pump(clientReq, req);

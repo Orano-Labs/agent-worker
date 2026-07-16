@@ -1,0 +1,2 @@
+[permissions]
+allow = ["Bash(cd /Users/angx/Projects/AgentWorker/services/director && cat package.json | grep -E \"prisma|@prisma\" 2>/dev/null; npx prisma --version 2>/dev/null | head -5)", "explore"]

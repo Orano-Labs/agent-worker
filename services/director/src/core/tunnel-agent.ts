@@ -10,7 +10,7 @@ export class TunnelAgent extends Agent {
 
   constructor(tunnel: Tunnel) {
     super({
-      keepAlive: false,
+      keepAlive: true,
     });
 
     this.#logger = Container.inject(Logger).scope("TunnelAgent");

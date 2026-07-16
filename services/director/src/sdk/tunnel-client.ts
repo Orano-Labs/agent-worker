@@ -1,6 +1,8 @@
 import { request as httpRequest } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
+import { Transform } from "node:stream";
 import { connect as tlsConnect } from "node:tls";
+import { HTTPParser } from "http-parser-js";
 import { default as pump } from "pump";
 
 export class TunnelClient {
@@ -93,6 +95,8 @@ export class TunnelClient {
       socket.setKeepAlive(true);
 
       socket.once("data", (chunk) => {
+        socket.pause();
+
         const remote = target.tls
           ? tlsConnect({
               host: target.hostname,
@@ -102,21 +106,16 @@ export class TunnelClient {
             })
           : netConnect({ host: target.hostname, port: target.port });
 
-        remote.on("data", (chunk) => {
-          console.log(chunk.toString());
-        });
-
         remote.once("connect", () => {
-          const data = chunk.toString().replace(/(\r\n[Hh]ost: )\S+/, (_, $1: string) => {
-            return $1 + target.hostname;
-          });
+          socket.unshift(chunk);
 
-          console.log(data);
+          // const rewrite = new HTTPHostRewriteTransform(target.hostname);
+          // const stream = rewrite.pipe(remote);
 
-          remote.write(data);
-
-          pump(socket, remote);
+          pump(socket, new HTTPHostRewriteTransform(target.hostname), remote);
           pump(remote, socket);
+
+          socket.resume();
         });
 
         remote.once("error", (error) => {
@@ -172,6 +171,104 @@ export class TunnelClient {
       port: this.#target.port ? Number.parseInt(this.#target.port, 10) : protocol === "https" ? 443 : 80,
       tls: protocol === "https",
     };
+  }
+}
+
+/**
+ * Rewrites the {@code Host} header of every HTTP request that passes through.
+ *
+ * It uses {@link http-parser-js} to parse the incoming byte stream.  When the
+ * request headers are complete it reconstructs the request line + headers with
+ * the Host value replaced by {@code targetHost}, then switches to transparent
+ * passthrough for the body (and for WebSocket frames after an HTTP upgrade).
+ *
+ * Because the parser tracks message boundaries, keep-alive connections with
+ * multiple consecutive HTTP requests are handled correctly — each request is
+ * rewritten independently.
+ */
+class HTTPHostRewriteTransform extends Transform {
+  #targetHost: string;
+  #parser: InstanceType<typeof HTTPParser>;
+
+  constructor(targetHost: string) {
+    super();
+    this.#targetHost = targetHost;
+    this.#parser = new HTTPParser(HTTPParser.REQUEST);
+
+    // Called once per HTTP request when all headers have been received.
+    // Reconstruct the request-line + headers with the Host overwritten.
+    this.#parser[HTTPParser.kOnHeadersComplete] = (info) => {
+      const method = HTTPParser.methods[info.method];
+      const headers = info.headers;
+
+      // Replace or inject the Host header.
+      let hostIndex = -1;
+
+      for (let i = 0; i < headers.length; i += 2) {
+        if (headers[i].toLowerCase() === "host") {
+          hostIndex = i;
+          break;
+        }
+      }
+
+      if (hostIndex !== -1) {
+        headers[hostIndex + 1] = this.#targetHost;
+      } else {
+        headers.push("Host", this.#targetHost);
+      }
+
+      // Serialise the modified request headers.
+      const payloadLines: string[] = [];
+
+      payloadLines.push(`${method} ${info.url} HTTP/${info.versionMajor}.${info.versionMinor}`);
+
+      for (let i = 0; i < headers.length; i += 2) {
+        payloadLines.push(`${headers[i]}: ${headers[i + 1]}`);
+      }
+
+      const payload = `${payloadLines.join("\r\n")}\r\n\r\n`;
+
+      this.push(Buffer.from(payload, "latin1"));
+
+      // Return 0 to tell the parser we handle the body ourselves.
+      return 0;
+    };
+
+    // Body chunks are forwarded untouched.
+    this.#parser[HTTPParser.kOnBody] = (chunk, start, len) => {
+      this.push(chunk.subarray(start, start + len));
+    };
+  }
+
+  override _transform(chunk: Buffer, _encoding: string, callback: () => void): void {
+    let offset = 0;
+
+    // Feed data to the parser byte by byte or in consumed-sized steps.
+    // The parser calls the callbacks above which push() to the readable side.
+    while (offset < chunk.length) {
+      const slice = offset === 0 ? chunk : chunk.subarray(offset);
+      const nparsed = this.#parser.execute(slice);
+
+      if (nparsed instanceof Error) {
+        // Unparseable data — forward as-is so it doesn't get lost.
+        this.push(slice);
+        break;
+      }
+
+      if (nparsed === 0) {
+        break;
+      }
+
+      offset += nparsed;
+    }
+
+    callback();
+  }
+
+  override _flush(callback: () => void): void {
+    // Signal end-of-stream to the parser so it can flush any remaining data.
+    this.#parser.finish();
+    callback();
   }
 }
 

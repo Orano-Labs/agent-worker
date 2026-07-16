@@ -77,7 +77,6 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
         connectedSockets: this.#connectedSockets,
       });
 
-      // Only start a timer if all sockets are gone and no timer is already running.
       if (this.#connectedSockets === 0 && !this.#offlineTimer) {
         this.#logger.debug("Last socket closed — starting offline timeout", {
           project: this.#project,
@@ -86,7 +85,10 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
 
         this.#offlineTimer = setTimeout(() => {
           this.#offlineTimer = null;
-          this.#logger.debug("Offline timeout expired — tunnel offline", { project: this.#project });
+          this.#logger.debug("Offline timeout expired — tunnel offline", {
+            project: this.#project,
+          });
+
           this.emit("offline");
         }, Tunnel.OFFLINE_TIMEOUT_MS);
       }
@@ -105,12 +107,18 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     // Clear any pending offline timeout — a new socket is connecting.
     if (this.#offlineTimer) {
       clearTimeout(this.#offlineTimer);
+
       this.#offlineTimer = null;
-      this.#logger.debug("Offline timeout cancelled — new socket arrived", { project: this.#project });
+      this.#logger.debug("Offline timeout cancelled — new socket arrived", {
+        project: this.#project,
+      });
     }
 
     if (this.#connectedSockets === 0) {
-      this.#logger.debug("Tunnel coming online with first socket", { project: this.#project });
+      this.#logger.debug("Tunnel coming online with first socket", {
+        project: this.#project,
+      });
+
       this.emit("online");
       this.emit("connect", socket);
     }

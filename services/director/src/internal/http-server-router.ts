@@ -233,7 +233,7 @@ export class HTTPServerRouter {
       return;
     }
 
-    this.#doClientRequest(projectId, context.req, context.res, path);
+    this.#doClientRequest(projectId, context.req, context.res, `/${path}`);
   }
 
   /** Debug: client request without authentication. */
@@ -241,7 +241,7 @@ export class HTTPServerRouter {
     const projectId = context.params.project;
     const path = context.params.rest;
 
-    this.#doClientRequest(projectId, context.req, context.res, path);
+    this.#doClientRequest(projectId, context.req, context.res, `/${path}`);
   }
 
   /** Forward an upgrade request through the tunnel (shared logic, no auth). */
@@ -293,7 +293,7 @@ export class HTTPServerRouter {
       return;
     }
 
-    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, path);
+    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, `/${path}`);
   }
 
   /** Debug: client upgrade without authentication. */
@@ -301,7 +301,7 @@ export class HTTPServerRouter {
     const projectId = context.params.project;
     const path = context.params.rest;
 
-    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, path);
+    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, `/${path}`);
   }
 
   /** Debug: create a new tunnel for a project. Returns the tunnel token. */

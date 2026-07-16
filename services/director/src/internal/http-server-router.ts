@@ -319,8 +319,8 @@ export class HTTPServerRouter {
       return;
     }
 
-    context.res.writeHead(200, { "Content-Type": "application/json" });
-    context.res.end(JSON.stringify({ project: projectId, token }));
+    context.res.writeHead(200, { "Content-Type": "plain/text" });
+    context.res.end("OK.");
   }
 
   /** Remove auth headers from the request before forwarding to the tunnel. */

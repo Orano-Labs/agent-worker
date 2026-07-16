@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     sdk: "src/sdk/index.ts",
+    tunnel: "src/sdk/tunnel-client.ts",
   },
   format: ["cjs", "esm"],
   dts: true,

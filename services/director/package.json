@@ -27,7 +27,7 @@
     "typecheck": "tsc",
     "test": "vitest",
     "generate": "prisma generate && buf generate",
-    "dev": "NODE_EXTRA_CA_CERTS=\"$(mkcert -CAROOT)/rootCA.pem\" tsx watch --include \"./src/**/*\" src/index.ts --env-file ./.env",
+    "dev": "NODE_EXTRA_CA_CERTS=\"$(mkcert -CAROOT)/rootCA.pem\" tsx watch --include \"./src/**/*\" --exclude \"./src/sdk/**/*\" src/index.ts --env-file ./.env",
     "start": "node ./dist/index.cjs",
     "postinstall": "pnpm generate"
   },

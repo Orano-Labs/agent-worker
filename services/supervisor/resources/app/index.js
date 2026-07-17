@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const cp = require("node:child_process");
+const http = require("node:http");
 
 console.log("");
 console.log("==================================================");
@@ -51,7 +52,15 @@ async function bootstrap() {
     return null;
   }
 
-  require("./dav-benchmark");
+  const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.write(req.rawHeaders.join("\n"));
+    res.end("OK");
+  });
+
+  server.listen(3000, () => {
+    console.log("HTTP Server running at :3000");
+  });
 }
 
 bootstrap();

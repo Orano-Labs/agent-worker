@@ -1,7 +1,9 @@
-import { createPrivateKey, sign } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
 
-import { default as PartySocket } from "partysocket";
-import { default as WebSocket } from "ws";
+import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
+import { createConnectTransport } from "@connectrpc/connect-node";
+import { makePushPullAsyncIterableIterator } from "@n1ru4l/push-pull-async-iterable-iterator";
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
@@ -10,108 +12,130 @@ export class Director {
   #logger: Logger;
   #variables: Variables;
 
-  #ws!: PartySocket;
+  #client?: Client;
+  #supervisorPortal?: ReturnType<Client["createSupervisorPortalService"]>;
+
+  #stream?: ReturnType<typeof makePushPullAsyncIterableIterator<SupervisorPortalPB.SupervisorPortalServiceReportRequestValid>>;
+  #reportTimer?: ReturnType<typeof setInterval>;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("Director");
     this.#variables = Container.inject(Variables);
   }
 
-  get socket() {
-    if (!this.#ws) {
-      throw new Error("xxxxxx");
+  async init() {
+    const baseUrl = this.#variables.get("AW_SUPERVISOR_DIRECTOR_HOST_URL");
+    const id = this.#variables.get("AW_SUPERVISOR_ID");
+    const privateKey = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
+
+    if (!baseUrl) {
+      throw new Error("AW_SUPERVISOR_DIRECTOR_HOST_URL is not set");
     }
 
-    return this.#ws;
+    if (!id) {
+      throw new Error("AW_SUPERVISOR_ID is not set");
+    }
+
+    if (!privateKey) {
+      throw new Error("AW_SUPERVISOR_PRIVATE_KEY is not set");
+    }
+
+    const transport = createConnectTransport({
+      httpVersion: "2",
+      baseUrl,
+    });
+
+    const identity: Client.Identity = {
+      type: "supervisor",
+      id,
+      privateKey,
+    };
+
+    // @ts-expect-error
+    this.#client = new Client(transport, identity, true);
+    this.#supervisorPortal = this.#client.createSupervisorPortalService();
+
+    this.#runReportLoop();
   }
 
-  async init() {
-    const id = this.#variables.get("AW_SUPERVISOR_ID");
-    const key = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
-    const url = this.#variables.get("AW_SUPERVISOR_DIRECTOR_HOST_URL");
-
-    if (!id || !key || !url) {
-      const missing: string[] = [];
-
-      if (!id) missing.push("AW_SUPERVISOR_ID");
-      if (!key) missing.push("AW_SUPERVISOR_PRIVATE_KEY");
-      if (!url) missing.push("AW_SUPERVISOR_DIRECTOR_HOST_URL");
-
-      this.#logger.error(`Missing required environment variables: [${missing.join(", ")}].`);
-
-      return process.exit(1);
+  async #runReportLoop() {
+    if (!this.#supervisorPortal) {
+      throw new Error("xxx");
     }
 
-    try {
-      const parsed = new URL(url);
+    this.#logger.info("Director initialized, reporting loop started");
 
-      if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
-        this.#logger.error(`Director host URL must use 'ws:' or 'wss:' protocol. Received: '${parsed.protocol}'`);
+    while (true) {
+      this.#stream = makePushPullAsyncIterableIterator<SupervisorPortalPB.SupervisorPortalServiceReportRequestValid>();
 
-        return process.exit(1);
+      this.report();
+
+      this.#reportTimer = setInterval(() => {
+        this.report();
+      }, 3000);
+
+      try {
+        await this.#supervisorPortal.report(this.#stream.asyncIterableIterator, {});
+      } catch (err) {
+        this.#logger.errorFrom(err, "Report stream closed with error");
       }
-    } catch {
-      this.#logger.error(`Invalid URL configuration: '${url}' is not a valid URL. Please check AW_SUPERVISOR_DIRECTOR_HOST_URL.`);
 
-      return process.exit(1);
+      if (this.#reportTimer) {
+        clearInterval(this.#reportTimer);
+        this.#reportTimer = undefined;
+      }
+
+      this.#logger.warn("Report stream disconnected, reconnecting in 5 seconds...");
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 2000);
+      });
     }
+  }
 
-    let privateKey: ReturnType<typeof createPrivateKey>;
+  async report() {
+    const cpuCount = os.cpus().length;
+    const loadAvg = os.loadavg()[0];
+    const cpuUsage = cpuCount > 0 ? loadAvg / cpuCount : 0;
+
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const memoryUsage = totalMem > 0 ? (totalMem - freeMem) / totalMem : 0;
+
+    let diskUsage = 0;
 
     try {
-      privateKey = createPrivateKey({
-        key: Buffer.from(key, "hex"),
-        format: "der",
-        type: "pkcs8",
-      });
-    } catch (error) {
-      this.#logger.errorFrom(error, "Ensure 'AW_SUPERVISOR_PRIVATE_KEY' is a valid hex-encoded PKCS#8 DER key.");
-
-      return process.exit(1);
+      const stat = fs.statfsSync("/");
+      const totalBlocks = stat.blocks;
+      const freeBlocks = stat.bfree;
+      diskUsage = totalBlocks > 0 ? (totalBlocks - freeBlocks) / totalBlocks : 0;
+    } catch {
+      // TODO: x
     }
 
-    this.#logger.info("Supervisor director client initialized successfully.", {
-      id: id,
+    this.#stream?.pushValue({
+      $typeName: "api.v1.SupervisorPortalServiceReportRequest",
+      runningProjects: 0,
+      cpuUsage,
+      memoryUsage,
+      diskUsage,
     });
+  }
 
-    const self = this;
+  async fetch() {
+    if (!this.#supervisorPortal) {
+      throw new Error("xxx");
+    }
 
-    this.#ws = new PartySocket({
-      host: url,
-      basePath: "supervisor/join",
-      WebSocket: class extends WebSocket {
-        constructor(url: string) {
-          const timestamp = Date.now().toString();
-          const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
-          const payload = `${id}\n${timestamp}\n${nonce}`;
-          const signature = sign(undefined, Buffer.from(payload), privateKey);
-
-          const headers = {
-            "x-supervisor-id": id,
-            "x-timestamp": timestamp,
-            "x-nonce": nonce,
-            "x-signature": signature.toString("hex"),
+    return this.#supervisorPortal
+      .fetch(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceFetchRequestSchema, {}))
+      .then((response) => {
+        if (response.task) {
+          return {
+            project: response.task.projectId,
+            token: response.task.token,
           };
-
-          self.#logger.info(`Connecting to director: ${url}`, {
-            headers: { ...headers, "x-signature": `${headers["x-signature"].substring(0, 8)}...` },
-          });
-
-          super(url, {
-            headers,
-          });
         }
-      },
-    });
-
-    this.#ws.reconnect();
-
-    this.#ws.addEventListener("error", (error) => {
-      this.#logger.error(`WebSocket encountered an error: ${error.message}`);
-    });
-
-    this.#ws.addEventListener("open", () => {
-      this.#logger.info("WebSocket connection established successfully.");
-    });
+      });
   }
 }

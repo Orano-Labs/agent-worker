@@ -45,13 +45,13 @@ export class Variables {
 
         for (const [key, value] of Object.entries(parsed)) {
           if (value === undefined) {
-            break;
+            continue;
           }
 
           // @ts-expect-error
           if (!Variables.TRUSTED.includes(key)) {
             this.#logger.warn(`Skipping untrusted environment variable ${key} from ${file}`);
-            break;
+            continue;
           }
 
           if (this.#env[key] !== undefined) {
@@ -89,5 +89,7 @@ export namespace Variables {
     `${TRUSTED_PREFIX}JFS_ACCESS_KEY_SECRET`,
 
     `${TRUSTED_PREFIX}FS_ROOT`,
+
+    `${TRUSTED_PREFIX}MAX_RESOURCE_UNIT`,
   ] as const;
 }

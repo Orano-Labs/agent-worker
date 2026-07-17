@@ -114,7 +114,7 @@ export class Orchestrator {
 
     this.#tasks.set(id, task);
 
-    return id;
+    return task;
   }
 }
 

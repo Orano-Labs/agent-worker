@@ -17,6 +17,11 @@
       "types": "./dist/sdk.d.mts",
       "import": "./dist/sdk.mjs",
       "require": "./dist/sdk.cjs"
+    },
+    "./tunnel": {
+      "types": "./dist/tunnel.d.mts",
+      "import": "./dist/tunnel.mjs",
+      "require": "./dist/tunnel.cjs"
     }
   },
   "scripts": {

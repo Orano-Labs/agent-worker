@@ -2,13 +2,12 @@ import { EventEmitter } from "node:events";
 import { type IncomingMessage, type RequestOptions, request, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { default as pump } from "pump";
+
+import { TunnelAgent } from "@/core/tunnel-agent";
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
-import { TunnelAgent } from "./tunnel-agent";
 
 export class Tunnel extends EventEmitter<Tunnel.EventMap> {
-  static readonly OFFLINE_TIMEOUT_MS = 30_000;
-
   #logger: Logger;
   #token: string;
   #project: string;
@@ -49,6 +48,18 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     return this.#supervisor;
   }
 
+  get totalConnections() {
+    return this.#connectedSockets;
+  }
+
+  get idleConnections() {
+    return this.#sockets.length;
+  }
+
+  get activeConnections() {
+    return Math.max(0, this.#connectedSockets - this.#sockets.length);
+  }
+
   connect(socket: Duplex) {
     if (this.#connectedSockets >= Tunnel.MAX_TCP_SOCKETS) {
       this.#logger.debug("Tunnel connection pool is full, rejecting new socket", {
@@ -80,7 +91,6 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
       if (this.#connectedSockets === 0 && !this.#offlineTimer) {
         this.#logger.debug("Last socket closed — starting offline timeout", {
           project: this.#project,
-          timeoutMs: Tunnel.OFFLINE_TIMEOUT_MS,
         });
 
         this.#offlineTimer = setTimeout(() => {
@@ -277,5 +287,6 @@ export namespace Tunnel {
     offline: [];
   };
 
-  export const MAX_TCP_SOCKETS = 100;
+  export const MAX_TCP_SOCKETS = 10;
+  export const OFFLINE_TIMEOUT_MS = 30_000;
 }

@@ -14,16 +14,13 @@ export class TunnelManager {
 
   create(project: string, token: string, supervisor: string) {
     if (this.#tunnels.has(project)) {
-      this.#logger.debug("Tunnel already exists, refusing to create duplicate", { project });
-      throw new Error(`Tunnel for project "${project}" already exists. Delete the existing tunnel first.`);
+      this.delete(project);
     }
 
     const tunnel = new Tunnel(project, token, supervisor);
 
-    // Clean up when the tunnel goes permanently offline (all sockets closed).
     tunnel.once("offline", () => {
       this.#logger.debug("Tunnel offline — removing from manager", { project });
-      this.#tunnels.delete(project);
     });
 
     this.#tunnels.set(project, tunnel);
@@ -36,14 +33,13 @@ export class TunnelManager {
     const tunnel = this.#tunnels.get(project);
 
     if (!tunnel) {
-      this.#logger.debug("Tunnel not found for deletion", { project });
-      return;
+      return this.#logger.debug("Tunnel not found for deletion", { project });
     }
 
     this.#logger.debug("Deleting tunnel", { project });
-    tunnel.destroy();
-
     this.#tunnels.delete(project);
+
+    tunnel.destroy();
   }
 
   get(project: string) {
@@ -64,6 +60,7 @@ export class TunnelManager {
 
     if (tunnel.token !== token) {
       this.#logger.debug("Invalid token for tunnel connection", { project });
+
       return {
         status: 403,
         message: "Invalid tunnel token",

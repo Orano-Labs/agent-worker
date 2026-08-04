@@ -22,7 +22,7 @@ message SupervisorServiceCreateRequest {
   google.protobuf.BytesValue metadata = 1 [(buf.validate.field).bytes = {max_len: 2048}];
 }
 message SupervisorServiceCreateResponse {
-  Supervisor supervisor = 1 [(buf.validate.field).required = true];
+  api.v1.Supervisor supervisor = 1 [(buf.validate.field).required = true];
   bytes private_key = 2 [(buf.validate.field).bytes = {
     min_len: 16
     max_len: 128
@@ -34,7 +34,7 @@ message SupervisorServiceUpdateMetadataRequest {
   google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
 }
 message SupervisorServiceUpdateMetadataResponse {
-  Supervisor supervisor = 1 [(buf.validate.field).required = true];
+  api.v1.Supervisor supervisor = 1 [(buf.validate.field).required = true];
 }
 
 message SupervisorServiceDeleteRequest {
@@ -46,7 +46,7 @@ message SupervisorServiceGetRequest {
   string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 message SupervisorServiceGetResponse {
-  Supervisor supervisor = 1 [(buf.validate.field).required = true];
+  api.v1.Supervisor supervisor = 1 [(buf.validate.field).required = true];
 }
 
 message SupervisorServiceListRequest {
@@ -58,7 +58,7 @@ message SupervisorServiceListRequest {
   google.protobuf.BoolValue disabled = 3;
 }
 message SupervisorServiceListResponse {
-  repeated Supervisor supervisors = 1 [(buf.validate.field).repeated = {min_items: 0}];
+  repeated api.v1.Supervisor supervisors = 1 [(buf.validate.field).repeated = {min_items: 0}];
   int32 total = 2 [(buf.validate.field).int32 = {gte: 0}];
 }
 
@@ -82,9 +82,9 @@ message SupervisorStatus {
   oneof status {
     option (buf.validate.oneof).required = true;
 
-    SupervisorStatusOnline online = 3;
-    SupervisorStatusOffline offline = 4;
-    SupervisorStatusNeverOnline never_online = 5;
+    api.v1.SupervisorStatusOnline online = 3;
+    api.v1.SupervisorStatusOffline offline = 4;
+    api.v1.SupervisorStatusNeverOnline never_online = 5;
   }
 }
 
@@ -92,15 +92,20 @@ message SupervisorServiceStatusRequest {
   string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 message SupervisorServiceStatusResponse {
-  SupervisorStatus status = 1 [(buf.validate.field).required = true];
+  api.v1.SupervisorStatus status = 1 [(buf.validate.field).required = true];
 }
 
-// SupervisorService
 service SupervisorService {
+  // Register a Supervisor, generating and returning its key pair.
   rpc Create(SupervisorServiceCreateRequest) returns (SupervisorServiceCreateResponse);
+  // Update a Supervisor's metadata.
   rpc UpdateMetadata(SupervisorServiceUpdateMetadataRequest) returns (SupervisorServiceUpdateMetadataResponse);
+  // Delete a Supervisor; cannot be deleted while online.
   rpc Delete(SupervisorServiceDeleteRequest) returns (SupervisorServiceDeleteResponse);
+  // Get a Supervisor's details.
   rpc Get(SupervisorServiceGetRequest) returns (SupervisorServiceGetResponse);
+  // List Supervisors with pagination.
   rpc List(SupervisorServiceListRequest) returns (SupervisorServiceListResponse);
+  // Get a Supervisor's real-time status (online/offline and resource metrics).
   rpc Status(SupervisorServiceStatusRequest) returns (SupervisorServiceStatusResponse);
 }

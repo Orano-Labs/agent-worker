@@ -43,7 +43,7 @@ message UserServiceCreateRequest {
   ];
 };
 message UserServiceCreateResponse {
-  User user = 1 [
+  api.v1.User user = 1 [
     (buf.validate.field).required = true
   ];
   bytes private_key = 2 [
@@ -67,7 +67,7 @@ message UserServiceUpdateMetadataRequest {
   ];
 }
 message UserServiceUpdateMetadataResponse {
-  User user = 1 [
+  api.v1.User user = 1 [
     (buf.validate.field).required = true
   ];
 };
@@ -89,7 +89,7 @@ message UserServiceEnableRequest {
   ];
 }
 message UserServiceEnableResponse {
-  User user = 1 [
+  api.v1.User user = 1 [
     (buf.validate.field).required = true
   ];
 };
@@ -102,7 +102,7 @@ message UserServiceDisableRequest {
   ];
 }
 message UserServiceDisableResponse {
-  User user = 1 [
+  api.v1.User user = 1 [
     (buf.validate.field).required = true
   ];
 };
@@ -115,7 +115,7 @@ message UserServiceGetRequest {
   ];
 }
 message UserServiceGetResponse {
-  User user = 1 [
+  api.v1.User user = 1 [
     (buf.validate.field).required = true
   ];
 };
@@ -135,7 +135,7 @@ message UserServiceListRequest {
   google.protobuf.BoolValue disabled = 3;
 }
 message UserServiceListResponse {
-  repeated User users = 1 [
+  repeated api.v1.User users = 1 [
     (buf.validate.field).repeated = {
       min_items: 0,
     }
@@ -147,13 +147,19 @@ message UserServiceListResponse {
   ];
 };
 
-// 由 Manager 消费
 service UserService {
+  // Create a user, generating and returning its key pair.
   rpc Create(UserServiceCreateRequest) returns (UserServiceCreateResponse);
+  // Get a user's details.
   rpc Get(UserServiceGetRequest) returns (UserServiceGetResponse);
+  // List users with pagination.
   rpc List(UserServiceListRequest) returns (UserServiceListResponse);
+  // Update a user's metadata.
   rpc UpdateMetadata(UserServiceUpdateMetadataRequest) returns (UserServiceUpdateMetadataResponse);
+  // Delete a user.
   rpc Delete(UserServiceDeleteRequest) returns (UserServiceDeleteResponse);
+  // Enable a disabled user.
   rpc Enable(UserServiceEnableRequest) returns (UserServiceEnableResponse);
+  // Disable a user, preventing them from authenticating.
   rpc Disable(UserServiceDisableRequest) returns (UserServiceDisableResponse);
 }

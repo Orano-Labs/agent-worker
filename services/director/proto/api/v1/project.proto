@@ -13,6 +13,12 @@ enum ProjectResourceTier {
   PROJECT_RESOURCE_TIER_PERFORMANCE = 3;
 }
 
+message ProjectTunnel {
+  int32 total = 1 [(buf.validate.field).int32 = {gte: 0}];
+  int32 idle = 2 [(buf.validate.field).int32 = {gte: 0}];
+  int32 active = 3 [(buf.validate.field).int32 = {gte: 0}];
+}
+
 message ProjectInstanceStatusPending {
   google.protobuf.Timestamp enqueued_at = 1 [(buf.validate.field).required = true];
 }
@@ -21,6 +27,7 @@ message ProjectInstanceStatusRunning {
   google.protobuf.Timestamp connected_at = 1 [(buf.validate.field).required = true];
   int64 running_duration_ms = 2 [(buf.validate.field).int64 = {gte: 0}];
   string supervisor_id = 3 [(buf.validate.field).string = {len: 24}];
+  api.v1.ProjectTunnel tunnel = 4 [(buf.validate.field).required = true];
 }
 
 message ProjectInstanceStatusPulling {
@@ -35,10 +42,10 @@ message ProjectInstance {
   oneof status {
     option (buf.validate.oneof).required = true;
 
-    ProjectInstanceStatusPending pending = 1;
-    ProjectInstanceStatusPulling pulling = 2;
-    ProjectInstanceStatusRunning running = 3;
-    ProjectInstanceStatusTerminated terminated = 4;
+    api.v1.ProjectInstanceStatusPending pending = 1;
+    api.v1.ProjectInstanceStatusPulling pulling = 2;
+    api.v1.ProjectInstanceStatusRunning running = 3;
+    api.v1.ProjectInstanceStatusTerminated terminated = 4;
   }
 }
 
@@ -47,12 +54,12 @@ message Project {
   google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
   google.protobuf.Timestamp create_time = 3 [(buf.validate.field).required = true];
   google.protobuf.Timestamp update_time = 4 [(buf.validate.field).required = true];
-  ProjectResourceTier resource_tier = 5 [(buf.validate.field).enum = {
+  api.v1.ProjectResourceTier resource_tier = 5 [(buf.validate.field).enum = {
     defined_only: true
     not_in: [0]
   }];
   google.protobuf.StringValue template_id = 6 [(buf.validate.field).string = {len: 24}];
-  ProjectInstance instance = 7 [(buf.validate.field).required = true];
+  api.v1.ProjectInstance instance = 7 [(buf.validate.field).required = true];
 }
 
 message ProjectServiceCreateRequest {
@@ -61,7 +68,7 @@ message ProjectServiceCreateRequest {
     max_len: 128
   }];
   google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
-  ProjectResourceTier resource_tier = 3 [(buf.validate.field).enum = {
+  api.v1.ProjectResourceTier resource_tier = 3 [(buf.validate.field).enum = {
     defined_only: true
     not_in: [0]
   }];
@@ -69,7 +76,7 @@ message ProjectServiceCreateRequest {
 }
 
 message ProjectServiceCreateResponse {
-  Project project = 1 [(buf.validate.field).required = true];
+  api.v1.Project project = 1 [(buf.validate.field).required = true];
 }
 
 message ProjectServiceListRequest {
@@ -80,7 +87,7 @@ message ProjectServiceListRequest {
   }];
 }
 message ProjectServiceListResponse {
-  repeated Project projects = 1 [(buf.validate.field).repeated = {min_items: 0}];
+  repeated api.v1.Project projects = 1 [(buf.validate.field).repeated = {min_items: 0}];
   int32 total = 2 [(buf.validate.field).int32 = {gte: 0}];
 }
 
@@ -88,7 +95,7 @@ message ProjectServiceGetRequest {
   string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 message ProjectServiceGetResponse {
-  Project project = 1 [(buf.validate.field).required = true];
+  api.v1.Project project = 1 [(buf.validate.field).required = true];
 }
 
 message ProjectServiceUpdateMetadataRequest {
@@ -96,7 +103,7 @@ message ProjectServiceUpdateMetadataRequest {
   google.protobuf.BytesValue metadata = 2 [(buf.validate.field).bytes = {max_len: 2048}];
 }
 message ProjectServiceUpdateMetadataResponse {
-  Project project = 1 [(buf.validate.field).required = true];
+  api.v1.Project project = 1 [(buf.validate.field).required = true];
 }
 
 message ProjectServiceDeleteRequest {
@@ -110,10 +117,16 @@ message ProjectServiceLaunchRequest {
 message ProjectServiceLaunchResponse {}
 
 service ProjectService {
+  // Create a project; optionally initialize its file system from a template.
   rpc Create(ProjectServiceCreateRequest) returns (ProjectServiceCreateResponse);
+  // List the current user's projects with pagination.
   rpc List(ProjectServiceListRequest) returns (ProjectServiceListResponse);
+  // Get a project's details and its instance run status.
   rpc Get(ProjectServiceGetRequest) returns (ProjectServiceGetResponse);
+  // Delete a project; cannot be deleted while its instance is running.
   rpc Delete(ProjectServiceDeleteRequest) returns (ProjectServiceDeleteResponse);
+  // Update a project's metadata.
   rpc UpdateMetadata(ProjectServiceUpdateMetadataRequest) returns (ProjectServiceUpdateMetadataResponse);
+  // Launch a project, scheduling it to a suitable Supervisor.
   rpc Launch(ProjectServiceLaunchRequest) returns (ProjectServiceLaunchResponse);
 }

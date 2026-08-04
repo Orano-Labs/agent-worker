@@ -31,7 +31,7 @@ message Template {
   google.protobuf.Timestamp update_time = 4 [
     (buf.validate.field).required = true
   ];
-  TemplateStatus status = 5 [
+  api.v1.TemplateStatus status = 5 [
     (buf.validate.field).enum = {
       defined_only: true,
       not_in: [0]
@@ -52,7 +52,7 @@ message TemplateServiceCreateRequest {
   ];
 }
 message TemplateServiceCreateResponse {
-  Template template = 1 [
+  api.v1.Template template = 1 [
     (buf.validate.field).required = true
   ];
 }
@@ -70,7 +70,7 @@ message TemplateServiceUpdateMetadataRequest {
   ];
 }
 message TemplateServiceUpdateMetadataResponse {
-  Template template = 1 [
+  api.v1.Template template = 1 [
     (buf.validate.field).required = true
   ];
 }
@@ -81,7 +81,7 @@ message TemplateServiceUpdateStatusRequest {
       len: 24,
     }
   ];
-  TemplateStatus status = 2 [
+  api.v1.TemplateStatus status = 2 [
     (buf.validate.field).enum = {
       defined_only: true,
       not_in: [0]
@@ -89,7 +89,7 @@ message TemplateServiceUpdateStatusRequest {
   ];
 }
 message TemplateServiceUpdateStatusResponse {
-  Template template = 1 [
+  api.v1.Template template = 1 [
     (buf.validate.field).required = true
   ];
 }
@@ -107,7 +107,7 @@ message TemplateServiceForkRequest {
   ];
 }
 message TemplateServiceForkResponse {
-  Template template = 1 [
+  api.v1.Template template = 1 [
     (buf.validate.field).required = true
   ];
 }
@@ -120,7 +120,7 @@ message TemplateServiceGetRequest {
   ];
 }
 message TemplateServiceGetResponse {
-  Template template = 1 [
+  api.v1.Template template = 1 [
     (buf.validate.field).required = true
   ];
 }
@@ -137,14 +137,14 @@ message TemplateServiceListRequest {
       lte: 100,
     }
   ];
-  TemplateStatus status = 3 [
+  api.v1.TemplateStatus status = 3 [
     (buf.validate.field).enum = {
       defined_only: true,
     }
   ];
 }
 message TemplateServiceListResponse {
-  repeated Template templates = 1 [
+  repeated api.v1.Template templates = 1 [
     (buf.validate.field).repeated = {
       min_items: 0,
     }
@@ -164,17 +164,24 @@ message TemplateServiceDeleteRequest {
   ];
 }
 message TemplateServiceDeleteResponse {
-  Template template = 1 [
+  api.v1.Template template = 1 [
     (buf.validate.field).required = true
   ];
 }
 
 service TemplateService {
+  // Create a template, initializing its directory in the file system.
   rpc Create(TemplateServiceCreateRequest) returns (TemplateServiceCreateResponse);
+  // Update a template's metadata.
   rpc UpdateMetadata(TemplateServiceUpdateMetadataRequest) returns (TemplateServiceUpdateMetadataResponse);
+  // Update a template's status (draft/published/archived).
   rpc UpdateStatus(TemplateServiceUpdateStatusRequest) returns (TemplateServiceUpdateStatusResponse);
+  // Fork a new template from an existing one, copying its file system contents.
   rpc Fork(TemplateServiceForkRequest) returns (TemplateServiceForkResponse);
+  // Get a template's details.
   rpc Get(TemplateServiceGetRequest) returns (TemplateServiceGetResponse);
+  // List templates with pagination.
   rpc List(TemplateServiceListRequest) returns (TemplateServiceListResponse);
+  // Delete a template.
   rpc Delete(TemplateServiceDeleteRequest) returns (TemplateServiceDeleteResponse);
 }

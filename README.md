@@ -1,353 +1,207 @@
 # Agent Worker
 
-Agent Worker 是一套用于运行 AI Agent 工作任务的隔离执行基础设施。它的目标不是直接提供一个聊天界面，而是为上层产品提供“可以安全创建、调度、运行、观察和回收 Agent 工作环境”的底座。
+Agent Worker 是面向代码型 AI Agent 的隔离执行基础设施。它负责把“启动一个项目运行环境”拆成可调度、可认证、可隔离、可限额、可回收的执行流程，而不是提供聊天界面或完整 Agent 产品。
 
-简单理解：当一个 AI Agent 需要处理代码仓库、读写文件、执行命令、联网访问依赖或进行较长时间任务时，Agent Worker 会为它准备一个独立的运行空间。这个空间运行在 Firecracker MicroVM 中，拥有单独的文件系统、网络、CPU/内存限制和可认证的控制通道，从而降低不同任务、不同用户、不同项目之间相互影响的风险。
+项目目前处于 **原型集成阶段（v0.0.x）**：控制面、调度、MicroVM、共享工作区和通信组件已有实现，但端到端任务派发尚未接通，不应直接用于生产环境。
 
-## 解决什么问题
+## 它解决什么问题
 
-在实际产品中，AI Agent 往往不只是“回复一句话”。它可能需要：
+- 让不同用户和项目运行在独立的 Firecracker MicroVM 中。
+- 为任务限制 CPU、内存、文件系统和网络边界。
+- 在多台宿主机之间登记 Supervisor、排队并分派项目。
+- 让 MicroVM 通过受控的 WebDAV 工作区读写项目文件。
+- 通过签名请求和反向隧道连接控制面、执行节点与项目实例。
 
-- 拉取或维护一个项目代码仓库。
-- 创建一个临时工作分支，修改文件并运行测试。
-- 执行用户或模型生成的命令。
-- 安装依赖、访问网络、读写中间文件。
-- 保留任务会话状态，方便继续跟进或审计。
-
-如果所有任务都直接运行在同一台服务器上，会遇到几个核心风险：
-
-- **安全隔离不足**：一个任务可能读取或破坏另一个任务的数据。
-- **资源不可控**：某个 Agent 可能占满 CPU、内存或网络。
-- **环境不可复现**：不同任务污染同一个运行环境，排查困难。
-- **调度困难**：多台宿主机上的可用容量、连接状态和任务生命周期难以统一管理。
-
-Agent Worker 的设计就是把这些问题拆开：Director 负责登记和调度，Supervisor 负责管理宿主机资源，MicroVM 负责隔离执行，VM Agent 负责在隔离环境内提供文件和项目操作能力。
-
-## 典型场景
-
-### 场景一：产品里的“代码修复 Agent”
-
-用户提交一个需求：“修复登录页在移动端按钮错位的问题”。上层产品可以为这个任务创建一个项目会话，Agent Worker 在后台创建隔离 VM，Agent 在会话工作区里修改代码、运行测试，完成后把变更结果交给产品侧展示。
-
-用户看到的是“Agent 正在处理任务”，而底层实际发生的是：创建会话、分配运行节点、启动 MicroVM、挂载工作区、通过 RPC 操作文件、最后回收资源。
-
-### 场景二：多租户 Agent 平台
-
-不同客户的项目不能共享文件系统，也不能互相访问内部服务。Agent Worker 通过 Firecracker、网络命名空间、nftables 规则和独立 worktree，把不同项目、不同会话拆到各自的边界内。
-
-### 场景三：临时实验环境
-
-需求人员希望让 Agent 临时分析一个项目、生成改造建议或跑一段验证脚本。Agent Worker 可以创建一个可丢弃的 scratch 文件系统，任务结束后直接销毁，避免污染长期环境。
-
-## 整体架构
-
-```mermaid
-flowchart TB
-  User["用户 / 产品系统"]
-  API["Director 外部 API<br/>登记节点、查询节点、未来承接任务入口"]
-  Director["Director<br/>中心控制与调度服务"]
-  DB["Director 数据库<br/>用户、项目、Agent、Supervisor"]
-  Scheduler["Scheduler<br/>维护在线 Supervisor 连接"]
-  Supervisor["Supervisor<br/>宿主机资源管理器"]
-  RuntimeImage["Runtime Image<br/>Alpine + Node.js + JuiceFS + init"]
-  Network["网络命名空间<br/>veth / TAP / nftables / NAT"]
-  Firecracker["Firecracker MicroVM<br/>隔离执行环境"]
-  VMAgent["VM Agent<br/>项目、worktree、文件 RPC"]
-  RPC["RPC 通道<br/>WebSocket / Socket.IO / 流式消息"]
-  Panel["VM Manager Panel<br/>管理面板原型"]
-
-  User --> API
-  API --> Director
-  Director --> DB
-  Director --> Scheduler
-  Scheduler <-->|认证 WebSocket| Supervisor
-  Supervisor --> RuntimeImage
-  Supervisor --> Network
-  Supervisor --> Firecracker
-  Firecracker --> VMAgent
-  VMAgent <-->|文件与项目操作| RPC
-  Panel --> Director
-```
-
-### 角色分工
-
-| 模块 | 面向产品的解释 | 当前代码中的职责 |
-| --- | --- | --- |
-| Director | 中央调度台 | 提供 HTTP API、管理 Supervisor 注册信息、校验 Supervisor 身份、维护在线连接 |
-| Supervisor | 每台宿主机上的执行节点 | 下载 Firecracker 组件、构建运行镜像、准备网络、创建 MicroVM |
-| MicroVM | 每个任务的隔离房间 | 运行只读 runtime 镜像和可写 scratch 文件系统，限制 CPU/内存 |
-| VM Agent | 房间里的执行助手 | 管理项目仓库、worktree、文件读写 RPC、隧道连接 |
-| RPC | 控制线 | 在服务与 VM Agent 之间传递方法调用、错误、取消和流式数据 |
-| VM Manager | VM 管理能力包 | 较早期/独立的 VM 控制封装，包含 VM 生命周期、SSH 终端和网络管理 |
-| VM Manager Panel | 可视化管理原型 | Next.js 页面，目前主要展示环境状态 |
-
-## 核心机制
-
-### 1. Supervisor 注册与认证
-
-Director 对外提供 Supervisor 创建接口。创建时会生成 Ed25519 密钥对：
-
-- 公钥保存到 Director 数据库。
-- 私钥返回给 Supervisor，由部署方安全保存。
-
-Supervisor 连接 Director 时，会在 WebSocket 握手请求头中带上：
-
-- `x-supervisor-id`
-- `x-timestamp`
-- `x-nonce`
-- `x-signature`
-
-签名内容是 `supervisor id + 时间戳 + 随机数`。Director 会检查时间窗口、查询公钥并验证签名，防止未授权节点接入和重放攻击。
-
-```mermaid
-sequenceDiagram
-  participant Admin as 运维/控制台
-  participant Director as Director
-  participant DB as 数据库
-  participant Supervisor as Supervisor
-
-  Admin->>Director: 创建 Supervisor(name)
-  Director->>Director: 生成 Ed25519 密钥对
-  Director->>DB: 保存 Supervisor 公钥
-  Director-->>Admin: 返回 Supervisor ID 和私钥
-
-  Supervisor->>Supervisor: 使用私钥签名 id/timestamp/nonce
-  Supervisor->>Director: WebSocket /supervisor/join + 签名头
-  Director->>DB: 查询 Supervisor 公钥
-  Director->>Director: 校验时间戳和签名
-  Director-->>Supervisor: 连接建立
-  Director->>Director: Scheduler 记录在线节点
-```
-
-### 2. MicroVM 启动流程
-
-Supervisor 创建 VM 时，会做几件事：
-
-1. 生成 VM ID，并基于 ID 派生稳定 MAC 地址。
-2. 从网络槽位池中分配一个独立网络命名空间。
-3. 准备 Firecracker jailer、kernel、runtime 镜像和 scratch 磁盘。
-4. 使用 cgroup 设置 CPU 和内存上限。
-5. 配置 Firecracker：网络、MMDS 元数据、vsock、启动参数和磁盘。
-6. 启动实例，并返回 VM 的 ID、IP、根目录和控制句柄。
-
-```mermaid
-flowchart TD
-  Start["请求创建 VM"] --> ID["生成 VM ID / MAC"]
-  ID --> Net["分配网络槽位<br/>netns + veth + TAP"]
-  Net --> FS["准备文件系统<br/>runtime.squashfs + scratch.ext4"]
-  FS --> Jailer["启动 Firecracker jailer"]
-  Jailer --> Socket["等待 firecracker.sock 就绪"]
-  Socket --> Config["配置 VM<br/>CPU / 内存 / 磁盘 / 网络 / MMDS"]
-  Config --> Boot["InstanceStart"]
-  Boot --> Running["VM 运行中"]
-  Running --> Cleanup["异常时释放网络、删除目录、杀进程"]
-```
-
-### 3. 文件系统设计
-
-VM 内部的启动脚本会挂载基础系统目录，并把写入空间放在 scratch 盘上：
-
-- `runtime.squashfs`：只读运行镜像，包含 Node.js、curl、bubblewrap、JuiceFS 等基础能力。
-- `scratch.ext4`：每个 VM 独立的可写临时磁盘。
-- JuiceFS 临时本地后端：当前用于在 scratch 上构建可挂载的工作区基础。
-- `bubblewrap`：在 VM 内进一步限制应用进程能看到的目录。
-
-这使得运行环境可以快速复制、任务写入可以被单独丢弃，且基础镜像不会被 Agent 修改。
-
-### 4. 网络隔离与访问控制
-
-每个 VM 使用独立网络槽位。Supervisor 会为槽位创建：
-
-- Linux network namespace。
-- 一对 veth 设备，连接宿主机和命名空间。
-- TAP 设备，连接 Firecracker VM。
-- nftables 规则，控制转发、NAT、DNS 和端口访问。
-
-当前策略允许常见出网能力，例如 DNS、ICMP、SSH、HTTP、HTTPS，同时阻断非白名单 DNS，并禁止同一 TAP 内部直接互通。
+## 架构
 
 ```mermaid
 flowchart LR
-  VM["MicroVM<br/>10.123.0.2"] --> TAP["TAP<br/>aw-tap"]
-  TAP --> NS["Network Namespace<br/>aw-xxxx"]
-  NS --> VethGuest["veth guest"]
-  VethGuest --> VethHost["veth host"]
-  VethHost --> Host["宿主机网络"]
-  Host --> Internet["外部网络"]
-  NS -. nftables .-> Rules["DNS 白名单<br/>端口规则<br/>NAT 转换"]
+  Client["上层产品 / SDK"]
+  Director["Director<br/>ConnectRPC API · 认证 · 调度"]
+  MySQL[("MySQL<br/>用户/模板/项目/节点")]
+  Redis[("Redis + BullMQ<br/>队列/状态/Nonce")]
+  Supervisor["Supervisor<br/>宿主机执行节点"]
+  WebDAV["Native WebDAV<br/>按任务暴露工作区"]
+  VM["Firecracker MicroVM<br/>只读镜像 + 可写 OverlayFS"]
+  App["Runner App<br/>VM 内目标进程"]
+
+  Client -->|"HTTP/2 + TLS + 签名"| Director
+  Director --> MySQL
+  Director --> Redis
+  Supervisor -->|"指标上报 / 拉取任务"| Director
+  Director <-->|"项目反向隧道"| Supervisor
+  Supervisor --> WebDAV
+  Supervisor --> VM
+  WebDAV -->|"davfs2 / Basic Auth"| VM
+  VM --> App
 ```
 
-### 5. 项目与会话 worktree
+一次完整的目标流程如下；虚线部分代表代码存在，但尚未在 Supervisor 主流程中接通：
 
-VM Agent 中的项目模块会在本地维护一个 bare Git 仓库，并基于它创建 worktree：
+```mermaid
+sequenceDiagram
+  participant U as 上层产品
+  participant D as Director
+  participant Q as BullMQ
+  participant S as Supervisor
+  participant V as MicroVM
 
-- `main` worktree：项目主工作区。
-- `session/<id>` worktree：某个任务或会话的独立工作区。
+  U->>D: ProjectService.Launch
+  D->>Q: 项目入队
+  S->>D: SupervisorPortal.Fetch
+  D-->>S: projectId + tunnel token
+  S-->>V: 创建网络、工作区与 MicroVM
+  V-->>D: 通过 Supervisor 建立项目隧道
+  Note over S,V: 当前 Fetch → Orchestrator 尚未集成
+```
 
-这样，Agent 可以在会话分支中修改文件，不直接污染主线。产品上可以把一次 Agent 工作理解为“围绕某个项目创建的一次可追踪会话”。
+## 核心模块
 
-### 6. RPC 通信机制
+| 模块 | 职责 | 当前状态 |
+| --- | --- | --- |
+| `services/director` | ConnectRPC 控制面；用户、模板、项目、Supervisor API；签名认证；BullMQ 调度；项目隧道 | 主体已实现 |
+| `services/supervisor` | 初始化宿主环境、网络与镜像；上报资源；创建和回收 Firecracker 任务 | 能运行演示 VM，尚未消费 Director 任务 |
+| `native/webdav` | Go WebDAV 服务；通过 Unix Socket 动态创建/删除带凭据的项目暴露 | 已接入 Supervisor |
+| `services/runner` | 未来的 VM 内 Agent Runner | 仅空入口与构建骨架 |
+| `packages/rpc` | 支持普通调用、流式传输、取消和错误编码的 Socket.IO RPC | 有核心实现与流测试 |
+| `packages/vm-agent` | 较早期的项目 bare repo、session worktree 和文件 RPC 实验 | 独立原型，未接入当前 MicroVM 链路 |
+| `packages/vm-manager` | 较早期的 Firecracker/SSH/网络管理封装 | 独立原型 |
+| `packages/vm-manager-panel` | Next.js 管理界面 | 仅显示本地环境状态 |
+| `packages/vm-registry` | VM 注册能力占位 | 空包 |
 
-`@aw/rpc` 是项目内的轻量 RPC 包。它提供：
+## 关键实现
 
-- 方法定义：用 schema 描述输入输出。
-- 普通请求：适合列表、移动、删除等一次性操作。
-- 服务端流：适合读文件等大内容传输。
-- 取消机制：远端取消请求时会传播 abort 信号。
-- 错误传递：把远端错误编码后传回调用方。
+### 控制面与认证
 
-VM Agent 当前注册了 `vm-agent.fs` 文件服务，支持：
+Director 在两个端口提供服务：
 
-- `list`：列目录。
-- `metadata`：读取文件或目录元信息。
-- `read`：流式读取文件。
-- `copy`：复制文件。
-- `move`：移动文件。
-- `remove`：删除文件或目录。
+- HTTP（默认 `3008`）：项目反向隧道和代理入口。
+- HTTP/2 TLS（默认 `50051`）：ConnectRPC/gRPC API，路径前缀为 `/grpc`。
 
-这些操作都会检查目标路径是否在对应 worktree 内，避免通过 `../` 访问工作区外的文件。
+API 按身份隔离：Manager 管理用户和 Supervisor，User 管理自己的模板与项目，Supervisor 仅上报状态和拉取任务。请求使用 Ed25519 签名，载荷包含身份、时间戳和 nonce；Director 通过 Redis 防止 nonce 重放。开发模式支持专用的开发身份头。
 
-## 代码结构
+Director 当前数据模型保持精简：`User`、`Supervisor`、`Template` 和 `Project`。项目支持 `Minimum`、`Standard`、`Performance` 三档资源规格，运行状态由调度器动态计算，不写入数据库。
+
+### 调度与隧道
+
+`ProjectService.Launch` 将项目写入 BullMQ。Supervisor 通过 client-streaming RPC 每 3 秒上报 CPU、内存、磁盘和运行数量，并可通过 `Fetch` 锁定一个任务。Director 为已分派项目创建临时 token 和反向隧道，维护 pending、pulling、running、terminated 状态及超时回队逻辑。
+
+### MicroVM 隔离
+
+Supervisor 为每个任务执行以下操作：
+
+1. 分配 network namespace、veth 和 TAP，并配置 nftables/NAT。
+2. 启动 Firecracker jailer，按资源档位设置 cgroup CPU/内存限制。
+3. 挂载只读 `runtime.squashfs` 和独立 `scratch.ext4`。
+4. VM 内用 OverlayFS 合并只读根和可写层。
+5. 为该任务生成 WebDAV 密码，把宿主项目目录挂载到 `/workspace`。
+6. 通过 `tini` 启动 `/app`，退出时同步工作区并关闭 VM。
+
+当前资源档位分别约为 `1 vCPU / 1 GiB`、`2 vCPU / 2 GiB`、`4 vCPU / 4 GiB`（jailer 另预留 64 MiB）。
+
+## 仓库结构
 
 ```text
 .
-├── services
-│   ├── director          # 中央控制服务：API、认证、调度、数据库
-│   ├── supervisor        # 宿主机执行节点：镜像、网络、Firecracker 编排
-│   └── runner            # 预留的任务 runner 服务，目前基本为空
-├── packages
-│   ├── rpc               # 自研 RPC 协议与 WebSocket 适配
-│   ├── vm-agent          # VM 内/项目侧 Agent 运行时：worktree、文件 API、隧道
-│   ├── vm-manager        # 独立 VM 管理封装：生命周期、网络、SSH 终端
-│   ├── vm-manager-panel  # Next.js 管理面板原型
-│   └── shared-config-typescript
-│       └── ...           # 共享 TypeScript 配置
-├── package.json          # monorepo 脚本
-├── pnpm-workspace.yaml   # pnpm workspace 配置
-└── turbo.json            # Turborepo 任务配置
+├── services/
+│   ├── director/          # 中央控制面与 SDK
+│   ├── supervisor/        # Linux 宿主机执行节点
+│   └── runner/            # Runner 占位实现
+├── packages/
+│   ├── rpc/               # 自研 Socket.IO RPC
+│   ├── vm-agent/          # VM Agent / worktree 实验
+│   ├── vm-manager/        # 早期 VM 管理实现
+│   ├── vm-manager-panel/  # Next.js 面板原型
+│   ├── vm-registry/       # 注册服务占位包
+│   └── shared-config-typescript/
+├── native/webdav/         # Go WebDAV 二进制及 TS 导出
+├── pnpm-workspace.yaml
+└── turbo.json
 ```
 
-### Director 目录重点
+## 开发与运行
 
-```text
-services/director/src
-├── bootstrapper.ts              # 启动顺序：变量、环境、数据库、HTTP、路由、调度
-├── external-router.ts           # 对外 API 路由
-├── internal-router-handler.ts   # Supervisor WebSocket 接入点
-├── core/services
-│   ├── authenticator.ts         # Supervisor 签名认证
-│   └── scheduler.ts             # 在线 Supervisor 连接管理
-├── endpoints/supervisor         # 创建、列表、删除 Supervisor API
-└── supports/database/schema     # 用户、项目、Agent、Supervisor 等表结构
-```
+### 基础要求
 
-### Supervisor 目录重点
+- Node.js 22+
+- pnpm 10.14+
+- Go（构建 `native/webdav`）
+- MySQL、Redis
+- Director 的 TLS 私钥与证书
+- Linux + KVM（运行 Supervisor/MicroVM）
+- `sudo`、Firecracker/jailer、`iproute2`、`nftables`、`buildah`、`qemu-img`、`mkfs.ext4`、`mksquashfs` 等宿主工具
 
-```text
-services/supervisor/src
-├── internal/director.ts         # 连接 Director，并在握手中签名认证
-├── internal/orchestrator.ts     # 创建 Firecracker MicroVM
-├── internal/network.ts          # 网络命名空间、veth、TAP、nftables
-├── internal/image.ts            # 构建 runtime.squashfs 和 scratch.ext4
-├── internal/controller.ts       # Director 调用 Supervisor 的控制面，当前接口未完全实现
-└── resources
-    ├── init.sh                  # VM PID 1 启动脚本
-    └── app/index.js             # VM 内示例 Node 应用，读取 MMDS 元数据
-```
+macOS/Windows 可以开发和构建大部分 TypeScript 模块，但不能运行 Firecracker 执行链路。
 
-### VM Agent 目录重点
-
-```text
-packages/vm-agent/src
-├── bootstrapper.ts              # 初始化环境、项目、worktree、RPC server、隧道
-├── internal/project.ts          # 初始化 bare Git 仓库
-├── internal/worktree.ts         # main/session worktree 管理
-├── api/protocol/fs.ts           # 文件 API 协议定义
-├── api/implementation/fs.ts     # 文件 API 实现
-└── api/index.ts                 # 注册 RPC 服务并绑定 WebSocket
-```
-
-## 数据模型概览
-
-Director 侧数据库已经体现了产品目标：
-
-- `users`：用户。
-- `agents`：Agent 定义，包括名称、描述、模板包 ID、记忆库 ID。
-- `agent_env_variables`：Agent 环境变量。
-- `projects`：项目，包含所属 Agent、镜像 ID、资源规格、归档状态。
-- `project_members`：项目成员。
-- `project_sessions`：项目会话。
-- `supervisors`：可接入的宿主机节点。
-
-这些表说明 Agent Worker 计划承载的不只是“启动一台 VM”，而是围绕用户、项目、Agent、会话和执行节点形成完整运行系统。
-
-## 运行与开发
-
-本仓库使用 pnpm workspace 和 Turborepo。
+### 安装与检查
 
 ```bash
 pnpm install
 pnpm build
 pnpm test
+
+# 单独检查某个包
+pnpm --filter @aw/vm-director typecheck
+pnpm --filter @aw/rpc test
 ```
 
-常用开发命令：
+### 启动 Director
+
+至少需要配置 MySQL、Redis、共享文件根和 HTTP/2 TLS 文件：
+
+```dotenv
+AW_DIRECTOR_MYSQL_URL=mysql://user:password@127.0.0.1:3306/agent_worker
+AW_DIRECTOR_REDIS_URL=redis://127.0.0.1:6379/0
+AW_DIRECTOR_FS_ROOT=/var/lib/agent-worker
+AW_DIRECTOR_GRPC_CA_KEY=/path/to/server-key.pem
+AW_DIRECTOR_GRPC_CA_CERTIFICATE=/path/to/server-cert.pem
+AW_DIRECTOR_HTTP_PORT=3008
+AW_DIRECTOR_GRPC_PORT=50051
+```
 
 ```bash
 pnpm --filter @aw/vm-director dev
+```
+
+首次部署还应固定配置 `AW_DIRECTOR_MANAGER_PUBLIC_KEY`；未配置时开发启动会生成并在日志中输出一组临时 Manager 密钥。
+
+### 启动 Supervisor（仅限 Linux/KVM 开发机）
+
+```dotenv
+AW_SUPERVISOR_ID=<Director 创建的 Supervisor ID>
+AW_SUPERVISOR_PRIVATE_KEY=<对应 Ed25519 私钥 hex>
+AW_SUPERVISOR_DIRECTOR_HOST_URL=https://127.0.0.1:50051
+AW_SUPERVISOR_FS_ROOT=/var/lib/agent-worker
+```
+
+```bash
 pnpm --filter @aw/vm-supervisor dev
-pnpm --filter @aw/vm-agent dev
 ```
 
-Director 默认监听：
+> 注意：当前 Supervisor 入口会直接创建两个随机项目的演示 VM，并定时访问其 `3000` 端口。请只在专用 Linux/KVM 开发环境运行；它还不是生产守护进程。
 
-```text
-http://127.0.0.1:3008
-```
+## 当前进度与下一步
 
-开发环境下提供 OpenAPI/Scalar 页面：
+已具备：
 
-```text
-http://127.0.0.1:3008/api/scalar
-```
+- ConnectRPC API、身份权限、签名与重放防护。
+- MySQL 数据模型和用户/模板/项目/Supervisor 服务。
+- Redis/BullMQ 排队、任务锁、超时回队和运行状态。
+- Supervisor 指标上报、Firecracker/cgroup/网络/镜像编排。
+- 按任务授权的 WebDAV 工作区与 VM 内挂载。
+- HTTP/WebSocket 项目反向代理和隧道管理。
 
-### 关键环境变量
+仍需完成：
 
-| 变量 | 作用 | 默认值 |
-| --- | --- | --- |
-| `AW_DIRECTOR_ROOT_DIR` | Director 工作目录 | `~/.aw-director` |
-| `AW_DIRECTOR_HTTP_HOST` | Director 监听地址 | 未设置时监听所有接口 |
-| `AW_DIRECTOR_HTTP_PORT` | Director 监听端口 | `3008` |
-| `AW_SUPERVISOR_ROOT_DIR` | Supervisor 工作目录 | `~/.aw-supervisor` |
-| `AW_SUPERVISOR_ID` | Supervisor UUID | 无，必须配置 |
-| `AW_SUPERVISOR_PRIVATE_KEY` | Supervisor 私钥 | 无，必须配置 |
-| `AW_SUPERVISOR_DIRECTOR_HOST_URL` | Director WebSocket 地址 | 无，必须配置 |
-| `VM_AGENT_ROOT_DIR` | VM Agent 工作目录 | `~/.agent-worker` |
-| `VM_AGENT_REGISTRY_URL` | VM Agent 注册/隧道服务地址 | 代码中临时写入 `http://localhost:3000` |
-| `VM_AGENT_REGISTRY_AUTH_TOKEN` | VM Agent 注册令牌 | 代码中临时写入 `token` |
+- 将 Supervisor 的 `Fetch` 循环接入 `Orchestrator.create()`，移除两个演示 VM。
+- 把项目资源档位、环境变量和任务元数据从 Director 完整传到 VM。
+- 实现任务终止、重启、故障恢复和持久化运行记录。
+- 明确并整合 `runner`、`vm-agent`、`vm-manager` 三条历史实现路径。
+- 补充端到端测试、部署脚本、可观测性、安全审计和生产运维文档。
+- 完成管理面板及对外使用示例。
 
-### 系统依赖
+## 参与开发
 
-Supervisor/VM 相关能力依赖 Linux 虚拟化与网络能力，通常需要：
+提交变更前请至少运行相关包的 `typecheck`、`test` 和根目录 `pnpm build`。基础设施代码会触及宿主网络、cgroup、文件目录和虚拟机生命周期；修改清理逻辑时，应同时验证成功、启动失败和进程异常退出三条路径。
 
-- Firecracker 和 jailer。
-- Linux kernel image。
-- `sudo` 权限。
-- `iproute2`、`nftables`、`buildah`、`qemu-utils`、`e2fsprogs`、`squashfs-tools` 等系统工具。
-- 支持 cgroup v1 或 v2。
-
-代码会在 Supervisor 初始化时下载 Firecracker、jailer 和 kernel，并使用 buildah 构建 Alpine runtime 镜像。
-
-## 当前实现状态
-
-这个仓库处在基础设施搭建阶段，部分模块已经具备完整骨架，部分接口仍是预留状态：
-
-- Director 已实现启动、外部 API、Supervisor 创建、Supervisor WebSocket 认证和在线连接登记。
-- Supervisor 已实现环境初始化、Firecracker 资源准备、runtime 镜像构建、网络槽位、MicroVM 创建。
-- Supervisor 的控制器接口中 `host.status`、`task.dispatch`、`task.inspect`、`task.terminate` 目前仍是 `Unimplemented`。
-- VM Agent 已实现项目/worktree 初始化、文件 RPC 协议和文件操作实现。
-- Runner 服务目前为空实现。
-- VM Manager Panel 目前是管理面板原型，仅展示环境状态。
-
-## 一句话总结
-
-Agent Worker 是一个面向 AI Agent 产品的隔离执行底座：Director 管调度，Supervisor 管宿主机，Firecracker 提供安全边界，VM Agent 管项目与文件操作。它让上层产品可以把“让 Agent 去做一件事”落到一个可认证、可隔离、可限制、可回收的运行会话中。
+如果你想参与，当前最清晰的切入点是 Supervisor 任务消费闭环、端到端测试、Runner 协议，以及重复 VM 实现的收敛。

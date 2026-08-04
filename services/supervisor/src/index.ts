@@ -1,17 +1,17 @@
 import { Container } from "@/helpers/container";
 import { CommandLine } from "@/internal/command-line";
+import { Controller } from "@/internal/controller";
 import { Director } from "@/internal/director";
 import { Environment } from "@/internal/environment";
 import { EventQueue } from "@/internal/event-queue";
+import { FS } from "@/internal/fs";
+import { Image } from "@/internal/image";
+import { KVStorage } from "@/internal/kv-storage";
 import { Logger } from "@/internal/logger";
 import { Network } from "@/internal/network";
+import { Orchestrator } from "@/internal/orchestrator";
+import { Runner } from "@/internal/runner";
 import { Variables } from "@/internal/variables";
-import { Controller } from "./internal/controller";
-import { FS } from "./internal/fs";
-import { Image } from "./internal/image";
-import { KVStorage } from "./internal/kv-storage";
-import { Orchestrator } from "./internal/orchestrator";
-import { Runner } from "./internal/runner";
 
 Container.singleton(CommandLine, () => new CommandLine());
 Container.singleton(Logger, () => new Logger());
@@ -32,11 +32,10 @@ Container.singleton(Runner, () => new Runner());
   const environment = Container.inject(Environment);
   const kv = Container.inject(KVStorage);
   const net = Container.inject(Network);
-  const director = Container.inject(Director);
-  const controller = Container.inject(Controller);
   const image = Container.inject(Image);
   const fs = Container.inject(FS);
   const orchestrator = Container.inject(Orchestrator);
+  const director = Container.inject(Director);
 
   await variables.init();
   await environment.init();
@@ -44,44 +43,38 @@ Container.singleton(Runner, () => new Runner());
   await net.init();
   await fs.init();
   await image.init();
+  await director.init();
 
-  const taskId = await orchestrator.create({
-    config: {
-      machineTier: "minimal",
-      projectId: crypto.randomUUID(),
-      env: {},
-      metadata: {},
-    },
-  });
+  const tasks = await Promise.all([
+    orchestrator.create({
+      config: {
+        machineTier: "minimal",
+        projectId: crypto.randomUUID(),
+        env: {},
+        metadata: {},
+      },
+    }),
+    orchestrator.create({
+      config: {
+        machineTier: "minimal",
+        projectId: crypto.randomUUID(),
+        env: {},
+        metadata: {},
+      },
+    }),
+  ]);
 
-  // console.log(taskId)
-
-  // const tasks = await Promise.all([
-  //   orchestrator.create({
-  //     config: {
-  //       machineTier: "minimal",
-  //       projectId: crypto.randomUUID(),
-  //       env: {},
-  //       metadata: {},
-  //     },
-  //   }),
-  //   orchestrator.create({
-  //     config: {
-  //       machineTier: "minimal",
-  //       projectId: crypto.randomUUID(),
-  //       env: {},
-  //       metadata: {},
-  //     },
-  //   })
-  // ]);
-
-  // console.log(tasks)
-
-  // await new Promise((resolve) => setTimeout(resolve, 3000));
-
-  // await orchestrator.kill(taskId).then(() => {
-  //   console.log("Done !!!!!")
-  // })
+  setInterval(async () => {
+    await Promise.all(
+      tasks.map((task) => {
+        return fetch(`http://${task.net.veth.guest.ip}:3000`)
+          .then((res) => {
+            return res.text();
+          })
+          .then(console.log);
+      }),
+    );
+  }, 2000);
 })().catch((error) => {
   console.log(error);
 });

@@ -31,19 +31,23 @@ model User {
 
 // Supervisor
 model Supervisor {
-  id         String     @id @default(cuid(2)) @db.VarChar(24)
+  id                String     @id @default(cuid(2)) @db.VarChar(24)
   // 用于认证的公钥
-  publicKey  Bytes      @unique @map("public_key") @db.VarBinary(128)
+  publicKey         Bytes      @unique @map("public_key") @db.VarBinary(128)
   // 元数据（由服务调用方设置）
-  metadata   Bytes?     @db.VarBinary(2048)
+  metadata          Bytes?     @db.VarBinary(2048)
   // 创建时间
-  createTime DateTime   @default(now()) @map("create_time") @db.Timestamp(3)
+  createTime        DateTime   @default(now()) @map("create_time") @db.Timestamp(3)
   // 更新时间
-  updateTime DateTime   @default(now()) @updatedAt @map("update_time") @db.Timestamp(3)
+  updateTime        DateTime   @default(now()) @updatedAt @map("update_time") @db.Timestamp(3)
   // 删除时间
-  deleteTime DateTime?  @map("delete_time") @db.Timestamp(3)
-  // 承接的调度记录
-  dispatches Dispatch[]
+  deleteTime        DateTime?  @map("delete_time") @db.Timestamp(3)
+  // 总容量（资源单位：Minimum=1 / Standard=2 / Performance=4）
+  capacity          Int        @default(8) @map("capacity")
+  // 剩余容量（= capacity - 已占用资源单位；派发前须 >= 实例所需单位）
+  remainingCapacity Int        @default(8) @map("remaining_capacity")
+  // 承接的实例
+  instances         Instance[]
 
   @@map("supervisor")
 }
@@ -111,56 +115,26 @@ model Project {
   template     Template?           @relation(fields: [templateId], references: [id])
   // 关联的模板 ID
   templateId   String?             @map("template_id") @db.VarChar(24)
-  // 调度记录
-  dispatches   Dispatch[]
+  // 实例（存在 ⟺ 该项目期望运行；与项目创建/删除动作同事务维护）
+  instance     Instance?
 
   @@map("project")
 }
 
-// 调度状态
-enum DispatchStatus {
-  // 待分发
-  Pending    @map("PENDING")
-  // 已分发
-  Dispatched @map("DISPATCHED")
-  // 运行中
-  Running    @map("RUNNING")
-  // 已完成
-  Completed  @map("COMPLETED")
-  // 失败
-  Failed     @map("FAILED")
-}
-
-// 调度记录
-model Dispatch {
-  id           String         @id @default(cuid(2)) @db.VarChar(24)
-  // 关联的项目ID
-  projectId    String         @map("project_id") @db.VarChar(24)
+// 项目实例
+model Instance {
+  id           String      @id @default(cuid(2)) @db.VarChar(24)
+  // 关联的项目（唯一，一个项目至多一个实例）
+  projectId    String      @unique @map("project_id") @db.VarChar(24)
   // 关联的项目
-  project      Project        @relation(fields: [projectId], references: [id])
-  // 调度状态
-  status       DispatchStatus @default(Pending)
-  // 活跃标记；活跃记录为固定值 "active"，终态记录置 NULL（NULL 不参与唯一约束，可保留历史）
-  activeKey    String?        @default("active") @map("active_key") @db.VarChar(24)
-  // 承接分发的 Supervisor ID
-  supervisorId String?        @map("supervisor_id") @db.VarChar(24)
-  // 承接分发的 Supervisor
-  supervisor   Supervisor?    @relation(fields: [supervisorId], references: [id])
-  // 已尝试分发次数
-  attempts     Int            @default(0)
-  // 租约令牌
-  leaseToken   String         @unique @default(uuid()) @map("lease_token") @db.VarChar(64)
-  // 租约到期时间
-  leaseUntil   DateTime       @default(now()) @map("lease_until") @db.Timestamp(3)
+  project      Project     @relation(fields: [projectId], references: [id])
+  // 承接的 Supervisor（认领时绑定，失败上报后解除）
+  supervisorId String?     @map("supervisor_id") @db.VarChar(24)
+  // 承接的 Supervisor
+  supervisor   Supervisor? @relation(fields: [supervisorId], references: [id])
   // 创建时间
-  createTime   DateTime       @default(now()) @map("create_time") @db.Timestamp(3)
-  // 更新时间
-  updateTime   DateTime       @default(now()) @updatedAt @map("update_time") @db.Timestamp(3)
+  createTime   DateTime    @default(now()) @map("create_time") @db.Timestamp(3)
 
-  // 同一项目仅允许一条活跃调度记录；终态记录 activeKey 为 NULL
-  @@unique([projectId, activeKey])
-  @@index([projectId, status])
-  @@index([status, leaseUntil])
-  @@index([supervisorId, status])
-  @@map("dispatch")
+  @@index([supervisorId])
+  @@map("instance")
 }

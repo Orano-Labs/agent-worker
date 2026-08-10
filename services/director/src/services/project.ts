@@ -3,14 +3,8 @@ import { join } from "node:path";
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { createId } from "@orama/cuid2";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/client";
-import { Scheduler } from "@/core/scheduler";
 import { ProjectResourceTier } from "@/generated/prisma/enums";
 import {
-  ProjectInstanceSchema,
-  ProjectInstanceStatusPendingSchema,
-  ProjectInstanceStatusPullingSchema,
-  ProjectInstanceStatusRunningSchema,
-  ProjectInstanceStatusTerminatedSchema,
   ProjectResourceTier as ProjectResourceTierPB,
   ProjectSchema,
   ProjectService,
@@ -20,8 +14,6 @@ import {
   ProjectServiceDeleteResponseSchema,
   type ProjectServiceGetRequestValid,
   ProjectServiceGetResponseSchema,
-  type ProjectServiceLaunchRequestValid,
-  ProjectServiceLaunchResponseSchema,
   type ProjectServiceListRequestValid,
   ProjectServiceListResponseSchema,
   type ProjectServiceUpdateMetadataRequestValid,
@@ -40,7 +32,6 @@ export class ProjectServiceImplementation {
 
   #variables: Variables;
   #logger: Logger;
-  #scheduler: Scheduler;
 
   #mapResourceTierToRepository(value: ProjectResourceTierPB) {
     switch (value) {
@@ -74,58 +65,9 @@ export class ProjectServiceImplementation {
     this.#server = Container.inject(GRPCServer);
     this.#variables = Container.inject(Variables);
     this.#logger = Container.inject(Logger).scope("ProjectService");
-    this.#scheduler = Container.inject(Scheduler);
   }
 
-  async #buildInstance(projectId: string) {
-    const status = await this.#scheduler.getStatus(projectId);
-
-    switch (status.type) {
-      case "pending":
-        return Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "pending",
-            value: Protobuf.createValid(ProjectInstanceStatusPendingSchema, {
-              enqueuedAt: Protobuf.Timestamp.fromDate(status.enqueuedAt),
-            }),
-          },
-        });
-
-      case "dispatched":
-        return Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "pulling",
-            value: Protobuf.createValid(ProjectInstanceStatusPullingSchema, {
-              dispatchedAt: Protobuf.Timestamp.fromDate(status.dispatchedAt),
-              timeoutRemainingMs: status.timeoutRemaining,
-              supervisorId: status.supervisor,
-            }),
-          },
-        });
-
-      case "running":
-        return Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "running",
-            value: Protobuf.createValid(ProjectInstanceStatusRunningSchema, {
-              connectedAt: Protobuf.Timestamp.fromDate(status.connectedAt),
-              runningDurationMs: BigInt(status.runningDuration),
-              supervisorId: status.supervisor,
-            }),
-          },
-        });
-
-      case "idle":
-        return Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "terminated",
-            value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
-          },
-        });
-    }
-  }
-
-  async create(request: ProjectServiceCreateRequestValid, context: HandlerContext) {
+  async #create(request: ProjectServiceCreateRequestValid, context: HandlerContext) {
     const user = this.#server.getUserIdentityContextMust(context);
 
     const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
@@ -178,12 +120,6 @@ export class ProjectServiceImplementation {
           resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
           metadata: project.metadata === null ? undefined : project.metadata,
           templateId: project.templateId === null ? undefined : project.templateId,
-          instance: Protobuf.createValid(ProjectInstanceSchema, {
-            status: {
-              case: "terminated",
-              value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
-            },
-          }),
         }),
       });
     } catch (error) {
@@ -198,7 +134,7 @@ export class ProjectServiceImplementation {
     }
   }
 
-  async updateMetadata(request: ProjectServiceUpdateMetadataRequestValid, context: HandlerContext) {
+  async #updateMetadata(request: ProjectServiceUpdateMetadataRequestValid, context: HandlerContext) {
     const user = this.#server.getUserIdentityContextMust(context);
 
     const project = await this.#repository.client.project
@@ -228,17 +164,11 @@ export class ProjectServiceImplementation {
         resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
         metadata: project.metadata === null ? undefined : project.metadata,
         templateId: project.templateId === null ? undefined : project.templateId,
-        instance: Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "terminated",
-            value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
-          },
-        }),
       }),
     });
   }
 
-  async get(request: ProjectServiceGetRequestValid, context: HandlerContext) {
+  async #get(request: ProjectServiceGetRequestValid, context: HandlerContext) {
     const user = this.#server.getUserIdentityContextMust(context);
 
     const project = await this.#repository.client.project
@@ -257,8 +187,6 @@ export class ProjectServiceImplementation {
         throw error;
       });
 
-    const instance = await this.#buildInstance(project.id);
-
     return Protobuf.createValid(ProjectServiceGetResponseSchema, {
       project: Protobuf.createValid(ProjectSchema, {
         id: project.id,
@@ -267,12 +195,11 @@ export class ProjectServiceImplementation {
         resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
         metadata: project.metadata === null ? undefined : project.metadata,
         templateId: project.templateId === null ? undefined : project.templateId,
-        instance,
       }),
     });
   }
 
-  async list(request: ProjectServiceListRequestValid, context: HandlerContext) {
+  async #list(request: ProjectServiceListRequestValid, context: HandlerContext) {
     const user = this.#server.getUserIdentityContextMust(context);
 
     const take = request.pageSize;
@@ -299,10 +226,8 @@ export class ProjectServiceImplementation {
       }),
     ]);
 
-    const instances = await Promise.all(projects.map((p) => this.#buildInstance(p.id)));
-
     return Protobuf.createValid(ProjectServiceListResponseSchema, {
-      projects: projects.map((project, i) => {
+      projects: projects.map((project) => {
         return Protobuf.createValid(ProjectSchema, {
           id: project.id,
           createTime: Protobuf.Timestamp.fromDate(project.createTime),
@@ -310,19 +235,22 @@ export class ProjectServiceImplementation {
           resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
           metadata: project.metadata === null ? undefined : project.metadata,
           templateId: project.templateId === null ? undefined : project.templateId,
-          instance: instances[i],
         });
       }),
       total,
     });
   }
 
-  async delete(request: ProjectServiceDeleteRequestValid, context: HandlerContext) {
+  async #delete(request: ProjectServiceDeleteRequestValid, context: HandlerContext) {
     const user = this.#server.getUserIdentityContextMust(context);
 
-    const status = await this.#scheduler.getStatus(request.id);
+    const instance = await this.#repository.client.instance.findUnique({
+      where: {
+        projectId: request.id,
+      },
+    });
 
-    if (status.type !== "idle") {
+    if (instance) {
       throw new ConnectError("Project must be stopped before it can be deleted", Code.FailedPrecondition);
     }
 
@@ -353,59 +281,26 @@ export class ProjectServiceImplementation {
         resourceTier: this.#mapResourceTierFromRepository(project.resourceTier),
         metadata: project.metadata === null ? undefined : project.metadata,
         templateId: project.templateId === null ? undefined : project.templateId,
-        instance: Protobuf.createValid(ProjectInstanceSchema, {
-          status: {
-            case: "terminated",
-            value: Protobuf.createValid(ProjectInstanceStatusTerminatedSchema, {}),
-          },
-        }),
       }),
     });
-  }
-
-  async launch(request: ProjectServiceLaunchRequestValid, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
-
-    const project = await this.#repository.client.project.findUnique({
-      where: {
-        id: request.id,
-        ownerId: user,
-        deleteTime: null,
-      },
-    });
-
-    if (!project) {
-      throw new ConnectError("Project not found", Code.NotFound);
-    }
-
-    const enqueued = await this.#scheduler.enqueue(request.id);
-
-    if (!enqueued) {
-      throw new ConnectError("Project is already in queue", Code.FailedPrecondition);
-    }
-
-    return Protobuf.createValid(ProjectServiceLaunchResponseSchema, {});
   }
 
   setup(router: ConnectRouter) {
     router.service(ProjectService, {
       create: async (request, context) => {
-        return this.create(request as ProjectServiceCreateRequestValid, context);
+        return this.#create(request as ProjectServiceCreateRequestValid, context);
       },
       updateMetadata: async (request, context) => {
-        return this.updateMetadata(request as ProjectServiceUpdateMetadataRequestValid, context);
+        return this.#updateMetadata(request as ProjectServiceUpdateMetadataRequestValid, context);
       },
       list: async (request, context) => {
-        return this.list(request as ProjectServiceListRequestValid, context);
+        return this.#list(request as ProjectServiceListRequestValid, context);
       },
       delete: async (request, context) => {
-        return this.delete(request as ProjectServiceDeleteRequestValid, context);
+        return this.#delete(request as ProjectServiceDeleteRequestValid, context);
       },
       get: async (request, context) => {
-        return this.get(request as ProjectServiceGetRequestValid, context);
-      },
-      launch: async (request, context) => {
-        return this.launch(request as ProjectServiceLaunchRequestValid, context);
+        return this.#get(request as ProjectServiceGetRequestValid, context);
       },
     });
   }

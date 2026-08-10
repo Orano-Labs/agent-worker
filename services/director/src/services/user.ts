@@ -32,7 +32,7 @@ export class UserServiceImplementation {
     this.#key = Container.inject(Key);
   }
 
-  async create(request: UserServiceCreateRequestValid, _: HandlerContext) {
+  async #create(request: UserServiceCreateRequestValid, _: HandlerContext) {
     const keys = await this.#key.generateED25519();
 
     const user = await this.#repository.client.user.create({
@@ -55,7 +55,7 @@ export class UserServiceImplementation {
     });
   }
 
-  async get(request: UserServiceGetRequestValid, _: HandlerContext) {
+  async #get(request: UserServiceGetRequestValid, _: HandlerContext) {
     const user = await this.#repository.client.user.findUnique({
       where: {
         id: request.id,
@@ -78,7 +78,7 @@ export class UserServiceImplementation {
     });
   }
 
-  async enable(request: UserServiceEnableRequestValid, _: HandlerContext) {
+  async #enable(request: UserServiceEnableRequestValid, _: HandlerContext) {
     const user = await this.#repository.client.user
       .update({
         where: {
@@ -108,7 +108,7 @@ export class UserServiceImplementation {
     });
   }
 
-  async disable(request: UserServiceDisableRequestValid, _: HandlerContext) {
+  async #disable(request: UserServiceDisableRequestValid, _: HandlerContext) {
     const user = await this.#repository.client.user
       .update({
         where: {
@@ -138,7 +138,7 @@ export class UserServiceImplementation {
     });
   }
 
-  async delete(request: UserServiceDeleteRequestValid, _: HandlerContext) {
+  async #delete(request: UserServiceDeleteRequestValid, _: HandlerContext) {
     const user = await this.#repository.client.user
       .update({
         where: {
@@ -168,7 +168,7 @@ export class UserServiceImplementation {
     });
   }
 
-  async updateMetadata(request: UserServiceUpdateMetadataRequestValid, _: HandlerContext) {
+  async #updateMetadata(request: UserServiceUpdateMetadataRequestValid, _: HandlerContext) {
     const user = await this.#repository.client.user
       .update({
         where: {
@@ -198,7 +198,7 @@ export class UserServiceImplementation {
     });
   }
 
-  async list(request: UserServiceListRequestValid, _: HandlerContext) {
+  async #list(request: UserServiceListRequestValid, _: HandlerContext) {
     const take = request.pageSize;
     const skip = (request.page - 1) * take;
 
@@ -238,25 +238,25 @@ export class UserServiceImplementation {
   setup(router: ConnectRouter) {
     router.service(UserService, {
       create: async (request, context) => {
-        return this.create(request as UserServiceCreateRequestValid, context);
+        return this.#create(request as UserServiceCreateRequestValid, context);
       },
       get: async (request, context) => {
-        return this.get(request as UserServiceGetRequestValid, context);
+        return this.#get(request as UserServiceGetRequestValid, context);
       },
       enable: async (request, context) => {
-        return this.enable(request as UserServiceEnableRequestValid, context);
+        return this.#enable(request as UserServiceEnableRequestValid, context);
       },
       disable: async (request, context) => {
-        return this.disable(request as UserServiceDisableRequestValid, context);
+        return this.#disable(request as UserServiceDisableRequestValid, context);
       },
       delete: async (request, context) => {
-        return this.delete(request as UserServiceDeleteRequestValid, context);
+        return this.#delete(request as UserServiceDeleteRequestValid, context);
       },
       updateMetadata: async (request, context) => {
-        return this.updateMetadata(request as UserServiceUpdateMetadataRequestValid, context);
+        return this.#updateMetadata(request as UserServiceUpdateMetadataRequestValid, context);
       },
       list: async (request, context) => {
-        return this.list(request as UserServiceListRequestValid, context);
+        return this.#list(request as UserServiceListRequestValid, context);
       },
     });
   }

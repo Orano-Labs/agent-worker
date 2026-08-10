@@ -53,7 +53,7 @@ export class TemplateServiceImplementation {
     this.#logger = Container.inject(Logger).scope("TemplateService");
   }
 
-  async create(request: TemplateServiceCreateRequestValid, _: HandlerContext) {
+  async #create(request: TemplateServiceCreateRequestValid, _: HandlerContext) {
     const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
 
     if (!root) {
@@ -94,7 +94,7 @@ export class TemplateServiceImplementation {
     }
   }
 
-  async get(request: TemplateServiceGetRequestValid, _: HandlerContext) {
+  async #get(request: TemplateServiceGetRequestValid, _: HandlerContext) {
     const template = await this.#repository.client.template.findUnique({
       where: {
         id: request.id,
@@ -118,7 +118,7 @@ export class TemplateServiceImplementation {
     });
   }
 
-  async delete(request: TemplateServiceDeleteRequestValid, _: HandlerContext) {
+  async #delete(request: TemplateServiceDeleteRequestValid, _: HandlerContext) {
     const template = await this.#repository.client.template
       .update({
         where: {
@@ -148,7 +148,7 @@ export class TemplateServiceImplementation {
     });
   }
 
-  async updateMetadata(request: TemplateServiceUpdateMetadataRequestValid, _: HandlerContext) {
+  async #updateMetadata(request: TemplateServiceUpdateMetadataRequestValid, _: HandlerContext) {
     const template = await this.#repository.client.template
       .update({
         where: {
@@ -179,7 +179,7 @@ export class TemplateServiceImplementation {
     });
   }
 
-  async updateStatus(request: TemplateServiceUpdateStatusRequestValid, _: HandlerContext) {
+  async #updateStatus(request: TemplateServiceUpdateStatusRequestValid, _: HandlerContext) {
     const template = await this.#repository.client.template
       .update({
         where: {
@@ -210,7 +210,7 @@ export class TemplateServiceImplementation {
     });
   }
 
-  async list(request: TemplateServiceListRequestValid, _: HandlerContext) {
+  async #list(request: TemplateServiceListRequestValid, _: HandlerContext) {
     const take = request.pageSize;
     const skip = (request.page - 1) * take;
 
@@ -248,7 +248,7 @@ export class TemplateServiceImplementation {
     });
   }
 
-  async fork(request: TemplateServiceForkRequestValid, _: HandlerContext) {
+  async #fork(request: TemplateServiceForkRequestValid, _: HandlerContext) {
     const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
 
     if (!root) {
@@ -302,25 +302,25 @@ export class TemplateServiceImplementation {
   setup(router: ConnectRouter) {
     router.service(TemplateService, {
       create: async (request, context) => {
-        return this.create(request as TemplateServiceCreateRequestValid, context);
+        return this.#create(request as TemplateServiceCreateRequestValid, context);
       },
       get: async (request, context) => {
-        return this.get(request as TemplateServiceGetRequestValid, context);
+        return this.#get(request as TemplateServiceGetRequestValid, context);
       },
       delete: async (request, context) => {
-        return this.delete(request as TemplateServiceDeleteRequestValid, context);
+        return this.#delete(request as TemplateServiceDeleteRequestValid, context);
       },
       updateMetadata: async (request, context) => {
-        return this.updateMetadata(request as TemplateServiceUpdateMetadataRequestValid, context);
+        return this.#updateMetadata(request as TemplateServiceUpdateMetadataRequestValid, context);
       },
       updateStatus: async (request, context) => {
-        return this.updateStatus(request as TemplateServiceUpdateStatusRequestValid, context);
+        return this.#updateStatus(request as TemplateServiceUpdateStatusRequestValid, context);
       },
       list: async (request, context) => {
-        return this.list(request as TemplateServiceListRequestValid, context);
+        return this.#list(request as TemplateServiceListRequestValid, context);
       },
       fork: async (request, context) => {
-        return this.fork(request as TemplateServiceForkRequestValid, context);
+        return this.#fork(request as TemplateServiceForkRequestValid, context);
       },
     });
   }

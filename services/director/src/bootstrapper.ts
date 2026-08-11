@@ -1,5 +1,3 @@
-import { Scheduler } from "@/core/scheduler";
-import { SupervisorRegistry } from "@/core/supervisor-registry";
 import { TunnelManager } from "@/core/tunnel-manager";
 import { Container } from "@/helpers/container";
 import { Authenticator } from "@/internal/authenticator";
@@ -18,6 +16,7 @@ import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
 import { TemplateServiceImplementation } from "@/services/template";
 import { UserServiceImplementation } from "@/services/user";
+import { Allocator } from "./internal/allocator";
 
 const PRODUCTION = process.env.NODE_ENV === "production";
 
@@ -108,6 +107,18 @@ export class Bootstrapper {
         }
       });
 
+    await Container.inject(Allocator)
+      .init()
+      .then((result) => {
+        if (result.isErr()) {
+          this.#logger.error("Failed to initialize allocator", {
+            err: result.error,
+          });
+
+          process.exit(1);
+        }
+      });
+
     await Container.inject(Cache)
       .init()
       .then((result) => {
@@ -156,8 +167,7 @@ Container.singleton(Variables, () => new Variables());
 Container.singleton(Repository, () => new Repository());
 Container.singleton(Cache, () => new Cache());
 
-Container.singleton(Scheduler, () => new Scheduler());
-Container.singleton(SupervisorRegistry, () => new SupervisorRegistry());
+Container.singleton(Allocator, () => new Allocator());
 Container.singleton(TunnelManager, () => new TunnelManager());
 Container.singleton(Authenticator, () => new Authenticator());
 

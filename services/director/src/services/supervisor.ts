@@ -69,7 +69,7 @@ export class SupervisorServiceImplementation {
     return Protobuf.createValid(SupervisorServiceGetResponseSchema, {
       supervisor: Protobuf.createValid(SupervisorSchema, {
         id: supervisor.id,
-        online: this.#allocator.isOnline(supervisor.id),
+        online: !!this.#allocator.getLease(supervisor.id),
         publicKey: supervisor.publicKey,
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
@@ -79,7 +79,7 @@ export class SupervisorServiceImplementation {
   }
 
   async #delete(request: SupervisorServiceDeleteRequestValid, _: HandlerContext) {
-    if (this.#allocator.isOnline(request.id)) {
+    if (this.#allocator.getLease(request.id)) {
       throw new ConnectError("Cannot delete a supervisor that is currently online.", Code.FailedPrecondition);
     }
 
@@ -104,7 +104,7 @@ export class SupervisorServiceImplementation {
     return Protobuf.createValid(SupervisorServiceDeleteResponseSchema, {
       supervisor: Protobuf.createValid(SupervisorSchema, {
         id: supervisor.id,
-        online: this.#allocator.isOnline(supervisor.id),
+        online: !!this.#allocator.getLease(supervisor.id),
         publicKey: supervisor.publicKey,
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
@@ -135,7 +135,7 @@ export class SupervisorServiceImplementation {
     return Protobuf.createValid(SupervisorServiceUpdateMetadataResponseSchema, {
       supervisor: Protobuf.createValid(SupervisorSchema, {
         id: supervisor.id,
-        online: this.#allocator.isOnline(supervisor.id),
+        online: !!this.#allocator.getLease(supervisor.id),
         publicKey: supervisor.publicKey,
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
@@ -172,7 +172,7 @@ export class SupervisorServiceImplementation {
       supervisors: supervisors.map((supervisor) =>
         Protobuf.createValid(SupervisorSchema, {
           id: supervisor.id,
-          online: this.#allocator.isOnline(supervisor.id),
+          online: !!this.#allocator.getLease(supervisor.id),
           publicKey: supervisor.publicKey,
           createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
           updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),

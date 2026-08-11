@@ -2,60 +2,58 @@ syntax = "proto3";
 
 package api.v1;
 
+import "api/v1/project.proto";
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
-import "api/v1/project.proto";
 
-message Task {
-  string project_id = 1;
-  string token = 2;
-  api.v1.ProjectResourceTier project_resource_tier = 3;
-}
-
-message SupervisorPortalServiceFetchRequest {
-  api.v1.ProjectResourceTier resource_tier = 3;
-}
-message SupervisorPortalServiceFetchResponse {
-  api.v1.Task task = 1;
+enum AcknowledgeStatus {
+  ACKNOWLEDGE_STATUS_UNSPECIFIED = 0;
+  ACKNOWLEDGE_STATUS_OK = 1;
+  ACKNOWLEDGE_STATUS_REJECT = 2;
 }
 
-message SupervisorPortalServiceReportRequest {
-  int32 running_projects = 1;
-  double cpu_usage = 2;
-  double memory_usage = 3;
-  double disk_usage = 4;
+message Load {
+  string instance_id = 1 [(buf.validate.field).string = {len: 24}];
+  string project_id = 2 [(buf.validate.field).string = {len: 24}];
+  bool confirmed = 3;
+  google.protobuf.Timestamp timestamp = 4 [(buf.validate.field).required = true];
 }
-message SupervisorPortalServiceReportResponse {}
 
-message SupervisorPortalServiceExtendLeaseRequest {
-  string project_id = 1;
-  string token = 2 [(buf.validate.field).string = {min_len: 1}];
+message SupervisorPortalServiceWatchRequest {}
+message SupervisorPortalServiceWatchResponse {
+  oneof event {
+    api.v1.EventKeepalive keepalive = 4;
+    EventLoadList load = 5;
+  }
 }
-message SupervisorPortalServiceExtendLeaseResponse {}
 
-message SupervisorPortalServiceCompleteSuccessRequest {
-  string project_id = 1;
-  string token = 2 [(buf.validate.field).string = {min_len: 1}];
+message SupervisorPortalServiceReleaseRequest {
+  string instance_id = 1 [(buf.validate.field).string = {len: 24}];
 }
-message SupervisorPortalServiceCompleteSuccessResponse {}
+message SupervisorPortalServiceReleaseResponse {}
 
-message SupervisorPortalServiceCompleteFailureRequest {
-  string project_id = 1;
-  string token = 2 [(buf.validate.field).string = {min_len: 1}];
-  string error = 3;
+message SupervisorPortalServiceAcknowledgeRequest {
+  string instance_id = 1 [(buf.validate.field).string = {len: 24}];
+  api.v1.AcknowledgeStatus status = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 }
-message SupervisorPortalServiceCompleteFailureResponse {}
+message SupervisorPortalServiceAcknowledgeResponse {}
+
+message EventLoadList {
+  repeated Load list = 1;
+}
+
+message EventKeepalive {}
+
+message SupervisorPortalServiceHeartbeatRequest {}
+message SupervisorPortalServiceHeartbeatResponse {}
 
 service SupervisorPortalService {
-  // Fetch a task the current Supervisor can execute; returns an empty response if none match.
-  rpc Fetch(SupervisorPortalServiceFetchRequest) returns (SupervisorPortalServiceFetchResponse);
-  // Continuously report resource metrics (client-streaming); marks the Supervisor offline when the stream ends.
-  rpc Report(stream SupervisorPortalServiceReportRequest) returns (SupervisorPortalServiceReportResponse);
-  // Extends the lease/heartbeat for a currently running task.
-  rpc ExtendLease(SupervisorPortalServiceExtendLeaseRequest) returns (SupervisorPortalServiceExtendLeaseResponse);
-  // Report that a task was executed successfully.
-  rpc CompleteSuccess(SupervisorPortalServiceCompleteSuccessRequest) returns (SupervisorPortalServiceCompleteSuccessResponse);
-  // Report that a task execution failed or encountered an error.
-  rpc CompleteFailure(SupervisorPortalServiceCompleteFailureRequest) returns (SupervisorPortalServiceCompleteFailureResponse);
+  rpc Watch(SupervisorPortalServiceWatchRequest) returns (stream SupervisorPortalServiceWatchResponse);
+  rpc Release(SupervisorPortalServiceReleaseRequest) returns (SupervisorPortalServiceReleaseResponse);
+  rpc Acknowledge(SupervisorPortalServiceAcknowledgeRequest) returns (SupervisorPortalServiceAcknowledgeResponse);
+  rpc Heartbeat(SupervisorPortalServiceHeartbeatRequest) returns (SupervisorPortalServiceHeartbeatResponse);
 }

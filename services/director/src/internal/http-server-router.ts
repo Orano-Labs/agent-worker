@@ -50,7 +50,6 @@ export class HTTPServerRouter {
     this.#logger = Container.inject(Logger);
   }
 
-  /** Map numeric status to standard HTTP reason phrase. */
   #reason(status: number): string {
     switch (status) {
       case 400:
@@ -70,7 +69,6 @@ export class HTTPServerRouter {
     }
   }
 
-  /** Write an HTTP response directly onto a Duplex (used for upgrade paths). */
   #respond(socket: Duplex, status: number, message: string) {
     const reason = this.#reason(status);
     const body = message;
@@ -91,13 +89,11 @@ export class HTTPServerRouter {
     socket.destroy();
   }
 
-  /** Shortcut for request-path error responses on `ServerResponse`. */
   #error(res: ServerResponse, status: number, message: string) {
     res.writeHead(status, { "Content-Type": "text/plain" });
     res.end(message);
   }
 
-  /** Parse request headers into a Headers object for the authenticator. */
   #toHeaders(req: IncomingMessage): Headers {
     const headers = new Headers();
 
@@ -114,7 +110,6 @@ export class HTTPServerRouter {
     return headers;
   }
 
-  /** Establish a tunnel connection (shared logic, no auth). */
   #doTunnelUpgrade(projectId: string, token: string, socket: Duplex) {
     const error = this.#tunnels.createTunnelConnection(projectId, token, socket);
 
@@ -124,7 +119,6 @@ export class HTTPServerRouter {
       return;
     }
 
-    // Complete the upgrade handshake so the client knows it succeeded.
     socket.write("HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: tunnel\r\n" + "Connection: Upgrade\r\n" + "\r\n");
   }
 
@@ -166,7 +160,6 @@ export class HTTPServerRouter {
     this.#doTunnelUpgrade(projectId, token, context.socket);
   }
 
-  /** Debug: tunnel upgrade without authentication. */
   async #handleTunnelUpgradeTest(context: UpgradeRouteContext) {
     const projectId = context.params.project;
     const token = context.params.token;
@@ -184,7 +177,6 @@ export class HTTPServerRouter {
     this.#doTunnelUpgrade(projectId, token, context.socket);
   }
 
-  /** Forward an HTTP request through the tunnel (shared logic, no auth). */
   #doClientRequest(projectId: string, req: IncomingMessage, res: ServerResponse, path: string) {
     const tunnel = this.#tunnels.get(projectId);
 
@@ -236,7 +228,6 @@ export class HTTPServerRouter {
     this.#doClientRequest(projectId, context.req, context.res, `/${path}`);
   }
 
-  /** Debug: client request without authentication. */
   async #handleClientRequestTest(context: RequestRouteContext) {
     const projectId = context.params.project;
     const path = context.params.rest;
@@ -244,7 +235,6 @@ export class HTTPServerRouter {
     this.#doClientRequest(projectId, context.req, context.res, `/${path}`);
   }
 
-  /** Forward an upgrade request through the tunnel (shared logic, no auth). */
   #doClientUpgrade(projectId: string, req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
     const tunnel = this.#tunnels.get(projectId);
 
@@ -296,7 +286,6 @@ export class HTTPServerRouter {
     this.#doClientUpgrade(projectId, context.req, context.socket, context.head, `/${path}`);
   }
 
-  /** Debug: client upgrade without authentication. */
   async #handleClientUpgradeTest(context: UpgradeRouteContext) {
     const projectId = context.params.project;
     const path = context.params.rest;
@@ -304,7 +293,6 @@ export class HTTPServerRouter {
     this.#doClientUpgrade(projectId, context.req, context.socket, context.head, `/${path}`);
   }
 
-  /** Debug: create a new tunnel for a project. Returns the tunnel token. */
   #handleCreateTunnelTest(context: RequestRouteContext) {
     const projectId = context.params.project;
     const token = context.params.token;
@@ -323,9 +311,7 @@ export class HTTPServerRouter {
     context.res.end("OK.");
   }
 
-  /** Remove auth headers from the request before forwarding to the tunnel. */
-  #stripAuthHeaders(req: IncomingMessage): void {
-    /** Auth-related headers that must be stripped before forwarding to the tunnel. */
+  #stripAuthHeaders(req: IncomingMessage) {
     const authHeaders = ["x-request-signature", "x-request-signature-development"];
 
     for (const name of authHeaders) {

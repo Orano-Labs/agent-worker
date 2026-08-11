@@ -144,8 +144,6 @@ export namespace Variables {
     `${TRUSTED_PREFIX}GRPC_CA_CERTIFICATE`,
     `${TRUSTED_PREFIX}GRPC_PORT`,
 
-    `${TRUSTED_PREFIX}MQ_URL`,
-
     `${TRUSTED_PREFIX}REDIS_URL`,
     `${TRUSTED_PREFIX}FS_ROOT`,
   ] as const;

@@ -1,4 +1,6 @@
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
+import { ProjectResourceTier } from "@/generated/prisma/enums";
+import { ProjectResourceTier as ProjectResourceTierPB } from "@/generated/proto/api/v1/project_pb";
 import {
   AcknowledgeStatus,
   EventKeepaliveSchema,
@@ -198,8 +200,13 @@ export namespace SupervisorPortalServiceImplementation {
           },
           select: {
             id: true,
-            projectId: true,
             confirmed: true,
+            project: {
+              select: {
+                resourceTier: true,
+                id: true,
+              },
+            },
           },
         });
 
@@ -207,7 +214,8 @@ export namespace SupervisorPortalServiceImplementation {
           list: instances.map((inst) =>
             Protobuf.createValid(LoadSchema, {
               instanceId: inst.id,
-              projectId: inst.projectId,
+              projectId: inst.project.id,
+              projectResourceTier: this.#mapResourceTierFromRepository(inst.project.resourceTier),
               confirmed: inst.confirmed,
               timestamp: Protobuf.Timestamp.now(),
             }),
@@ -254,6 +262,19 @@ export namespace SupervisorPortalServiceImplementation {
 
       this.#queue.push({ response });
       this.#notify();
+    }
+
+    #mapResourceTierFromRepository(value: ProjectResourceTier) {
+      switch (value) {
+        case ProjectResourceTier.Minimum:
+          return ProjectResourceTierPB.MINIMUM;
+        case ProjectResourceTier.Standard:
+          return ProjectResourceTierPB.STANDARD;
+        case ProjectResourceTier.Performance:
+          return ProjectResourceTierPB.PERFORMANCE;
+        default:
+          throw new Error("Unknown resource tier");
+      }
     }
 
     #wait() {

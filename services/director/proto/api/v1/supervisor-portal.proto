@@ -16,8 +16,12 @@ enum AcknowledgeStatus {
 message Load {
   string instance_id = 1 [(buf.validate.field).string = {len: 24}];
   string project_id = 2 [(buf.validate.field).string = {len: 24}];
-  bool confirmed = 3;
-  google.protobuf.Timestamp timestamp = 4 [(buf.validate.field).required = true];
+  api.v1.ProjectResourceTier project_resource_tier = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  bool confirmed = 4;
+  google.protobuf.Timestamp timestamp = 5 [(buf.validate.field).required = true];
 }
 
 message SupervisorPortalServiceWatchRequest {}

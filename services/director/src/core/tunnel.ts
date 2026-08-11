@@ -184,6 +184,17 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     }
   }
 
+  #reason(status: number): string {
+    switch (status) {
+      case 502:
+        return "Bad Gateway";
+      case 503:
+        return "Service Unavailable";
+      default:
+        return "Error";
+    }
+  }
+
   handleHttpRequest(clientReq: IncomingMessage, clientRes: ServerResponse, path: string) {
     this.#logger.debug("Proxying HTTP request through tunnel", {
       project: this.#project,
@@ -218,18 +229,7 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     pump(clientReq, req);
   }
 
-  #reason(status: number): string {
-    switch (status) {
-      case 502:
-        return "Bad Gateway";
-      case 503:
-        return "Service Unavailable";
-      default:
-        return "Error";
-    }
-  }
-
-  handleHttpUpgrade(clientReq: IncomingMessage, clientSocket: Duplex, head: Buffer, path: string): void {
+  handleHttpUpgrade(clientReq: IncomingMessage, clientSocket: Duplex, head: Buffer, path: string) {
     this.#logger.debug("Handling HTTP upgrade through tunnel", {
       project: this.#project,
       method: clientReq.method,

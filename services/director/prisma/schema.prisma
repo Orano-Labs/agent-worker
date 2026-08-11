@@ -123,17 +123,19 @@ model Project {
 
 // 项目实例
 model Instance {
-  id           String      @id @default(cuid(2)) @db.VarChar(24)
+  id           String     @id @default(cuid(2)) @db.VarChar(24)
   // 关联的项目（唯一，一个项目至多一个实例）
-  projectId    String      @unique @map("project_id") @db.VarChar(24)
+  projectId    String     @unique @map("project_id") @db.VarChar(24)
   // 关联的项目
-  project      Project     @relation(fields: [projectId], references: [id])
+  project      Project    @relation(fields: [projectId], references: [id])
   // 承接的 Supervisor（认领时绑定，失败上报后解除）
-  supervisorId String?     @map("supervisor_id") @db.VarChar(24)
+  supervisorId String     @map("supervisor_id") @db.VarChar(24)
   // 承接的 Supervisor
-  supervisor   Supervisor? @relation(fields: [supervisorId], references: [id])
+  supervisor   Supervisor @relation(fields: [supervisorId], references: [id])
+  // 是否已被 Supervisor 确认（Supervisor 通过 Acknowledge 确认承接后置为 true）
+  confirmed    Boolean    @default(false)
   // 创建时间
-  createTime   DateTime    @default(now()) @map("create_time") @db.Timestamp(3)
+  createTime   DateTime   @default(now()) @map("create_time") @db.Timestamp(3)
 
   @@index([supervisorId])
   @@map("instance")

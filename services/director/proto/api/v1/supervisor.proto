@@ -16,10 +16,12 @@ message Supervisor {
   google.protobuf.Timestamp create_time = 4 [(buf.validate.field).required = true];
   google.protobuf.Timestamp update_time = 5 [(buf.validate.field).required = true];
   bool online = 6;
+  int32 capacity = 7 [(buf.validate.field).int32.gte = 1];
 }
 
 message SupervisorServiceCreateRequest {
   google.protobuf.BytesValue metadata = 1 [(buf.validate.field).bytes = {max_len: 2048}];
+  int32 capacity = 2 [(buf.validate.field).int32.gte = 1];
 }
 message SupervisorServiceCreateResponse {
   api.v1.Supervisor supervisor = 1 [(buf.validate.field).required = true];

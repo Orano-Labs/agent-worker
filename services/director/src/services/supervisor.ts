@@ -38,6 +38,8 @@ export class SupervisorServiceImplementation {
       data: {
         publicKey: Uint8Array.from(keys[0]),
         metadata: request.metadata ? Uint8Array.from(request.metadata) : null,
+        capacity: request.capacity,
+        remainingCapacity: request.capacity,
       },
     });
 
@@ -49,6 +51,7 @@ export class SupervisorServiceImplementation {
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
         metadata: supervisor.metadata === null ? undefined : supervisor.metadata,
+        capacity: supervisor.capacity,
       }),
       privateKey: keys[1],
     });
@@ -74,6 +77,7 @@ export class SupervisorServiceImplementation {
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
         metadata: supervisor.metadata === null ? undefined : supervisor.metadata,
+        capacity: supervisor.capacity,
       }),
     });
   }
@@ -109,6 +113,7 @@ export class SupervisorServiceImplementation {
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
         metadata: supervisor.metadata === null ? undefined : supervisor.metadata,
+        capacity: supervisor.capacity,
       }),
     });
   }
@@ -140,6 +145,7 @@ export class SupervisorServiceImplementation {
         createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
         updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
         metadata: supervisor.metadata === null ? undefined : supervisor.metadata,
+        capacity: supervisor.capacity,
       }),
     });
   }
@@ -177,6 +183,7 @@ export class SupervisorServiceImplementation {
           createTime: Protobuf.Timestamp.fromDate(supervisor.createTime),
           updateTime: Protobuf.Timestamp.fromDate(supervisor.updateTime),
           metadata: supervisor.metadata === null ? undefined : supervisor.metadata,
+          capacity: supervisor.capacity,
         }),
       ),
     });

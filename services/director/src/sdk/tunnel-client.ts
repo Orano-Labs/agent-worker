@@ -4,24 +4,23 @@ import { Transform } from "node:stream";
 import { connect as tlsConnect } from "node:tls";
 import { HTTPParser } from "http-parser-js";
 import { default as pump } from "pump";
+import { RequestSigner } from "./request-signer";
 
 export class TunnelClient {
   #target: URL;
   #started: boolean;
   #baseUrl: string;
-  #project: string;
-  #token: string;
   #maxSockets: number;
   #logger: TunnelClient.Logger;
+  #signer: RequestSigner;
 
   constructor(options: TunnelClient.Options) {
     this.#baseUrl = options.baseUrl;
     this.#target = options.target;
     this.#started = false;
-    this.#project = options.project;
-    this.#token = options.token;
     this.#maxSockets = options.maxSockets;
     this.#logger = options.logger;
+    this.#signer = new RequestSigner(options.identity, options.dev ?? false);
   }
 
   start(signal: AbortSignal) {
@@ -43,30 +42,35 @@ export class TunnelClient {
 
     while (!signal.aborted) {
       const socket = await new Promise<Socket>((resolve, reject) => {
-        const url = new URL(`${this.#baseUrl}/tunnel/${this.#project}/${this.#token}`);
-        const request = httpRequest(url, {
-          headers: {
-            connection: "upgrade",
-            upgrade: "tunnel",
-          },
+        const headers = new Headers({
+          connection: "upgrade",
+          upgrade: "tunnel",
         });
 
-        request.on("upgrade", (_, socket) => {
-          resolve(socket);
-        });
+        this.#signer
+          .apply(headers)
+          .then(() => {
+            const request = httpRequest(new URL(`${this.#baseUrl}/tunnel`), {
+              headers: Object.fromEntries(headers.entries()),
+            });
 
-        request.on("error", (error) => {
-          reject(error);
-        });
+            request.on("upgrade", (_, socket) => {
+              resolve(socket);
+            });
 
-        request.on("response", (resp) => {
-          reject(new Error(`Tunnel upgrade rejected: ${resp.statusCode} ${resp.statusMessage}`));
-        });
+            request.on("error", (error) => {
+              reject(error);
+            });
 
-        request.end();
+            request.on("response", (resp) => {
+              reject(new Error(`Tunnel upgrade rejected: ${resp.statusCode} ${resp.statusMessage}`));
+            });
+
+            request.end();
+          })
+          .catch((error) => reject(error));
       }).catch((error) => {
         this.#logger.warn("Tunnel connection failed, retrying in 1s", {
-          project: this.#project,
           error: String(error),
         });
 
@@ -77,6 +81,7 @@ export class TunnelClient {
           };
           const onTimeout = () => {
             signal.removeEventListener("abort", onAbort);
+            resolve();
           };
           const timer = setTimeout(onTimeout, 1000);
 
@@ -88,9 +93,7 @@ export class TunnelClient {
         continue;
       }
 
-      this.#logger.info("Tunnel socket connected", {
-        project: this.#project,
-      });
+      this.#logger.info("Tunnel socket connected", {});
 
       socket.setKeepAlive(true);
 
@@ -117,7 +120,6 @@ export class TunnelClient {
 
         remote.once("error", (error) => {
           this.#logger.error("Remote connection error", {
-            project: this.#project,
             error: String(error),
           });
 
@@ -276,8 +278,8 @@ export namespace TunnelClient {
 
   export type Options = {
     baseUrl: string;
-    project: string;
-    token: string;
+    identity: RequestSigner.Identity;
+    dev?: boolean;
     target: URL;
     logger: Logger;
     maxSockets: number;

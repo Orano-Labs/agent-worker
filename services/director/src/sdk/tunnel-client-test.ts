@@ -2,111 +2,97 @@ import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
 import { TunnelClient } from "./tunnel-client";
 
-const BASE = "http://localhost:3008/_debug";
+const BASE = "http://localhost:3008";
+const SUPERVISOR_ID = "test-supervisor";
 const PROJECT = "test-project";
-const TOKEN = "xxxxxxxxxx";
 const TARGET = new URL("https://echo.websocket.org/");
 
-const createTunnel = async (project: string, token: string) => {
-  const url = `${BASE}/create-tunnel/${project}/${token}`;
-  const res = await fetch(url);
+const controller = new AbortController();
+const client = new TunnelClient({
+  baseUrl: BASE,
+  identity: {
+    type: "supervisor",
+    id: SUPERVISOR_ID,
+    privateKey: "",
+  },
+  dev: true,
+  resolveTarget: () => TARGET,
+  logger: {
+    info: (msg, ctx) => console.log("[info]", msg, ctx),
+    warn: (msg, ctx) => console.warn("[warn]", msg, ctx),
+    error: (msg, ctx) => console.error("[error]", msg, ctx),
+    debug: (msg, ctx) => console.log("[debug]", msg, ctx),
+  },
+  maxSockets: 5,
+});
 
-  if (!res.ok) {
-    throw new Error(`Failed to create tunnel: ${res.status} ${res.statusText}`);
-  }
-};
+client.start(controller.signal);
+console.log("TunnelClient started");
 
-(async () => {
-  try {
-    await createTunnel(PROJECT, TOKEN);
-    console.log("Tunnel created");
-  } catch (err) {
-    console.error("Failed to create tunnel:", err);
-  }
+// Wait for at least one tunnel socket to be established.
+await new Promise((resolve) => setTimeout(resolve, 2000));
 
-  const controller = new AbortController();
-  const client = new TunnelClient({
-    baseUrl: BASE,
-    project: PROJECT,
-    token: TOKEN,
-    target: TARGET,
-    logger: {
-      info: (msg, ctx) => console.log("[info]", msg, ctx),
-      warn: (msg, ctx) => console.warn("[warn]", msg, ctx),
-      error: (msg, ctx) => console.error("[error]", msg, ctx),
-      debug: (msg, ctx) => console.log("[debug]", msg, ctx),
-    },
-    maxSockets: 5,
-  });
+// ── SSE ──
+const sseUrl = `${BASE}/link/${PROJECT}/.sse`;
 
-  client.start(controller.signal);
-  console.log("TunnelClient started");
+fetch(sseUrl, { headers: { accept: "text/event-stream" } })
+  .then(async (res) => {
+    if (!res.ok || !res.body) {
+      console.error("SSE connection failed:", res.status);
 
-  // Wait for at least one tunnel socket to be established.
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+      return;
+    }
 
-  // ── SSE ──
-  const sseUrl = `${BASE}/link/${PROJECT}/.sse`;
+    console.log("SSE opened");
 
-  fetch(sseUrl, { headers: { accept: "text/event-stream" } })
-    .then(async (res) => {
-      if (!res.ok || !res.body) {
-        console.error("SSE connection failed:", res.status);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
 
-        return;
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        console.log("SSE closed");
+        break;
       }
 
-      console.log("SSE opened");
+      buf += decoder.decode(value, { stream: true });
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
+      // SSE events are delimited by \n\n.
+      const events = buf.split("\n\n");
 
-      while (true) {
-        const { done, value } = await reader.read();
+      buf = events.pop() ?? "";
 
-        if (done) {
-          console.log("SSE closed");
-          break;
-        }
-
-        buf += decoder.decode(value, { stream: true });
-
-        // SSE events are delimited by \n\n.
-        const events = buf.split("\n\n");
-
-        buf = events.pop() ?? "";
-
-        for (const event of events) {
-          for (const line of event.split("\n")) {
-            if (line.startsWith("data: ")) {
-              console.log("SSE message:", line.slice(6));
-            }
+      for (const event of events) {
+        for (const line of event.split("\n")) {
+          if (line.startsWith("data: ")) {
+            console.log("SSE message:", line.slice(6));
           }
         }
       }
-    })
-    .catch((err) => console.error("SSE error:", err));
+    }
+  })
+  .catch((err) => console.error("SSE error:", err));
 
-  // ── WebSocket ──
-  const wsUrl = `${BASE}/link/${PROJECT}/.ws`.replace("http://", "ws://");
-  const ws = new WebSocket(wsUrl);
+// ── WebSocket ──
+const wsUrl = `${BASE}/link/${PROJECT}/.ws`.replace("http://", "ws://");
+const ws = new WebSocket(wsUrl);
 
-  ws.on("open", () => {
-    console.log("WS connected");
-    setInterval(() => {
-      ws.send(`hello from tunnel test ${randomBytes(16).toString("hex")}`);
-    }, 1000);
-  });
+ws.on("open", () => {
+  console.log("WS connected");
+  setInterval(() => {
+    ws.send(`hello from tunnel test ${randomBytes(16).toString("hex")}`);
+  }, 1000);
+});
 
-  ws.on("message", (data) => console.log("WS message:", data.toString()));
-  ws.on("error", (err) => console.error("WS error:", err));
-  ws.on("close", (code, reason) => console.log("WS closed:", code, reason?.toString()));
+ws.on("message", (data) => console.log("WS message:", data.toString()));
+ws.on("error", (err) => console.error("WS error:", err));
+ws.on("close", (code, reason) => console.log("WS closed:", code, reason?.toString()));
 
-  // Keep process alive.
-  process.on("SIGINT", () => {
-    console.log("Shutting down…");
-    ws.close();
-    controller.abort();
-  });
-})();
+// Keep process alive.
+process.on("SIGINT", () => {
+  console.log("Shutting down…");
+  ws.close();
+  controller.abort();
+});

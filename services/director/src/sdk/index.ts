@@ -54,6 +54,10 @@ export class Client {
     };
   }
 
+  get singer() {
+    return this.#signer;
+  }
+
   createUserService() {
     return createClient(UserService, this.#transport) as InferServiceValid<typeof UserService>;
   }

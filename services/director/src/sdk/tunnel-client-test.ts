@@ -16,7 +16,7 @@ const client = new TunnelClient({
     privateKey: "",
   },
   dev: true,
-  resolveTarget: () => TARGET,
+  target: TARGET,
   logger: {
     info: (msg, ctx) => console.log("[info]", msg, ctx),
     warn: (msg, ctx) => console.warn("[warn]", msg, ctx),

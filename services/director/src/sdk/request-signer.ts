@@ -59,6 +59,8 @@ export class RequestSigner {
     } else {
       headers.set("x-request-signature", await this.generate());
     }
+
+    return headers;
   }
 
   #buildIdentity() {

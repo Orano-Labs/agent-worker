@@ -5,6 +5,7 @@ import { addRoute, createRouter, findRoute } from "rou3";
 import { Container } from "@/helpers/container";
 import { Allocator } from "@/internal/allocator";
 import { Authenticator } from "@/internal/authenticator";
+import { GRPCServer } from "@/internal/grpc-server";
 import { HTTPServer } from "@/internal/http-server";
 import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
@@ -40,6 +41,7 @@ export class HTTPServerRouter {
   #repository: Repository;
   #logger: Logger;
   #allocator: Allocator;
+  #grpc: GRPCServer;
 
   constructor() {
     this.#http = Container.inject(HTTPServer);
@@ -49,6 +51,7 @@ export class HTTPServerRouter {
     this.#repository = Container.inject(Repository);
     this.#logger = Container.inject(Logger).scope("Router");
     this.#allocator = Container.inject(Allocator);
+    this.#grpc = Container.inject(GRPCServer);
   }
 
   #reason(status: number): string {
@@ -278,6 +281,10 @@ export class HTTPServerRouter {
     this.#doClient(context, projectId, `/${path}`);
   }
 
+  async #handleGrpcRequest(context: Extract<ClientRouteContext, { kind: "request" }>) {
+    this.#grpc.handler(context.req, context.res);
+  }
+
   #prepareRoutingHeaders(req: IncomingMessage, projectId: string) {
     // Strip authentication headers so the upstream instance never sees them.
     const authHeaders = ["x-request-signature", "x-request-signature-development"];
@@ -300,6 +307,10 @@ export class HTTPServerRouter {
 
     addRoute(this.#requestRouter, "ALL", "link/:project/**:rest", {
       handler: (ctx) => this.#handleClient({ ...ctx, kind: "request" }),
+    });
+
+    addRoute(this.#requestRouter, "ALL", "grpc/**:rest", {
+      handler: (ctx) => this.#handleGrpcRequest({ ...ctx, kind: "request" }),
     });
 
     this.#http.server.on("upgrade", (req, socket, head) => {

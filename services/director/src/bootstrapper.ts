@@ -40,7 +40,6 @@ export class Bootstrapper {
     const http = Container.inject(HTTPServer);
     const logger = Container.inject(Logger);
 
-    await grpc.shutdown();
     await http.shutdown();
     await logger.flush();
   }

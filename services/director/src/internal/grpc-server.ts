@@ -1,25 +1,17 @@
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { createSecureServer, type Http2SecureServer } from "node:http2";
-import type { Socket } from "node:net";
-import { resolve } from "node:path";
 import { Code, ConnectError, createContextKey, type HandlerContext, type Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createValidateInterceptor } from "@connectrpc/validate";
-import { default as Router } from "find-my-way";
 import type { SignatureIdentityValid } from "@/generated/proto/api/v1/signature_pb";
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
 import { Authenticator } from "@/internal/authenticator";
 import { Logger } from "@/internal/logger";
-import { Variables } from "@/internal/variables";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
 import { TemplateServiceImplementation } from "@/services/template";
 import { UserServiceImplementation } from "@/services/user";
-
-const SHUTDOWN_GRACE_MS = 5_000;
 
 const REQUEST_ID_CONTEXT = createContextKey<string | null>(null);
 
@@ -45,16 +37,20 @@ const SERVICE_ACCESS: Readonly<Record<string, ReadonlyArray<SignatureIdentityVal
 
 export class GRPCServer {
   #logger: Logger;
-  #server?: Http2SecureServer;
-  #sockets: Set<Socket>;
   #authenticator: Authenticator;
-  #variables: Variables;
+  #handler?: ReturnType<typeof connectNodeAdapter>;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("GRPCServer");
-    this.#sockets = new Set();
     this.#authenticator = Container.inject(Authenticator);
-    this.#variables = Container.inject(Variables);
+  }
+
+  get handler() {
+    if (!this.#handler) {
+      throw new Error("Grpc handler is not available");
+    }
+
+    return this.#handler;
   }
 
   #createRequestId() {
@@ -153,33 +149,10 @@ export class GRPCServer {
   }
 
   async init(): Promise<Result<void, Error>> {
-    const port = this.#variables.getNumber("AW_DIRECTOR_GRPC_PORT", 50051);
-
-    const keyFile = this.#variables.get("AW_DIRECTOR_GRPC_CA_KEY");
-    const certFile = this.#variables.get("AW_DIRECTOR_GRPC_CA_CERTIFICATE");
-
-    if (!keyFile || !certFile) {
-      return Result.error(new Error("GRPC_CA_KEY and GRPC_CA_CERTIFICATE must be set to enable http2."));
-    }
-
-    const keyPath = resolve(keyFile);
-    const certPath = resolve(certFile);
-
-    let key: string;
-    let cert: string;
-
-    try {
-      key = await readFile(keyPath, "utf-8");
-      cert = await readFile(certPath, "utf-8");
-    } catch (error) {
-      return Result.error(new Error("Failed to read key or cert file.", { cause: error }));
-    }
-
-    const router = Router<Router.HTTPVersion.V2>();
-    const handler = connectNodeAdapter({
-      grpcWeb: false,
+    this.#handler = connectNodeAdapter({
+      grpcWeb: true,
       connect: true,
-      grpc: true,
+      grpc: false,
       requestPathPrefix: "/grpc",
       interceptors: [
         this.#createRequestIdInterceptor(),
@@ -197,93 +170,7 @@ export class GRPCServer {
       },
     });
 
-    router.all("/grpc/*", (req, res) => {
-      handler(req, res);
-    });
-
-    const server = createSecureServer({ key, cert }, router.lookup.bind(router));
-
-    // Track open connections so shutdown can drain them.
-    server.on("connection", (socket) => {
-      this.#sockets.add(socket);
-      socket.once("close", () => {
-        this.#sockets.delete(socket);
-      });
-    });
-
-    this.#server = server;
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const callback = async () => {
-          this.#logger.info(`GRPC server is running on port ${port}`);
-
-          const os = await import("node:os");
-          const interfaces = os.networkInterfaces();
-
-          const endpoints: unknown[] = [];
-
-          for (const [_, ifaces] of Object.entries(interfaces)) {
-            if (!ifaces) continue;
-
-            for (const iface of ifaces) {
-              if (iface.family === "IPv4") {
-                endpoints.push(`http://${iface.address}:${port}`);
-              }
-            }
-          }
-
-          this.#logger.info("Server is listening on all interfaces. Available endpoints:", {
-            endpoints,
-          });
-
-          resolve();
-        };
-
-        server.listen(port, callback);
-        server.on("error", reject);
-      });
-    } catch (error) {
-      return Result.error(new Error("Failed to start GRPC server.", { cause: error }));
-    }
-
     return Result.ok();
-  }
-
-  async shutdown(): Promise<void> {
-    if (!this.#server) {
-      return;
-    }
-
-    this.#logger.info("Shutting down gRPC server...");
-
-    const server = this.#server;
-
-    // Stop accepting new connections.
-    const closed = new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
-
-    // Give existing connections a grace period, then destroy them.
-    const timeout = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        if (this.#sockets.size > 0) {
-          this.#logger.warn("Force-closing remaining gRPC connections", {
-            count: this.#sockets.size,
-          });
-        }
-
-        for (const socket of this.#sockets) {
-          socket.destroy();
-        }
-
-        resolve();
-      }, SHUTDOWN_GRACE_MS);
-    });
-
-    await Promise.race([closed, timeout]);
-
-    this.#logger.info("GRPC server shut down.");
   }
 
   getUserIdentityContext(context: HandlerContext) {

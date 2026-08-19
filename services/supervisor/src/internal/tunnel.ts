@@ -1,37 +1,100 @@
 import { TunnelClient } from "@aw/vm-director/tunnel";
 import { Container } from "@/helpers/container";
+import { Controller } from "@/internal/controller";
 import { Logger } from "@/internal/logger";
+import { Variables } from "@/internal/variables";
 
 export class Tunnel {
-  #client: TunnelClient;
+  #client?: TunnelClient;
   #logger: Logger;
-  #controller: AbortController;
+  #variables: Variables;
+  #controller: Controller;
+  #abort?: AbortController;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("Tunnel");
-    this.#client = new TunnelClient({
-      identity: {
-        type: "supervisor",
-        id: "rcguu1932dfrw43o324v52my",
-        privateKey: "302e020100300506032b6570042204206424dd57348652833a219457d053315755efc4a5311ebfe026bcca257752de52",
-      },
-      maxConnections: 100,
-      baseUrl: "http://192.168.5.2:3008",
-      targetResolver: () => {
-        return new URL("https://echo.websocket.org/");
-      },
-      logger: this.#logger,
-    });
-    this.#controller = new AbortController();
+    this.#variables = Container.inject(Variables);
+    this.#controller = Container.inject(Controller);
+  }
+
+  get client() {
+    if (!this.#client) {
+      throw new Error("Tunnel has not been initialized. Call init() first.");
+    }
+
+    return this.#client;
   }
 
   async init() {
-    this.#client.start(this.#controller.signal);
+    if (this.#client) {
+      throw new Error("Tunnel is already initialized.");
+    }
+
+    const supervisorId = this.#variables.get("AW_SUPERVISOR_ID");
+    const supervisorPrivateKey = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
+    const baseUrl = this.#variables.get("AW_SUPERVISOR_DIRECTOR_HOST_URL");
+
+    if (!supervisorId) {
+      throw new Error("AW_SUPERVISOR_ID is not set.");
+    }
+
+    if (!supervisorPrivateKey) {
+      throw new Error("AW_SUPERVISOR_PRIVATE_KEY is not set.");
+    }
+
+    if (!baseUrl) {
+      throw new Error("AW_SUPERVISOR_DIRECTOR_HOST_URL is not set.");
+    }
+
+    this.#abort = new AbortController();
+
+    this.#client = new TunnelClient({
+      identity: {
+        type: "supervisor",
+        id: supervisorId,
+        privateKey: supervisorPrivateKey,
+      },
+      maxConnections: Tunnel.MAX_CONNECTIONS,
+      baseUrl,
+      targetResolver: (headers) => this.#resolveTarget(headers),
+      logger: this.#logger,
+    });
+
+    this.#client.start(this.#abort.signal);
+
+    this.#logger.info("Tunnel initialized and started", { baseUrl });
   }
 
   async close() {
-    this.#controller.abort();
+    if (!this.#abort) {
+      return;
+    }
+
+    this.#abort.abort();
+    this.#logger.info("Tunnel closed");
+  }
+
+  async #resolveTarget(headers: Headers): Promise<URL> {
+    const instanceId = headers.get("x-instance-id");
+
+    if (!instanceId) {
+      throw new Error("Missing x-instance-id header in tunnel request.");
+    }
+
+    const processing = this.#controller.processing(instanceId);
+
+    if (!processing) {
+      throw new Error(`No running task found for instance "${instanceId}".`);
+    }
+
+    const task = await processing;
+
+    await task.ready;
+
+    return new URL(`http://${task.net.veth.guest.ip}:8000`);
   }
 }
 
-export namespace Tunnel {}
+export namespace Tunnel {
+  export const MAX_CONNECTIONS = 10;
+}

@@ -1,37 +1,42 @@
 import { Client, ProjectPB, SupervisorPortalPB } from "@aw/vm-director/sdk";
-import { createGrpcWebTransport } from "@connectrpc/connect-node";
 import { Container } from "@/helpers/container";
+import { Director } from "@/internal/director";
+import { KVStorage } from "@/internal/kv-storage";
 import { Logger } from "@/internal/logger";
-import { KVStorage } from "./kv-storage";
-
-const IDENTITY = {
-  type: "supervisor",
-  id: "rcguu1932dfrw43o324v52my",
-  privateKey: "302e020100300506032b6570042204206424dd57348652833a219457d053315755efc4a5311ebfe026bcca257752de52",
-} as const;
-
-const client = new Client(
-  createGrpcWebTransport({
-    baseUrl: "http://192.168.5.2:3008/grpc",
-    httpVersion: "1.1",
-  }) as unknown as ConstructorParameters<typeof Client>[0],
-  IDENTITY,
-);
+import { Orchestrator } from "@/internal/orchestrator";
 
 export class Controller {
   #logger: Logger;
   #kv: KVStorage;
-  #portal: ReturnType<Client["createSupervisorPortalService"]>;
-  #processings: Map<string, Promise<void>>;
+  #director: Director;
+  #orchestrator: Orchestrator;
+  #portal?: ReturnType<Client["createSupervisorPortalService"]>;
+  #processings: Map<string, Promise<Orchestrator.Task>>;
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("Controller");
     this.#kv = Container.inject(KVStorage);
-    this.#portal = client.createSupervisorPortalService();
+    this.#director = Container.inject(Director);
+    this.#orchestrator = Container.inject(Orchestrator);
     this.#processings = new Map();
   }
 
+  get #portalMust() {
+    if (!this.#portal) {
+      throw new Error("Controller has not been initialized. Call init() first.");
+    }
+
+    return this.#portal;
+  }
+
+  processing(instanceId: string) {
+    return this.#processings.get(instanceId);
+  }
+
   async init() {
+    // 延迟初始化 portal，后续所有使用都会通过 #portalMust 校验是否已初始化。
+    this.#portal = this.#director.client.createSupervisorPortalService();
+
     await this.#releaseAllRunningInstances();
 
     this.#logger.info("Controller initialized, starting supervisor portal watch stream");
@@ -43,7 +48,7 @@ export class Controller {
 
   async #watch() {
     while (true) {
-      const stream = this.#portal.watch(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {}));
+      const stream = this.#portalMust.watch(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {}));
 
       try {
         for await (const response of stream) {
@@ -90,50 +95,57 @@ export class Controller {
   }
 
   async #schedule(load: SupervisorPortalPB.LoadValid) {
-    const key = this.#instanceStorageKey(load.instanceId);
+    const instanceId = load.instanceId;
+    const key = this.#instanceStorageKey(instanceId);
 
-    if (this.#processings.has(load.instanceId)) {
-      return;
-    }
-
-    if (this.#kv.db.get(key) !== undefined) {
+    if (this.#processings.has(instanceId) || this.#kv.db.get(key) !== undefined) {
       return;
     }
 
     this.#logger.info("Scheduling instance", {
-      instanceId: load.instanceId,
+      instanceId,
       projectId: load.projectId,
       resourceTier: load.projectResourceTier,
     });
 
     const instance = this.#loadToRunningInstance(load);
-
     await this.#kv.db.put(key, instance);
 
-    const processing = this.#processRunningInstance(instance)
-      .catch((error) => {
-        this.#logger.errorFrom(error, `Instance run failed (${load.instanceId})`);
-      })
-      .finally(async () => {
-        this.#processings.delete(load.instanceId);
+    const processing = this.#orchestrator.run({
+      instanceId,
+      config: {
+        projectId: load.projectId,
+        machineTier: instance.projectResourceTier,
+        env: {},
+        metadata: {},
+      },
+    });
 
+    this.#processings.set(instanceId, processing);
+
+    void processing
+      .then((task) => this.#trackTask(instance, task))
+      .catch(async (error) => {
+        this.#processings.delete(instanceId);
+
+        this.#logger.errorFrom(error, `Failed to create task for instance (${instanceId})`);
+
+        // 创建任务失败时向 Portal 释放，而不是直接删除本地记录；
+        // 本地 KV 记录会在后续 Watch 同步发现 Server 不再下发时由 diff 清理。
         try {
-          await this.#release(load.instanceId).then(() => {
-            this.#logger.info("Instance released", { instanceId: load.instanceId });
-          });
-        } catch (error) {
-          this.#logger.errorFrom(error, `Failed to release instance (${load.instanceId})`);
+          await this.#release(instanceId);
+          this.#logger.info("Instance released after task creation failure", { instanceId });
+        } catch (releaseError) {
+          this.#logger.errorFrom(releaseError, `Failed to release instance after task creation failure (${instanceId})`);
         }
       });
-
-    this.#processings.set(load.instanceId, processing);
   }
 
   async #acknowledge(id: string) {
     this.#logger.info("Acknowledging unconfirmed instance", { instanceId: id });
 
     try {
-      await this.#portal.acknowledge(
+      await this.#portalMust.acknowledge(
         Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
           instanceId: id,
           status: SupervisorPortalPB.AcknowledgeStatus.OK,
@@ -147,7 +159,7 @@ export class Controller {
   }
 
   async #release(instanceId: string) {
-    await this.#portal.release(
+    await this.#portalMust.release(
       Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceReleaseRequestSchema, {
         instanceId,
       }),
@@ -172,25 +184,31 @@ export class Controller {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
-  async #processRunningInstance(instance: Controller.RunningInstance) {
-    return new Promise<void>((resolve) => {
-      const duration = 10_000;
+  async #trackTask(instance: Controller.RunningInstance, task: Orchestrator.Task) {
+    this.#logger.info("Instance run started", {
+      instanceId: instance.id,
+      projectId: instance.projectId,
+    });
 
-      this.#logger.info("Instance run started (simulated)", {
+    try {
+      await task.closed;
+
+      this.#logger.info("Instance run finished", {
         instanceId: instance.id,
         projectId: instance.projectId,
-        duration,
       });
+    } catch (error) {
+      this.#logger.errorFrom(error, `Instance run failed (${instance.id})`);
+    } finally {
+      this.#processings.delete(instance.id);
 
-      setTimeout(() => {
-        this.#logger.info("Instance run finished (simulated)", {
-          instanceId: instance.id,
-          projectId: instance.projectId,
-        });
-
-        resolve();
-      }, duration);
-    });
+      try {
+        await this.#release(instance.id);
+        this.#logger.info("Instance released", { instanceId: instance.id });
+      } catch (error) {
+        this.#logger.errorFrom(error, `Failed to release instance (${instance.id})`);
+      }
+    }
   }
 
   #loadToRunningInstance(load: SupervisorPortalPB.LoadValid) {

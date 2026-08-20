@@ -1,11 +1,4 @@
-import {
-  type ClientRequestArgs,
-  Agent as HTTPAgent,
-  type IncomingMessage,
-  type RequestOptions,
-  request,
-  type ServerResponse,
-} from "node:http";
+import { type ClientRequestArgs, Agent as HTTPAgent, type IncomingMessage, request, type ServerResponse } from "node:http";
 import { Duplex } from "node:stream";
 import { default as pump } from "pump";
 import { Container } from "@/helpers/container";
@@ -149,18 +142,6 @@ export class Tunnel {
       path,
     });
 
-    const opt: RequestOptions = {
-      agent: this.#agent,
-      headers: clientReq.headers,
-      method: clientReq.method,
-      path: path,
-    };
-
-    const req = request(opt, (res) => {
-      clientRes.writeHead(res.statusCode ?? 0, res.headers);
-      pump(res, clientRes);
-    });
-
     clientReq.once("error", (err) => {
       this.#logger.debug("Client request error during proxy", {
         err,
@@ -172,7 +153,29 @@ export class Tunnel {
       }
     });
 
-    pump(clientReq, req);
+    const req = request({ agent: this.#agent, headers: clientReq.headers, method: clientReq.method, path: path }, (res) => {
+      clientRes.writeHead(res.statusCode ?? 0, res.headers);
+
+      pump(res, clientRes, (error) => {
+        if (error) {
+          this.#logger.warn("Tunnel response stream error", {
+            method: clientReq.method,
+            path,
+            err: error,
+          });
+        }
+      });
+    });
+
+    pump(clientReq, req, (error) => {
+      if (error) {
+        this.#logger.warn("Tunnel request stream error", {
+          method: clientReq.method,
+          path,
+          err: error,
+        });
+      }
+    });
   }
 
   handleHttpUpgrade(clientReq: IncomingMessage, clientSocket: Duplex, head: Buffer, path: string) {
@@ -218,8 +221,25 @@ export class Tunnel {
       tunnelSocket.write(head);
     }
 
-    pump(tunnelSocket, clientSocket);
-    pump(clientSocket, tunnelSocket);
+    pump(tunnelSocket, clientSocket, (error) => {
+      if (error) {
+        this.#logger.warn("Tunnel upgrade socket->client stream error", {
+          method: clientReq.method,
+          path,
+          err: error,
+        });
+      }
+    });
+
+    pump(clientSocket, tunnelSocket, (error) => {
+      if (error) {
+        this.#logger.warn("Tunnel upgrade client->socket stream error", {
+          method: clientReq.method,
+          path,
+          err: error,
+        });
+      }
+    });
   }
 }
 

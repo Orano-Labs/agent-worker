@@ -1,4 +1,3 @@
-import { TunnelManager } from "@/core/tunnel-manager";
 import { Container } from "@/helpers/container";
 import { Authenticator } from "@/internal/authenticator";
 import { Cache } from "@/internal/cache";
@@ -36,7 +35,6 @@ export class Bootstrapper {
     this.#logger.info(`Received termination signal${signal ? `(${signal})` : ""}, shutting down...`);
     this.#controller.abort(new Error("Termination signal received"));
 
-    const grpc = Container.inject(GRPCServer);
     const http = Container.inject(HTTPServer);
     const logger = Container.inject(Logger);
 
@@ -167,7 +165,6 @@ Container.singleton(Repository, () => new Repository());
 Container.singleton(Cache, () => new Cache());
 
 Container.singleton(Allocator, () => new Allocator());
-Container.singleton(TunnelManager, () => new TunnelManager());
 Container.singleton(Authenticator, () => new Authenticator());
 
 Container.singleton(HTTPServer, () => new HTTPServer());

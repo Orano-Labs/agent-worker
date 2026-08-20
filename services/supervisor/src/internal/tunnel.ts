@@ -2,6 +2,7 @@ import { TunnelClient } from "@aw/vm-director/tunnel";
 import { Container } from "@/helpers/container";
 import { Controller } from "@/internal/controller";
 import { Logger } from "@/internal/logger";
+import type { Orchestrator } from "@/internal/orchestrator";
 import { Variables } from "@/internal/variables";
 
 export class Tunnel {
@@ -81,17 +82,31 @@ export class Tunnel {
       throw new Error("Missing x-instance-id header in tunnel request.");
     }
 
-    const processing = this.#controller.processing(instanceId);
+    const task = await this.#waitForProcessing(instanceId);
 
-    if (!processing) {
-      throw new Error(`No running task found for instance "${instanceId}".`);
+    return task.ready.then(() => {
+      return new URL(`http://${task.net.veth.guest.ip}:8000`);
+    });
+  }
+
+  async #waitForProcessing(instanceId: string): Promise<Orchestrator.Task> {
+    const deadline = Date.now() + 3000;
+
+    while (Date.now() < deadline) {
+      const processing = this.#controller.processing(instanceId);
+
+      if (processing) {
+        return processing;
+      }
+
+      await this.#sleep(100);
     }
 
-    const task = await processing;
+    throw new Error(`No running task found for instance "${instanceId}".`);
+  }
 
-    await task.ready;
-
-    return new URL(`http://${task.net.veth.guest.ip}:8000`);
+  async #sleep(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 }
 

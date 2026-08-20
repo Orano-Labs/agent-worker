@@ -172,7 +172,7 @@ export class HTTPServerRouter {
           return this.#reject(context, 503, "Project instance is unavailable");
         }
 
-        this.#prepareRoutingHeaders(context.req, projectId);
+        this.#prepareRoutingHeaders(context.req, result.id);
 
         this.#logger.debug(`Routing ${context.kind} through tunnel`, { projectId, supervisor: result.supervisor, path });
 
@@ -285,7 +285,7 @@ export class HTTPServerRouter {
     this.#grpc.handler(context.req, context.res);
   }
 
-  #prepareRoutingHeaders(req: IncomingMessage, projectId: string) {
+  #prepareRoutingHeaders(req: IncomingMessage, instanceId: string) {
     // Strip authentication headers so the upstream instance never sees them.
     const authHeaders = ["x-request-signature", "x-request-signature-development"];
 
@@ -293,7 +293,7 @@ export class HTTPServerRouter {
       delete req.headers[name];
     }
 
-    req.headers["x-project-id"] = projectId;
+    req.headers["x-instance-id"] = instanceId;
   }
 
   setup() {

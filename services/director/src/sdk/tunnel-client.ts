@@ -21,6 +21,7 @@ export class TunnelClient {
 
     const proxy = createProxyMiddleware({
       ws: true,
+      changeOrigin: true,
       router: async (req) => {
         const headers = new Headers();
 
@@ -33,13 +34,63 @@ export class TunnelClient {
 
         return this.#targetResolver(headers);
       },
+      on: {
+        error: (error, req, res) => {
+          if ("writeHead" in res) {
+            if (!res.headersSent) {
+              this.#logger.warn("Tunnel proxy failed to route request", {
+                method: req.method,
+                url: req.url,
+                err: error,
+              });
+
+              res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+              res.end("Failed to route request through tunnel (Tunnel Client)");
+            }
+          } else {
+            if (!res.closed) {
+              this.#logger.warn("Tunnel proxy failed to route upgrade", {
+                url: req.url,
+                err: error,
+              });
+
+              try {
+                const body = "Failed to route upgrade through tunnel (Tunnel Client)";
+
+                res.write(
+                  `HTTP/1.1 502 Service Unavailable\r\n` +
+                    `Content-Type: text/plain\r\n` +
+                    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+                    `Connection: close\r\n` +
+                    `\r\n` +
+                    body,
+                );
+              } catch {}
+
+              res.destroy();
+            }
+          }
+        },
+      },
     });
 
-    this.#dummyServer = createServer(proxy);
+    this.#dummyServer = createServer();
 
-    // The middleware only subscribes to 'upgrade' after a regular request has
-    // passed through it. Since the tunnel may receive a WebSocket handshake as
-    // its very first frame, forward upgrade events to the proxy explicitly.
+    this.#dummyServer.on("request", (req, res) => {
+      proxy(req, res, (err) => {
+        if (!res.headersSent) {
+          this.#logger.warn("Tunnel proxy failed to route request", {
+            method: req.method,
+            url: req.url,
+            err,
+          });
+
+          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          res.end("Failed to route request through tunnel (Tunnel Client)");
+        }
+      });
+    });
+
     this.#dummyServer.on("upgrade", (req, socket, head) => {
       // @ts-expect-error
       proxy.upgrade(req, socket, head);
@@ -115,7 +166,12 @@ export class TunnelClient {
         this.#logger.info("Tunnel socket connected", {});
 
         await new Promise<void>((resolve) => {
-          this.#dummyServer.emit("connection", socket);
+          socket.once("data", (chunk) => {
+            socket.pause();
+            socket.unshift(chunk);
+            this.#dummyServer.emit("connection", socket);
+            socket.resume();
+          });
 
           const cleanup = () => {
             socket.removeListener("close", cleanup);

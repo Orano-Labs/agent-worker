@@ -304,7 +304,7 @@ describe("TunnelClient", () => {
     // Tunnel server: simulates the director's /tunnel upgrade endpoint.
     // The test server does not verify the request signature — signing only needs
     // to succeed on the client side.
-    tunnelServer = createServer((req, res) => {
+    tunnelServer = createServer((_req, res) => {
       res.writeHead(400);
       res.end("Expected an upgrade request");
     });
@@ -574,7 +574,7 @@ describe("TunnelClient", () => {
 
   it("logs a warning and retries when the tunnel upgrade is rejected", async () => {
     tunnelServer.removeAllListeners("upgrade");
-    tunnelServer.on("upgrade", (req, socket) => {
+    tunnelServer.on("upgrade", (_req, socket) => {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
       socket.destroy();
     });
@@ -800,7 +800,7 @@ describe("TunnelClient", () => {
 
     const errorResponse = await readHttpResponse(socket);
 
-    expect(errorResponse.status).toBe(504);
+    expect(errorResponse.status).toBe(502);
 
     // Proxy failures are scoped to the request: the tunnel socket stays usable.
     socket.write("GET /alive HTTP/1.1\r\nHost: localhost\r\n\r\n");

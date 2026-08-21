@@ -37,7 +37,9 @@
     "postinstall": "pnpm generate"
   },
   "files": [
-    "dist/**/*"
+    "dist/**/*",
+    "prisma/**/*",
+    "proto/**/*"
   ],
   "packageManager": "pnpm@10.14.0",
   "dependencies": {

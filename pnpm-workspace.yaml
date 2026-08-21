@@ -3,6 +3,23 @@ packages:
   - services/*
   - native/*
 
+allowBuilds:
+  '@bufbuild/buf': true
+  '@google/genai': true
+  '@prisma/engines': true
+  better-sqlite3: true
+  cpu-features: true
+  esbuild: true
+  lefthook: true
+  lmdb: true
+  msgpackr-extract: true
+  msw: true
+  node-pty: true
+  prisma: true
+  protobufjs: true
+  sharp: true
+  ssh2: true
+
 onlyBuiltDependencies:
   - esbuild
   - lefthook

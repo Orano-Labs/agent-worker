@@ -16,6 +16,10 @@ const createClient = (url: string) => {
       { emit: "event", level: "warn" },
       { emit: "event", level: "error" },
     ],
+    transactionOptions: {
+      maxWait: 10_000,
+      timeout: 10_000 * 6,
+    },
   });
 };
 
@@ -123,14 +127,7 @@ export class Repository {
     const start = performance.now();
 
     try {
-      await this.#client.$transaction(
-        async (tx) => {
-          await tx.$queryRaw`SELECT 1`;
-        },
-        {
-          timeout: 3000,
-        },
-      );
+      await this.#client.$queryRaw`SELECT 1`;
 
       this.#logger.info("Database ready", {
         durationMs: Math.round(performance.now() - start),

@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
-import { CommandLine } from "@/internal/command-line";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
 
@@ -12,7 +11,6 @@ declare const VERSION: string;
 
 export class Environment {
   #logger: Logger;
-  #cli: CommandLine;
   #variables: Variables;
 
   get platform() {
@@ -32,12 +30,11 @@ export class Environment {
   }
 
   get cwd() {
-    return this.#cli.cwd;
+    return process.cwd();
   }
 
   constructor() {
     this.#logger = Container.inject(Logger).scope("Environment");
-    this.#cli = Container.inject(CommandLine);
     this.#variables = Container.inject(Variables);
   }
 

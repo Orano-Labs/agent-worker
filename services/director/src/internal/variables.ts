@@ -3,12 +3,10 @@ import { parseEnv } from "node:util";
 
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
-import { CommandLine } from "@/internal/command-line";
 import { Key } from "@/internal/key";
 import { Logger } from "@/internal/logger";
 
 export class Variables {
-  #cli: CommandLine;
   #logger: Logger;
   #env: NodeJS.Dict<string>;
   #key: Key;
@@ -23,20 +21,33 @@ export class Variables {
       }
     }
 
-    this.#cli = Container.inject(CommandLine);
     this.#logger = Container.inject(Logger).scope("Variables");
     this.#key = Container.inject(Key);
   }
 
   async init(): Promise<Result<void, Error>> {
-    if (this.#cli.envFiles.length > 0) {
-      for (const file of this.#cli.envFiles) {
+    const envFiles = [".env"];
+
+    if (process.env.NODE_ENV === "production") {
+      envFiles.push(".env.production");
+    } else if (process.env.NODE_ENV === "development") {
+      envFiles.push(".env.development");
+    } else if (process.env.NODE_ENV === "test") {
+      envFiles.push(".env.test");
+    }
+
+    envFiles.push(".env.local");
+
+    if (envFiles.length > 0) {
+      for (const file of envFiles) {
         let content: string;
 
         try {
           content = await readFile(file, "utf-8");
-        } catch (error) {
-          return Result.error(new Error(`Failed to read environment file: ${file}`, { cause: error }));
+        } catch {
+          this.#logger.warn(`Failed to read environment file: ${file}`);
+
+          break;
         }
 
         let parsed: NodeJS.Dict<string>;
@@ -74,9 +85,6 @@ export class Variables {
       HTTP_PORT: this.get("AW_DIRECTOR_HTTP_PORT") || null,
       MYSQL_URL: this.get("AW_DIRECTOR_MYSQL_URL") || null,
       MANAGER_PUBLIC_KEY: this.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY") || null,
-      GRPC_CA_KEY: this.get("AW_DIRECTOR_GRPC_CA_KEY") || null,
-      GRPC_CA_CERTIFICATE: this.get("AW_DIRECTOR_GRPC_CA_CERTIFICATE") || null,
-      GRPC_PORT: this.get("AW_DIRECTOR_GRPC_PORT") || null,
     };
 
     if (variables.MYSQL_URL) {
@@ -139,10 +147,6 @@ export namespace Variables {
 
     `${TRUSTED_PREFIX}MANAGER_PUBLIC_KEY`,
     `${TRUSTED_PREFIX}MANAGER_PRIVATE_KEY`,
-
-    `${TRUSTED_PREFIX}GRPC_CA_KEY`,
-    `${TRUSTED_PREFIX}GRPC_CA_CERTIFICATE`,
-    `${TRUSTED_PREFIX}GRPC_PORT`,
 
     `${TRUSTED_PREFIX}REDIS_URL`,
     `${TRUSTED_PREFIX}FS_ROOT`,

@@ -1,7 +1,6 @@
 import { Container } from "@/helpers/container";
 import { Authenticator } from "@/internal/authenticator";
 import { Cache } from "@/internal/cache";
-import { CommandLine } from "@/internal/command-line";
 import { Environment } from "@/internal/environment";
 import { GRPCServer } from "@/internal/grpc-server";
 import { HTTPServer } from "@/internal/http-server";
@@ -51,15 +50,6 @@ export class Bootstrapper {
     if (!PRODUCTION) {
       this.#logger.warn("Running in development mode, this is not recommended for production use.");
     }
-
-    const cli = Container.inject(CommandLine);
-
-    this.#logger.info("Command line arguments", {
-      cwd: cli.cwd,
-      logLevel: cli.logLevel,
-      logColorize: cli.logColorize,
-      envFiles: cli.envFiles,
-    });
 
     process.once("SIGINT", () => {
       this.#shutdown("SIGINT");
@@ -157,7 +147,6 @@ export class Bootstrapper {
 }
 
 Container.singleton(Key, () => new Key());
-Container.singleton(CommandLine, () => new CommandLine());
 Container.singleton(Logger, () => new Logger());
 Container.singleton(Environment, () => new Environment());
 Container.singleton(Variables, () => new Variables());

@@ -1,4 +1,5 @@
 import { Container } from "@/helpers/container";
+import { Allocator } from "@/internal/allocator";
 import { Authenticator } from "@/internal/authenticator";
 import { Cache } from "@/internal/cache";
 import { Environment } from "@/internal/environment";
@@ -9,12 +10,13 @@ import { Key } from "@/internal/key";
 import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
 import { Variables } from "@/internal/variables";
+import { FileSystemServiceImplementation } from "@/services/file-system";
+import { FileUploadServiceImplementation } from "@/services/file-upload";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
 import { TemplateServiceImplementation } from "@/services/template";
 import { UserServiceImplementation } from "@/services/user";
-import { Allocator } from "./internal/allocator";
 
 const PRODUCTION = process.env.NODE_ENV === "production";
 
@@ -167,3 +169,5 @@ Container.singleton(SupervisorServiceImplementation, () => new SupervisorService
 Container.singleton(SupervisorPortalServiceImplementation, () => new SupervisorPortalServiceImplementation());
 Container.singleton(ProjectServiceImplementation, () => new ProjectServiceImplementation());
 Container.singleton(TemplateServiceImplementation, () => new TemplateServiceImplementation());
+Container.singleton(FileSystemServiceImplementation, () => new FileSystemServiceImplementation());
+Container.singleton(FileUploadServiceImplementation, () => new FileUploadServiceImplementation());

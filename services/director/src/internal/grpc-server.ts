@@ -7,6 +7,8 @@ import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
 import { Authenticator } from "@/internal/authenticator";
 import { Logger } from "@/internal/logger";
+import { FileSystemServiceImplementation } from "@/services/file-system";
+import { FileUploadServiceImplementation } from "@/services/file-upload";
 import { ProjectServiceImplementation } from "@/services/project";
 import { SupervisorServiceImplementation } from "@/services/supervisor";
 import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
@@ -33,6 +35,8 @@ const SERVICE_ACCESS: Readonly<Record<string, ReadonlyArray<SignatureIdentityVal
   "api.v1.SupervisorPortalService": ["supervisor"],
   "api.v1.ProjectService": ["user"],
   "api.v1.TemplateService": ["user"],
+  "api.v1.FileUploadService": ["user"],
+  "api.v1.FileSystemService": ["user"],
 };
 
 export class GRPCServer {
@@ -167,6 +171,8 @@ export class GRPCServer {
         Container.inject(SupervisorPortalServiceImplementation).setup(router);
         Container.inject(ProjectServiceImplementation).setup(router);
         Container.inject(TemplateServiceImplementation).setup(router);
+        Container.inject(FileSystemServiceImplementation).setup(router);
+        Container.inject(FileUploadServiceImplementation).setup(router);
       },
     });
 

@@ -3,6 +3,7 @@ import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
 import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
+import { Tunnel } from "./tunnel";
 
 const getTierWeight = (tier: ProjectResourceTier) => {
   switch (tier) {
@@ -68,7 +69,7 @@ export class Allocator {
       this.#allocations.set(project, allocation);
     }
 
-    await allocation;
+    return await allocation;
   }
 
   async release(id: string, supervisor: string) {
@@ -151,7 +152,7 @@ export class Allocator {
     let lease = this.#leases.get(supervisor);
 
     if (!lease) {
-      lease = new Allocator.Lease(() => {
+      lease = new Allocator.Lease(supervisor, () => {
         this.#leases.delete(supervisor);
       });
 
@@ -423,15 +424,20 @@ export namespace Allocator {
   export class Lease {
     #timer: ReturnType<typeof setTimeout>;
     #expired: () => void;
+    #tunnel: Tunnel;
 
-    constructor(expired: () => void) {
+    constructor(supervisor: string, expired: () => void) {
       this.#expired = expired;
       this.#timer = setTimeout(() => this.expire(), 3000).unref();
+      this.#tunnel = new Tunnel(supervisor, 300);
     }
 
     touch() {
       clearTimeout(this.#timer);
-      this.#timer = setTimeout(() => this.expire(), 3000).unref();
+
+      this.#timer = setTimeout(() => {
+        this.expire();
+      }, 10_000).unref();
     }
 
     expire() {
@@ -440,6 +446,11 @@ export namespace Allocator {
       }
 
       this.#expired();
+      this.#tunnel.destroy();
+    }
+
+    get tunnel() {
+      return this.#tunnel;
     }
   }
 

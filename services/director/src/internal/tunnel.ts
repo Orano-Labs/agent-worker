@@ -1,47 +1,30 @@
-import { EventEmitter } from "node:events";
-import { type IncomingMessage, type RequestOptions, request, type ServerResponse } from "node:http";
-import type { Duplex } from "node:stream";
+import { type ClientRequestArgs, Agent as HTTPAgent, type IncomingMessage, request, type ServerResponse } from "node:http";
+import { Duplex } from "node:stream";
 import { default as pump } from "pump";
-
-import { TunnelAgent } from "@/core/tunnel-agent";
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
 
-export class Tunnel extends EventEmitter<Tunnel.EventMap> {
+export class Tunnel {
   #logger: Logger;
-  #token: string;
-  #project: string;
   #supervisor: string;
   #connectedSockets: number;
   #sockets: Duplex[];
-  #offlineTimer: NodeJS.Timeout | null = null;
+  #maxSockets: number;
 
-  #agent: TunnelAgent;
+  #agent: Tunnel.Agent;
 
-  constructor(project: string, token: string, supervisor: string) {
-    super();
-
-    this.#logger = Container.inject(Logger).scope("Tunnel");
-    this.#project = project;
-    this.#token = token;
+  constructor(supervisor: string, maxSockets: number) {
+    this.#logger = Container.inject(Logger).scope(`Tunnel.Gateway(${supervisor})`);
     this.#supervisor = supervisor;
     this.#connectedSockets = 0;
     this.#sockets = [];
+    this.#maxSockets = maxSockets;
 
-    this.#agent = new TunnelAgent(this);
+    this.#agent = new Tunnel.Agent(this);
 
     this.#logger.debug("Tunnel created", {
-      project,
       supervisor,
     });
-  }
-
-  get project() {
-    return this.#project;
-  }
-
-  get token() {
-    return this.#token;
   }
 
   get supervisor() {
@@ -61,11 +44,9 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
   }
 
   connect(socket: Duplex) {
-    if (this.#connectedSockets >= Tunnel.MAX_TCP_SOCKETS) {
+    if (this.#connectedSockets >= this.#maxSockets) {
       this.#logger.debug("Tunnel connection pool is full, rejecting new socket", {
-        project: this.#project,
         connectedSockets: this.#connectedSockets,
-        maxSockets: Tunnel.MAX_TCP_SOCKETS,
       });
 
       return {
@@ -84,60 +65,27 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
       }
 
       this.#logger.debug("Socket closed", {
-        project: this.#project,
         connectedSockets: this.#connectedSockets,
       });
-
-      if (this.#connectedSockets === 0 && !this.#offlineTimer) {
-        this.#logger.debug("Last socket closed — starting offline timeout", {
-          project: this.#project,
-        });
-
-        this.#offlineTimer = setTimeout(() => {
-          this.#offlineTimer = null;
-          this.#logger.debug("Offline timeout expired — tunnel offline", {
-            project: this.#project,
-          });
-
-          this.emit("offline");
-        }, Tunnel.OFFLINE_TIMEOUT_MS);
-      }
     };
 
     socket.once("close", onClose);
     socket.once("error", (err) => {
       this.#logger.debug("Socket error, destroying", {
-        project: this.#project,
         err,
       });
 
       socket.destroy();
     });
 
-    // Clear any pending offline timeout — a new socket is connecting.
-    if (this.#offlineTimer) {
-      clearTimeout(this.#offlineTimer);
-
-      this.#offlineTimer = null;
-      this.#logger.debug("Offline timeout cancelled — new socket arrived", {
-        project: this.#project,
-      });
-    }
-
     if (this.#connectedSockets === 0) {
-      this.#logger.debug("Tunnel coming online with first socket", {
-        project: this.#project,
-      });
-
-      this.emit("online");
-      this.emit("connect", socket);
+      this.#logger.debug("Tunnel coming online with first socket");
     }
 
     this.#connectedSockets += 1;
     this.#sockets.push(socket);
 
     this.#logger.debug("Socket attached to tunnel", {
-      project: this.#project,
       connectedSockets: this.#connectedSockets,
     });
 
@@ -158,7 +106,6 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
       }
 
       this.#logger.debug("Claimed socket was dead on arrival, skipping", {
-        project: this.#project,
         remaining: this.#connectedSockets,
       });
 
@@ -168,14 +115,8 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
 
   destroy() {
     this.#logger.debug("Destroying tunnel", {
-      project: this.#project,
       connectedSockets: this.#connectedSockets,
     });
-
-    if (this.#offlineTimer) {
-      clearTimeout(this.#offlineTimer);
-      this.#offlineTimer = null;
-    }
 
     for (const socket of this.#sockets) {
       if (!socket.destroyed) {
@@ -197,26 +138,12 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
 
   handleHttpRequest(clientReq: IncomingMessage, clientRes: ServerResponse, path: string) {
     this.#logger.debug("Proxying HTTP request through tunnel", {
-      project: this.#project,
       method: clientReq.method,
       path,
     });
 
-    const opt: RequestOptions = {
-      agent: this.#agent,
-      headers: clientReq.headers,
-      method: clientReq.method,
-      path: path,
-    };
-
-    const req = request(opt, (res) => {
-      clientRes.writeHead(res.statusCode ?? 0, res.headers);
-      pump(res, clientRes);
-    });
-
     clientReq.once("error", (err) => {
       this.#logger.debug("Client request error during proxy", {
-        project: this.#project,
         err,
       });
 
@@ -226,12 +153,33 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
       }
     });
 
-    pump(clientReq, req);
+    const req = request({ agent: this.#agent, headers: clientReq.headers, method: clientReq.method, path: path }, (res) => {
+      clientRes.writeHead(res.statusCode ?? 0, res.headers);
+
+      pump(res, clientRes, (error) => {
+        if (error) {
+          this.#logger.warn("Tunnel response stream error", {
+            method: clientReq.method,
+            path,
+            err: error,
+          });
+        }
+      });
+    });
+
+    pump(clientReq, req, (error) => {
+      if (error) {
+        this.#logger.warn("Tunnel request stream error", {
+          method: clientReq.method,
+          path,
+          err: error,
+        });
+      }
+    });
   }
 
   handleHttpUpgrade(clientReq: IncomingMessage, clientSocket: Duplex, head: Buffer, path: string) {
     this.#logger.debug("Handling HTTP upgrade through tunnel", {
-      project: this.#project,
       method: clientReq.method,
       path,
     });
@@ -239,9 +187,7 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
     const tunnelSocket = this.claimSocket();
 
     if (!tunnelSocket) {
-      this.#logger.debug("No available tunnel socket for upgrade", {
-        project: this.#project,
-      });
+      this.#logger.debug("No available tunnel socket for upgrade");
 
       clientSocket.write(
         `HTTP/1.1 503 ${this.#reason(503)}\r\n` +
@@ -275,18 +221,86 @@ export class Tunnel extends EventEmitter<Tunnel.EventMap> {
       tunnelSocket.write(head);
     }
 
-    pump(tunnelSocket, clientSocket);
-    pump(clientSocket, tunnelSocket);
+    pump(tunnelSocket, clientSocket, (error) => {
+      if (error) {
+        this.#logger.warn("Tunnel upgrade socket->client stream error", {
+          method: clientReq.method,
+          path,
+          err: error,
+        });
+      }
+    });
+
+    pump(clientSocket, tunnelSocket, (error) => {
+      if (error) {
+        this.#logger.warn("Tunnel upgrade client->socket stream error", {
+          method: clientReq.method,
+          path,
+          err: error,
+        });
+      }
+    });
   }
 }
 
 export namespace Tunnel {
-  export type EventMap = {
-    connect: [Duplex];
-    online: [];
-    offline: [];
+  export class Agent extends HTTPAgent {
+    #logger: Logger;
+    #gateway: Tunnel;
+
+    constructor(gateway: Tunnel) {
+      super({
+        keepAlive: false,
+      });
+
+      this.#logger = Container.inject(Logger).scope("Agent");
+      this.#gateway = gateway;
+    }
+
+    override createConnection(_: ClientRequestArgs, callback?: (err: Error | null, stream: Duplex) => void) {
+      const socket = this.#gateway.claimSocket();
+
+      if (!socket) {
+        this.#logger.debug("No available tunnel socket for agent connection");
+
+        const err = new Error(`No available tunnel connections.`);
+
+        callback?.(err, undefined as unknown as Duplex);
+
+        // Return a destroyed dummy so Node's HTTP internals don't crash
+        // while the callback propagates the error asynchronously.
+        const dummy = new Duplex({
+          read() {},
+          write(_chunk, _enc, cb) {
+            cb();
+          },
+        });
+
+        dummy.destroy();
+
+        return dummy;
+      }
+
+      this.#logger.debug("Tunnel agent claimed socket for connection");
+
+      callback?.(null, socket);
+
+      return socket;
+    }
+  }
+
+  export type HandleHttpRequestOptions = {
+    req: IncomingMessage;
+    res: ServerResponse;
+    path: string;
+    routingKey: string;
   };
 
-  export const MAX_TCP_SOCKETS = 10;
-  export const OFFLINE_TIMEOUT_MS = 30_000;
+  export type HandleHttpUpgradeOptions = {
+    req: IncomingMessage;
+    socket: Duplex;
+    head: Buffer;
+    path: string;
+    routingKey: string;
+  };
 }

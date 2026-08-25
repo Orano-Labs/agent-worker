@@ -1,9 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { addRoute, createRouter, findRoute } from "rou3";
-import { TunnelManager } from "@/core/tunnel-manager";
+
 import { Container } from "@/helpers/container";
+import { Allocator } from "@/internal/allocator";
 import { Authenticator } from "@/internal/authenticator";
+import { GRPCServer } from "@/internal/grpc-server";
 import { HTTPServer } from "@/internal/http-server";
 import { Logger } from "@/internal/logger";
 import { Repository } from "@/internal/repository";
@@ -29,25 +31,27 @@ type RequestRoute = {
   handler: (context: RequestRouteContext) => void;
 };
 
-const PRODUCTION = process.env.NODE_ENV === "PRODUCTION";
+type ClientRouteContext = ({ kind: "request" } & RequestRouteContext) | ({ kind: "upgrade" } & UpgradeRouteContext);
 
 export class HTTPServerRouter {
   #http: HTTPServer;
   #upgradeRouter: ReturnType<typeof createRouter<UpgradeRoute>>;
   #requestRouter: ReturnType<typeof createRouter<RequestRoute>>;
-  #tunnels: TunnelManager;
   #auth: Authenticator;
   #repository: Repository;
   #logger: Logger;
+  #allocator: Allocator;
+  #grpc: GRPCServer;
 
   constructor() {
     this.#http = Container.inject(HTTPServer);
     this.#upgradeRouter = createRouter();
     this.#requestRouter = createRouter();
-    this.#tunnels = Container.inject(TunnelManager);
     this.#auth = Container.inject(Authenticator);
     this.#repository = Container.inject(Repository);
-    this.#logger = Container.inject(Logger);
+    this.#logger = Container.inject(Logger).scope("Router");
+    this.#allocator = Container.inject(Allocator);
+    this.#grpc = Container.inject(GRPCServer);
   }
 
   #reason(status: number): string {
@@ -60,6 +64,8 @@ export class HTTPServerRouter {
         return "Forbidden";
       case 404:
         return "Not Found";
+      case 500:
+        return "Internal Server Error";
       case 502:
         return "Bad Gateway";
       case 503:
@@ -70,6 +76,8 @@ export class HTTPServerRouter {
   }
 
   #respond(socket: Duplex, status: number, message: string) {
+    this.#logger.warn("Rejecting connection", { status, message });
+
     const reason = this.#reason(status);
     const body = message;
 
@@ -90,6 +98,8 @@ export class HTTPServerRouter {
   }
 
   #error(res: ServerResponse, status: number, message: string) {
+    this.#logger.warn("Rejecting request", { status, message });
+
     res.writeHead(status, { "Content-Type": "text/plain" });
     res.end(message);
   }
@@ -110,105 +120,144 @@ export class HTTPServerRouter {
     return headers;
   }
 
-  #doTunnelUpgrade(projectId: string, token: string, socket: Duplex) {
-    const error = this.#tunnels.createTunnelConnection(projectId, token, socket);
+  #doTunnelUpgrade(supervisorId: string, socket: Duplex) {
+    const lease = this.#allocator.getLease(supervisorId);
+
+    if (!lease) {
+      this.#logger.warn("Rejecting tunnel upgrade — supervisor is not online", {
+        supervisorId,
+      });
+
+      return this.#respond(socket, 503, "Tunnel service is unavailable");
+    }
+
+    const error = lease.tunnel.connect(socket);
 
     if (error) {
-      this.#respond(socket, error.status, error.message);
+      this.#logger.warn("Tunnel connection rejected", {
+        supervisorId,
+        status: error.status,
+        message: error.message,
+      });
 
-      return;
+      return this.#respond(socket, error.status, error.message);
     }
+
+    this.#logger.debug("Tunnel connection established", {
+      supervisorId,
+    });
 
     socket.write("HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: tunnel\r\n" + "Connection: Upgrade\r\n" + "\r\n");
   }
 
-  async #handleTunnelUpgrade(context: UpgradeRouteContext) {
-    const projectId = context.params.project;
-    const token = context.params.token;
+  #reject(context: ClientRouteContext, status: number, message: string) {
+    if (context.kind === "request") {
+      return this.#error(context.res, status, message);
+    }
 
+    return this.#respond(context.socket, status, message);
+  }
+
+  #doClient(context: ClientRouteContext, projectId: string, path: string) {
+    this.#logger.debug(`Forwarding client ${context.kind} to instance`, { projectId, method: context.req.method, path });
+
+    this.#allocator
+      .allocate(projectId)
+      .then((result) => {
+        const lease = this.#allocator.getLease(result.supervisor);
+
+        if (!lease) {
+          this.#logger.warn("Allocated supervisor has no lease", { projectId, supervisor: result.supervisor });
+
+          return this.#reject(context, 503, "Project instance is unavailable");
+        }
+
+        this.#prepareRoutingHeaders(context.req, result.id);
+
+        this.#logger.debug(`Routing ${context.kind} through tunnel`, { projectId, supervisor: result.supervisor, path });
+
+        if (context.kind === "request") {
+          lease.tunnel.handleHttpRequest(context.req, context.res, path);
+        } else {
+          lease.tunnel.handleHttpUpgrade(context.req, context.socket, context.head, path);
+        }
+      })
+      .catch((error) => {
+        const { status, message } = this.#formatAllocateError(error);
+
+        this.#logger.warn(`Failed to allocate instance for client ${context.kind}`, { projectId, status, err: error });
+
+        return this.#reject(context, status, message);
+      });
+  }
+
+  #formatAllocateError(error: unknown) {
+    if (error instanceof Allocator.AllocateError) {
+      switch (error.code) {
+        case Allocator.AllocateError.Code.Exhausted:
+          return { status: 502, message: "Project instance allocation failed" };
+        case Allocator.AllocateError.Code.NoCapacity:
+          return { status: 503, message: "Insufficient system resources" };
+        case Allocator.AllocateError.Code.NoSupervisor:
+          return { status: 503, message: "No system resources available" };
+      }
+    }
+
+    return { status: 500, message: "Internal server error" };
+  }
+
+  async #handleTunnelUpgrade(context: UpgradeRouteContext) {
     // Authenticate — only supervisors may join a tunnel pool.
     let identity: Authenticator.Identity;
 
     try {
       identity = await this.#auth.authenticate(this.#toHeaders(context.req));
-    } catch {
-      this.#respond(context.socket, 401, "Authentication required");
+    } catch (error) {
+      this.#logger.warn("Tunnel upgrade authentication failed", { err: error });
 
-      return;
+      return this.#respond(context.socket, 401, "Authentication required");
     }
 
     if (identity.case !== "supervisor") {
-      this.#respond(context.socket, 403, "Only supervisors can establish tunnel connections");
+      this.#logger.warn("Tunnel upgrade rejected — identity is not a supervisor", { case: identity.case });
 
-      return;
+      return this.#respond(context.socket, 403, "Only supervisors can establish tunnel connections");
     }
 
-    // Verify the project exists and belongs to this supervisor.
-    const project = await this.#repository.client.project.findFirst({
-      where: {
-        id: projectId,
-        ownerId: identity.supervisorId,
-      },
-    });
-
-    if (!project) {
-      this.#respond(context.socket, 404, `Project "${projectId}" not found or not owned by this supervisor`);
-
-      return;
-    }
-
-    this.#doTunnelUpgrade(projectId, token, context.socket);
+    this.#doTunnelUpgrade(identity.supervisorId, context.socket);
   }
 
-  async #handleTunnelUpgradeTest(context: UpgradeRouteContext) {
-    const projectId = context.params.project;
-    const token = context.params.token;
-
-    const project = this.#repository.client.project.findFirst({
-      where: { id: projectId },
-    });
-
-    if (!project) {
-      this.#respond(context.socket, 404, `Project "${projectId}" not found`);
-
-      return;
-    }
-
-    this.#doTunnelUpgrade(projectId, token, context.socket);
-  }
-
-  #doClientRequest(projectId: string, req: IncomingMessage, res: ServerResponse, path: string) {
-    const tunnel = this.#tunnels.get(projectId);
-
-    if (!tunnel) {
-      this.#error(res, 404, `Project "${projectId}" is not connected`);
-
-      return;
-    }
-
-    this.#stripAuthHeaders(req);
-    tunnel.handleHttpRequest(req, res, path);
-  }
-
-  async #handleClientRequest(context: RequestRouteContext) {
+  async #handleClient(context: ClientRouteContext) {
     const projectId = context.params.project;
     const path = context.params.rest;
 
-    // Authenticate — only project owners may send requests.
+    this.#logger.debug(`Client ${context.kind} received`, {
+      method: context.req.method,
+      projectId,
+      path,
+    });
+
+    // Authenticate — only project owners may access their projects.
     let identity: Authenticator.Identity;
 
     try {
       identity = await this.#auth.authenticate(this.#toHeaders(context.req));
-    } catch {
-      this.#error(context.res, 401, "Authentication required");
+    } catch (error) {
+      this.#logger.warn(`Client ${context.kind} authentication failed`, {
+        projectId,
+        err: error,
+      });
 
-      return;
+      return this.#reject(context, 401, "Authentication required");
     }
 
     if (identity.case !== "user") {
-      this.#error(context.res, 403, "Only users can send requests to projects");
+      this.#logger.warn(`Client ${context.kind} rejected — identity is not a user`, {
+        projectId,
+        case: identity.case,
+      });
 
-      return;
+      return this.#reject(context, 403, "Only users can access projects");
     }
 
     // Verify the project exists and belongs to this user.
@@ -216,142 +265,53 @@ export class HTTPServerRouter {
       where: {
         id: projectId,
         ownerId: identity.userId,
+        deleteTime: null,
       },
     });
 
     if (!project) {
-      this.#error(context.res, 404, `Project "${projectId}" not found or not owned by you`);
+      this.#logger.warn("Project not found or not owned by user", {
+        projectId,
+        userId: this.#logger.mask(identity.userId),
+      });
 
-      return;
+      return this.#reject(context, 404, `Project "${projectId}" not found or not owned by you`);
     }
 
-    this.#doClientRequest(projectId, context.req, context.res, `/${path}`);
+    this.#doClient(context, projectId, `/${path}`);
   }
 
-  async #handleClientRequestTest(context: RequestRouteContext) {
-    const projectId = context.params.project;
-    const path = context.params.rest;
-
-    this.#doClientRequest(projectId, context.req, context.res, `/${path}`);
+  async #handleGrpcRequest(context: Extract<ClientRouteContext, { kind: "request" }>) {
+    this.#grpc.handler(context.req, context.res);
   }
 
-  #doClientUpgrade(projectId: string, req: IncomingMessage, socket: Duplex, head: Buffer, path: string) {
-    const tunnel = this.#tunnels.get(projectId);
-
-    if (!tunnel) {
-      this.#respond(socket, 404, `Project "${projectId}" is not connected`);
-
-      return;
-    }
-
-    this.#stripAuthHeaders(req);
-    tunnel.handleHttpUpgrade(req, socket, head, path);
-  }
-
-  async #handleClientUpgrade(context: UpgradeRouteContext) {
-    const projectId = context.params.project;
-    const path = context.params.rest;
-
-    // Authenticate — only project owners may open upgrade streams.
-    let identity: Authenticator.Identity;
-
-    try {
-      identity = await this.#auth.authenticate(this.#toHeaders(context.req));
-    } catch {
-      this.#respond(context.socket, 401, "Authentication required");
-
-      return;
-    }
-
-    if (identity.case !== "user") {
-      this.#respond(context.socket, 403, "Only users can open upgrade streams to projects");
-
-      return;
-    }
-
-    // Verify the project exists and belongs to this user.
-    const project = await this.#repository.client.project.findFirst({
-      where: {
-        id: projectId,
-        ownerId: identity.userId,
-      },
-    });
-
-    if (!project) {
-      this.#respond(context.socket, 404, `Project "${projectId}" not found or not owned by you`);
-
-      return;
-    }
-
-    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, `/${path}`);
-  }
-
-  async #handleClientUpgradeTest(context: UpgradeRouteContext) {
-    const projectId = context.params.project;
-    const path = context.params.rest;
-
-    this.#doClientUpgrade(projectId, context.req, context.socket, context.head, `/${path}`);
-  }
-
-  #handleCreateTunnelTest(context: RequestRouteContext) {
-    const projectId = context.params.project;
-    const token = context.params.token;
-
-    this.#logger.info("Creating debug tunnel", { projectId, token });
-
-    try {
-      this.#tunnels.create(projectId, token, "debug");
-    } catch (err) {
-      this.#error(context.res, 409, `Failed to create tunnel: ${err instanceof Error ? err.message : err}`);
-
-      return;
-    }
-
-    context.res.writeHead(200, { "Content-Type": "plain/text" });
-    context.res.end("OK.");
-  }
-
-  #stripAuthHeaders(req: IncomingMessage) {
+  #prepareRoutingHeaders(req: IncomingMessage, instanceId: string) {
+    // Strip authentication headers so the upstream instance never sees them.
     const authHeaders = ["x-request-signature", "x-request-signature-development"];
 
     for (const name of authHeaders) {
       delete req.headers[name];
     }
+
+    req.headers["x-instance-id"] = instanceId;
   }
 
   setup() {
-    addRoute(this.#upgradeRouter, "UPGRADE", "tunnel/:project/:token", {
+    addRoute(this.#upgradeRouter, "UPGRADE", "tunnel", {
       handler: (ctx) => this.#handleTunnelUpgrade(ctx),
     });
 
     addRoute(this.#upgradeRouter, "UPGRADE", "link/:project/**:rest", {
-      handler: (ctx) => this.#handleClientUpgrade(ctx),
+      handler: (ctx) => this.#handleClient({ ...ctx, kind: "upgrade" }),
     });
 
     addRoute(this.#requestRouter, "ALL", "link/:project/**:rest", {
-      handler: (ctx) => this.#handleClientRequest(ctx),
+      handler: (ctx) => this.#handleClient({ ...ctx, kind: "request" }),
     });
 
-    if (!PRODUCTION) {
-      // Debug routes — no authentication required.
-      addRoute(this.#upgradeRouter, "UPGRADE", "_debug/tunnel/:project/:token", {
-        handler: (ctx) => this.#handleTunnelUpgradeTest(ctx),
-      });
-
-      addRoute(this.#upgradeRouter, "UPGRADE", "_debug/link/:project/**:rest", {
-        handler: (ctx) => this.#handleClientUpgradeTest(ctx),
-      });
-
-      addRoute(this.#requestRouter, "ALL", "_debug/link/:project/**:rest", {
-        handler: (ctx) => this.#handleClientRequestTest(ctx),
-      });
-
-      addRoute(this.#requestRouter, "ALL", "_debug/create-tunnel/:project/:token", {
-        handler: (ctx) => this.#handleCreateTunnelTest(ctx),
-      });
-
-      this.#logger.warn("Debug routes enabled — authentication bypassed");
-    }
+    addRoute(this.#requestRouter, "ALL", "grpc/**:rest", {
+      handler: (ctx) => this.#handleGrpcRequest({ ...ctx, kind: "request" }),
+    });
 
     this.#http.server.on("upgrade", (req, socket, head) => {
       const route = findRoute(this.#upgradeRouter, "UPGRADE", req.url ?? "", {
@@ -360,6 +320,8 @@ export class HTTPServerRouter {
       });
 
       if (!route) {
+        this.#logger.warn("Upgrade route not found", { url: req.url });
+
         return this.#respond(socket, 404, "Upgrade route not found");
       }
 
@@ -378,6 +340,8 @@ export class HTTPServerRouter {
       });
 
       if (!route) {
+        this.#logger.warn("Request route not found", { url: req.url });
+
         this.#error(res, 404, "Route not found");
 
         return;

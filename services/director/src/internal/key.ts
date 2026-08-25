@@ -1,4 +1,4 @@
-import { generateKeyPair, verify } from "node:crypto";
+import { createPrivateKey, createPublicKey, generateKeyPair, sign, verify } from "node:crypto";
 
 export class Key {
   async generateED25519() {
@@ -19,7 +19,23 @@ export class Key {
   }
 
   verifyED25519(key: Buffer, payload: Buffer, signature: Buffer) {
-    return verify(undefined, payload, key, signature);
+    const publicKeyObject = createPublicKey({
+      key,
+      format: Key.FORMAT,
+      type: Key.ENCODINGS.PUBLIC_KEY,
+    });
+
+    return verify(undefined, payload, publicKeyObject, signature);
+  }
+
+  signED25519(key: Buffer, payload: Buffer) {
+    const privateKeyObject = createPrivateKey({
+      key,
+      format: Key.FORMAT,
+      type: Key.ENCODINGS.PRIVATE_KEY,
+    });
+
+    return sign(undefined, payload, privateKeyObject);
   }
 }
 

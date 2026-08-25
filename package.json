@@ -6,7 +6,7 @@
     "ai",
     "5ire"
   ],
-  "packageManager": "pnpm@10.14.0",
+  "packageManager": "pnpm@11.18.0",
   "devDependencies": {
     "@aw/shared-config-typescript": "workspace:*",
     "@biomejs/biome": "^2.4.15",

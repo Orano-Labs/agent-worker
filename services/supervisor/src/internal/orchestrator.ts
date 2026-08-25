@@ -1,3 +1,4 @@
+import { createConnection } from "node:net";
 import { customAlphabet } from "nanoid";
 import { alphanumeric } from "nanoid-dictionary";
 
@@ -6,8 +7,6 @@ import { FS } from "@/internal/fs";
 import { Logger } from "@/internal/logger";
 import { Network } from "@/internal/network";
 import { Runner } from "@/internal/runner";
-
-// sudo sysctl -w vm.nr_hugepages=2048
 
 export class Orchestrator {
   #logger: Logger;
@@ -20,23 +19,9 @@ export class Orchestrator {
     this.#net = Container.inject(Network);
     this.#fs = Container.inject(FS);
     this.#runner = Container.inject(Runner);
-
-    this.#tasks = new Map();
   }
 
-  #tasks: Map<string, Orchestrator.Task>;
-
-  async kill(taskId: string, signal: NodeJS.Signals = "SIGKILL") {
-    this.#tasks.get(taskId)?.runner.process.kill(signal);
-
-    return this.taskClosed(taskId);
-  }
-
-  async taskClosed(taskId: string) {
-    await this.#tasks.get(taskId)?.closed;
-  }
-
-  async create(options: Orchestrator.Options) {
+  async run(options: Orchestrator.Options): Promise<Orchestrator.Task> {
     const id = customAlphabet(alphanumeric, 12)();
 
     const logger = this.#logger.scope(`TASK(${id})`);
@@ -104,15 +89,71 @@ export class Orchestrator {
       return status;
     })();
 
+    const ready = (async () => {
+      let attempt = 0;
+
+      while (attempt <= 3) {
+        try {
+          attempt += 1;
+
+          await new Promise<void>((resolve, reject) => {
+            const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
+
+            conn.on("connect", () => {
+              conn.destroy();
+              resolve();
+            });
+
+            conn.on("error", (error) => {
+              conn.destroy();
+              reject(error);
+            });
+          });
+
+          return;
+        } catch (error) {
+          logger.warn("Instance port 8000 is not ready yet, retrying...", {
+            attempt,
+            host: net.veth.guest.ip,
+            error,
+          });
+
+          if (attempt <= 3) {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, 3000);
+            });
+          }
+        }
+      }
+
+      throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
+    })();
+
+    // ready 失败时强制回收子进程及网络资源，避免残留僵尸 VM。
+    void ready.catch((error) => {
+      logger.errorFrom(error, "Instance failed to become ready, forcibly reclaiming resources");
+
+      if (runner.process.exitCode === null) {
+        try {
+          runner.process.kill("SIGKILL");
+        } catch (err) {
+          logger.warn("Failed to kill runner child process during reclaim", { err });
+        }
+      }
+
+      return this.#net.release(net).catch((err) => {
+        logger.warn("Failed to release network namespace during reclaim", { err });
+      });
+    });
+
     const task: Orchestrator.Task = {
       net,
       runner,
       fs,
       config: options.config,
       closed,
+      ready,
     };
-
-    this.#tasks.set(id, task);
 
     return task;
   }
@@ -120,30 +161,17 @@ export class Orchestrator {
 
 export namespace Orchestrator {
   export type Options = {
+    instanceId: string;
     config: TaskConfig;
   };
 
   export type Task = {
-    /**
-     * NetNamespace
-     */
     readonly net: Network.Namespace;
-    /**
-     * 用于运行该任务的虚拟机实例
-     */
     readonly runner: Runner.Instance;
-    /**
-     * 该任务的文件系统的 NFS 服务
-     */
     readonly fs: FS.Instance;
-    /**
-     * 任务运行配置
-     */
     readonly config: TaskConfig;
-    /**
-     * 一个 Promise 当任务结束时 resolve
-     */
     readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+    readonly ready: Promise<void>;
   };
 
   export type TaskConfig = {

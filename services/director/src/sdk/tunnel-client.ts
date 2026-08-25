@@ -1,27 +1,100 @@
-import { request as httpRequest } from "node:http";
-import { connect as netConnect, type Socket } from "node:net";
-import { Transform } from "node:stream";
-import { connect as tlsConnect } from "node:tls";
-import { HTTPParser } from "http-parser-js";
-import { default as pump } from "pump";
+import { createServer, request as httpRequest } from "node:http";
+import { createProxyMiddleware } from "http-proxy-middleware";
+import { RequestSigner } from "./request-signer";
 
 export class TunnelClient {
-  #target: URL;
+  #targetResolver: (headers: Headers) => URL | Promise<URL>;
   #started: boolean;
   #baseUrl: string;
-  #project: string;
-  #token: string;
-  #maxSockets: number;
+  #maxConnections: number;
   #logger: TunnelClient.Logger;
+  #signer: RequestSigner;
+  #dummyServer: ReturnType<typeof createServer>;
 
   constructor(options: TunnelClient.Options) {
     this.#baseUrl = options.baseUrl;
-    this.#target = options.target;
+    this.#targetResolver = options.targetResolver;
     this.#started = false;
-    this.#project = options.project;
-    this.#token = options.token;
-    this.#maxSockets = options.maxSockets;
+    this.#maxConnections = options.maxConnections;
     this.#logger = options.logger;
+    this.#signer = new RequestSigner(options.identity, options.dev ?? false);
+
+    const proxy = createProxyMiddleware({
+      ws: true,
+      changeOrigin: true,
+      router: async (req) => {
+        const headers = new Headers();
+
+        for (const [k, values] of Object.entries(req.headersDistinct)) {
+          if (!values) continue;
+          for (const v of values) {
+            headers.append(k, v);
+          }
+        }
+
+        return this.#targetResolver(headers);
+      },
+      on: {
+        error: (error, req, res) => {
+          if ("writeHead" in res) {
+            if (!res.headersSent) {
+              this.#logger.warn("Tunnel proxy failed to route request", {
+                method: req.method,
+                url: req.url,
+                err: error,
+              });
+
+              res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+              res.end("Failed to route request through tunnel (Tunnel Client)");
+            }
+          } else {
+            if (!res.closed) {
+              this.#logger.warn("Tunnel proxy failed to route upgrade", {
+                url: req.url,
+                err: error,
+              });
+
+              try {
+                const body = "Failed to route upgrade through tunnel (Tunnel Client)";
+
+                res.write(
+                  `HTTP/1.1 502 Service Unavailable\r\n` +
+                    `Content-Type: text/plain\r\n` +
+                    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+                    `Connection: close\r\n` +
+                    `\r\n` +
+                    body,
+                );
+              } catch {}
+
+              res.destroy();
+            }
+          }
+        },
+      },
+    });
+
+    this.#dummyServer = createServer();
+
+    this.#dummyServer.on("request", (req, res) => {
+      proxy(req, res, (err) => {
+        if (!res.headersSent) {
+          this.#logger.warn("Tunnel proxy failed to route request", {
+            method: req.method,
+            url: req.url,
+            err,
+          });
+
+          res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+          res.end("Failed to route request through tunnel (Tunnel Client)");
+        }
+      });
+    });
+
+    this.#dummyServer.on("upgrade", (req, socket, head) => {
+      // @ts-expect-error
+      proxy.upgrade(req, socket, head);
+    });
   }
 
   start(signal: AbortSignal) {
@@ -33,239 +106,104 @@ export class TunnelClient {
 
     this.#started = true;
 
-    for (let i = 0; i < this.#maxSockets; i++) {
-      this.#createTunnelSocket(signal);
+    for (let i = 0; i < this.#maxConnections; i++) {
+      this.#createTunnelConnection(signal);
     }
   }
 
-  async #createTunnelSocket(signal: AbortSignal) {
-    const target = this.#resolveTarget();
+  async #sleep(signal: AbortSignal, delay: number) {
+    return new Promise<void>((resolve) => {
+      if (signal.aborted) {
+        return resolve();
+      }
 
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
+      const onTimeout = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+
+      signal.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(onTimeout, delay);
+    });
+  }
+
+  async #createTunnelConnection(signal: AbortSignal) {
     while (!signal.aborted) {
-      const socket = await new Promise<Socket>((resolve, reject) => {
-        const url = new URL(`${this.#baseUrl}/tunnel/${this.#project}/${this.#token}`);
-        const request = httpRequest(url, {
-          headers: {
+      try {
+        const headers = await this.#signer.apply(
+          new Headers({
             connection: "upgrade",
             upgrade: "tunnel",
-          },
-        });
+          }),
+        );
 
-        request.on("upgrade", (_, socket) => {
-          resolve(socket);
-        });
-
-        request.on("error", (error) => {
-          reject(error);
-        });
-
-        request.on("response", (resp) => {
-          reject(new Error(`Tunnel upgrade rejected: ${resp.statusCode} ${resp.statusMessage}`));
-        });
-
-        request.end();
-      }).catch((error) => {
-        this.#logger.warn("Tunnel connection failed, retrying in 1s", {
-          project: this.#project,
-          error: String(error),
-        });
-
-        return new Promise<void>((resolve) => {
-          const onAbort = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-          const onTimeout = () => {
-            signal.removeEventListener("abort", onAbort);
-          };
-          const timer = setTimeout(onTimeout, 1000);
-
-          signal.addEventListener("abort", onAbort, { once: true });
-        });
-      });
-
-      if (!socket) {
-        continue;
-      }
-
-      this.#logger.info("Tunnel socket connected", {
-        project: this.#project,
-      });
-
-      socket.setKeepAlive(true);
-
-      socket.once("data", (chunk) => {
-        socket.pause();
-
-        const remote = target.tls
-          ? tlsConnect({
-              host: target.hostname,
-              port: target.port,
-              servername: target.hostname,
-              rejectUnauthorized: false,
-            })
-          : netConnect({ host: target.hostname, port: target.port });
-
-        remote.once("connect", () => {
-          socket.unshift(chunk);
-
-          pump(socket, new HTTPHostRewriteTransform(target.hostname), remote);
-          pump(remote, socket);
-
-          socket.resume();
-        });
-
-        remote.once("error", (error) => {
-          this.#logger.error("Remote connection error", {
-            project: this.#project,
-            error: String(error),
+        const socket = await new Promise<NodeJS.Socket>((resolve, reject) => {
+          const request = httpRequest(new URL(`${this.#baseUrl}/tunnel`), {
+            headers: Object.fromEntries(headers.entries()),
+            signal,
           });
 
-          socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
-          socket.destroy(error);
+          request.on("upgrade", (_, socket) => {
+            resolve(socket);
+          });
+
+          request.on("error", (error) => {
+            reject(error);
+          });
+
+          request.on("response", (resp) => {
+            reject(new Error(`Tunnel upgrade rejected: ${resp.statusCode} ${resp.statusMessage}`));
+          });
+
+          request.end();
         });
-      });
 
-      // Wait for this socket to close before reconnecting.
-      await new Promise<void>((resolve) => {
-        const cleanup = () => {
-          socket.removeListener("close", onClose);
-          socket.removeListener("error", onError);
-          signal.removeEventListener("abort", onAbort);
-        };
+        this.#logger.info("Tunnel socket connected", {});
 
-        const onClose = () => {
-          cleanup();
-          resolve();
-        };
+        await new Promise<void>((resolve) => {
+          socket.once("data", (chunk) => {
+            socket.pause();
+            socket.unshift(chunk);
+            this.#dummyServer.emit("connection", socket);
+            socket.resume();
+          });
 
-        const onError = () => {
-          socket.destroy();
-          cleanup();
-          resolve();
-        };
+          const cleanup = () => {
+            socket.removeListener("close", cleanup);
+            socket.removeListener("error", cleanup);
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+          };
 
-        const onAbort = () => {
-          if (!socket.destroyed) {
-            socket.destroy();
+          const onAbort = () => {
+            // @ts-expect-error
+            socket.destroy(new Error("Aborted."));
+          };
+
+          socket.addListener("close", cleanup);
+          socket.addListener("error", cleanup);
+
+          signal.addEventListener("abort", onAbort, { once: true });
+
+          if (signal.aborted) {
+            onAbort();
           }
-          cleanup();
-          resolve();
-        };
+        });
+      } catch (err) {
+        if (signal.aborted) break;
 
-        socket.once("close", onClose);
-        socket.once("error", onError);
-        signal.addEventListener("abort", onAbort, { once: true });
-      });
+        this.#logger.warn("Tunnel connection failed, retrying in 2s", {
+          err,
+        });
+
+        await this.#sleep(signal, 2000);
+      }
     }
-  }
-
-  #resolveTarget(): { hostname: string; port: number; tls: boolean } {
-    const protocol = this.#target.protocol.replace(":", "");
-
-    return {
-      hostname: this.#target.hostname,
-      port: this.#target.port ? Number.parseInt(this.#target.port, 10) : protocol === "https" ? 443 : 80,
-      tls: protocol === "https",
-    };
-  }
-}
-
-/**
- * Rewrites the {@code Host} header of every HTTP request that passes through.
- *
- * It uses {@link http-parser-js} to parse the incoming byte stream.  When the
- * request headers are complete it reconstructs the request line + headers with
- * the Host value replaced by {@code targetHost}, then switches to transparent
- * passthrough for the body (and for WebSocket frames after an HTTP upgrade).
- *
- * Because the parser tracks message boundaries, keep-alive connections with
- * multiple consecutive HTTP requests are handled correctly — each request is
- * rewritten independently.
- */
-class HTTPHostRewriteTransform extends Transform {
-  #targetHost: string;
-  #parser: InstanceType<typeof HTTPParser>;
-
-  constructor(targetHost: string) {
-    super();
-    this.#targetHost = targetHost;
-    this.#parser = new HTTPParser(HTTPParser.REQUEST);
-
-    // Called once per HTTP request when all headers have been received.
-    // Reconstruct the request-line + headers with the Host overwritten.
-    this.#parser[HTTPParser.kOnHeadersComplete] = (info) => {
-      const method = HTTPParser.methods[info.method];
-      const headers = info.headers;
-
-      // Replace or inject the Host header.
-      let hostIndex = -1;
-
-      for (let i = 0; i < headers.length; i += 2) {
-        if (headers[i].toLowerCase() === "host") {
-          hostIndex = i;
-          break;
-        }
-      }
-
-      if (hostIndex !== -1) {
-        headers[hostIndex + 1] = this.#targetHost;
-      } else {
-        headers.push("Host", this.#targetHost);
-      }
-
-      // Serialise the modified request headers.
-      const payloadLines: string[] = [];
-
-      payloadLines.push(`${method} ${info.url} HTTP/${info.versionMajor}.${info.versionMinor}`);
-
-      for (let i = 0; i < headers.length; i += 2) {
-        payloadLines.push(`${headers[i]}: ${headers[i + 1]}`);
-      }
-
-      const payload = `${payloadLines.join("\r\n")}\r\n\r\n`;
-
-      this.push(Buffer.from(payload, "latin1"));
-
-      // Return 0 to tell the parser we handle the body ourselves.
-      return 0;
-    };
-
-    // Body chunks are forwarded untouched.
-    this.#parser[HTTPParser.kOnBody] = (chunk, start, len) => {
-      this.push(chunk.subarray(start, start + len));
-    };
-  }
-
-  override _transform(chunk: Buffer, _encoding: string, callback: () => void): void {
-    let offset = 0;
-
-    // Feed data to the parser byte by byte or in consumed-sized steps.
-    // The parser calls the callbacks above which push() to the readable side.
-    while (offset < chunk.length) {
-      const slice = offset === 0 ? chunk : chunk.subarray(offset);
-      const nparsed = this.#parser.execute(slice);
-
-      if (nparsed instanceof Error) {
-        // Unparseable data — forward as-is so it doesn't get lost.
-        this.push(slice);
-        break;
-      }
-
-      if (nparsed === 0) {
-        break;
-      }
-
-      offset += nparsed;
-    }
-
-    callback();
-  }
-
-  override _flush(callback: () => void): void {
-    // Signal end-of-stream to the parser so it can flush any remaining data.
-    this.#parser.finish();
-    callback();
   }
 }
 
@@ -276,10 +214,10 @@ export namespace TunnelClient {
 
   export type Options = {
     baseUrl: string;
-    project: string;
-    token: string;
-    target: URL;
+    identity: RequestSigner.Identity;
+    dev?: boolean;
+    targetResolver: (headers: Headers) => URL | Promise<URL>;
     logger: Logger;
-    maxSockets: number;
+    maxConnections: number;
   };
 }

@@ -1,141 +1,109 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-
 import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
-import { createConnectTransport } from "@connectrpc/connect-node";
-import { makePushPullAsyncIterableIterator } from "@n1ru4l/push-pull-async-iterable-iterator";
+import { createGrpcWebTransport } from "@connectrpc/connect-node";
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
 import { Variables } from "@/internal/variables";
 
 export class Director {
-  #logger: Logger;
-  #variables: Variables;
-
   #client?: Client;
-  #supervisorPortal?: ReturnType<Client["createSupervisorPortalService"]>;
+  #host?: string;
+  #identity?: Readonly<Client.Identity>;
 
-  #stream?: ReturnType<typeof makePushPullAsyncIterableIterator<SupervisorPortalPB.SupervisorPortalServiceReportRequestValid>>;
-  #reportTimer?: ReturnType<typeof setInterval>;
+  #variables: Variables;
+  #logger: Logger;
 
   constructor() {
-    this.#logger = Container.inject(Logger).scope("Director");
     this.#variables = Container.inject(Variables);
+    this.#logger = Container.inject(Logger).scope("Director");
+  }
+
+  get client() {
+    if (!this.#client) {
+      throw new Error("Director client has not been initialized. Call init() first.");
+    }
+
+    return this.#client;
+  }
+
+  get host() {
+    if (!this.#host) {
+      throw new Error("Director host has not been initialized. Call init() first.");
+    }
+
+    return this.#host;
+  }
+
+  get identity() {
+    if (!this.#identity) {
+      throw new Error("Director identity has not been initialized. Call init() first.");
+    }
+
+    return this.#identity;
+  }
+
+  async #startHeartbeatLoop(heartbeat: () => Promise<void>) {
+    while (true) {
+      try {
+        await heartbeat();
+      } catch (error) {
+        this.#logger.errorFrom(error, "Supervisor portal heartbeat failed");
+      }
+
+      await this.#sleep(3_000);
+    }
+  }
+
+  async #sleep(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
   async init() {
+    const supervisorId = this.#variables.get("AW_SUPERVISOR_ID");
+    const supervisorPrivateKey = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
+
     const baseUrl = this.#variables.get("AW_SUPERVISOR_DIRECTOR_HOST_URL");
-    const id = this.#variables.get("AW_SUPERVISOR_ID");
-    const privateKey = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
+
+    if (!supervisorId) {
+      throw new Error("AW_SUPERVISOR_ID is not set.");
+    }
+
+    if (!supervisorPrivateKey) {
+      throw new Error("AW_SUPERVISOR_PRIVATE_KEY is not set.");
+    }
 
     if (!baseUrl) {
-      throw new Error("AW_SUPERVISOR_DIRECTOR_HOST_URL is not set");
+      throw new Error("AW_SUPERVISOR_DIRECTOR_HOST_URL is not set.");
     }
 
-    if (!id) {
-      throw new Error("AW_SUPERVISOR_ID is not set");
-    }
-
-    if (!privateKey) {
-      throw new Error("AW_SUPERVISOR_PRIVATE_KEY is not set");
-    }
-
-    const transport = createConnectTransport({
-      httpVersion: "2",
-      baseUrl,
+    const transport = createGrpcWebTransport({
+      baseUrl: `${baseUrl}/grpc`,
+      httpVersion: "1.1",
     });
-
-    const identity: Client.Identity = {
-      type: "supervisor",
-      id,
-      privateKey,
-    };
 
     // @ts-expect-error
-    this.#client = new Client(transport, identity, true);
-    this.#supervisorPortal = this.#client.createSupervisorPortalService();
+    const client = new Client(transport, { type: "supervisor", id: supervisorId, privateKey: supervisorPrivateKey });
+    const portal = client.createSupervisorPortalService();
 
-    this.#runReportLoop();
-  }
-
-  async #runReportLoop() {
-    if (!this.#supervisorPortal) {
-      throw new Error("xxx");
-    }
-
-    this.#logger.info("Director initialized, reporting loop started");
-
-    while (true) {
-      this.#stream = makePushPullAsyncIterableIterator<SupervisorPortalPB.SupervisorPortalServiceReportRequestValid>();
-
-      this.report();
-
-      this.#reportTimer = setInterval(() => {
-        this.report();
-      }, 3000);
-
-      try {
-        await this.#supervisorPortal.report(this.#stream.asyncIterableIterator, {});
-      } catch (err) {
-        this.#logger.errorFrom(err, "Report stream closed with error");
-      }
-
-      if (this.#reportTimer) {
-        clearInterval(this.#reportTimer);
-        this.#reportTimer = undefined;
-      }
-
-      this.#logger.warn("Report stream disconnected, reconnecting in 5 seconds...");
-
-      await new Promise((resolve) => {
-        setTimeout(resolve, 2000);
+    const heartbeat = async () => {
+      return portal.heartbeat(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {})).then(() => {
+        this.#client = client;
+        this.#host = baseUrl;
+        this.#identity = Object.freeze({
+          type: "supervisor",
+          id: supervisorId,
+          privateKey: supervisorPrivateKey,
+        });
       });
-    }
-  }
-
-  async report() {
-    const cpuCount = os.cpus().length;
-    const loadAvg = os.loadavg()[0];
-    const cpuUsage = cpuCount > 0 ? loadAvg / cpuCount : 0;
-
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const memoryUsage = totalMem > 0 ? (totalMem - freeMem) / totalMem : 0;
-
-    let diskUsage = 0;
+    };
 
     try {
-      const stat = fs.statfsSync("/");
-      const totalBlocks = stat.blocks;
-      const freeBlocks = stat.bfree;
-      diskUsage = totalBlocks > 0 ? (totalBlocks - freeBlocks) / totalBlocks : 0;
-    } catch {
-      // TODO: x
+      await heartbeat();
+    } catch (error) {
+      throw new Error("Failed to establish initial connection to supervisor portal.", { cause: error });
     }
 
-    this.#stream?.pushValue({
-      $typeName: "api.v1.SupervisorPortalServiceReportRequest",
-      runningProjects: 0,
-      cpuUsage,
-      memoryUsage,
-      diskUsage,
-    });
-  }
+    void this.#startHeartbeatLoop(heartbeat);
 
-  async fetch() {
-    if (!this.#supervisorPortal) {
-      throw new Error("xxx");
-    }
-
-    return this.#supervisorPortal
-      .fetch(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceFetchRequestSchema, {}))
-      .then((response) => {
-        if (response.task) {
-          return {
-            project: response.task.projectId,
-            token: response.task.token,
-          };
-        }
-      });
+    this.#logger.info("Director initialized and connected to supervisor portal", { baseUrl });
   }
 }

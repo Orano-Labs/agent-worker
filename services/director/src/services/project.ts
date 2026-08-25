@@ -104,6 +104,7 @@ export class ProjectServiceImplementation {
         return this.#repository.transaction(async (tx) => {
           return tx.client.project.create({
             data: {
+              id,
               ownerId: user,
               resourceTier: this.#mapResourceTierToRepository(request.resourceTier),
               metadata: request.metadata === undefined ? null : new Uint8Array(request.metadata),

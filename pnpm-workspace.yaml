@@ -4,8 +4,18 @@ packages:
   - native/*
 
 onlyBuiltDependencies:
-  - esbuild
-  - lefthook
+  - '@bufbuild/buf'
+  - '@google/genai'
+  - '@prisma/engines'
   - better-sqlite3
   - cpu-features
+  - esbuild
+  - lefthook
+  - lmdb
+  - msgpackr-extract
+  - msw
   - node-pty
+  - prisma
+  - protobufjs
+  - sharp
+  - ssh2

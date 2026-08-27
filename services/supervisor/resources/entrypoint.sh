@@ -71,6 +71,10 @@ mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   || fatal "Failed to mou
 mountpoint -q /proc || mount -t proc     proc     /proc  || fatal "Failed to mount /proc"
 mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   || fatal "Failed to mount /sys"
 
+# devpts: required for pseudo-terminal allocation (e.g., ttyd/dtach)
+mkdir -p /dev/pts
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts || fatal "Failed to mount /dev/pts"
+
 info "Mounting core file systems completed successfully."
 
 # Log configuration metadata for troubleshooting/auditing
@@ -132,7 +136,12 @@ set +e
 
 # Run Node.js through 'tini' as a sub-reaper.
 # Tini properly forwards OS signals (like SIGTERM) to Node.js and reaps zombie processes.
-/sbin/tini -gs -- /usr/bin/node /app
+# /sbin/tini -gs -- /usr/bin/node /app
+
+/sbin/tini -gs -- \
+  ttyd -p 8000 --writable \
+  dtach -A /tmp/dtach-pi.sock -E -z -r ctrl_l \
+  pi --continue
 
 # Safely latch the exit code into a global variable readable by the EXIT trap handler
 NODE_EXIT_CODE=$?

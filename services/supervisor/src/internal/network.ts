@@ -122,35 +122,35 @@ export class Network {
       const commands = [
         // 创建硬隔离的网络命名空间，并建立一对连接宿主机与该命名空间的虚拟网线（veth pair）
         // 分配 /30 精简子网 IP 并激活宿主机端网卡，将 MTU 统一设为 1500
-        `sudo ip netns add ${ns.name}`,
-        `sudo ip link add ${ns.veth.host.name} type veth peer name ${ns.veth.guest.name}`,
-        `sudo ip link set ${ns.veth.guest.name} netns ${ns.name}`,
-        `sudo ip addr add ${ns.veth.host.ip}/30 dev ${ns.veth.host.name}`,
-        `sudo ip link set ${ns.veth.host.name} up`,
-        `sudo ip link set ${ns.veth.host.name} mtu 1500`,
+        `ip netns add ${ns.name}`,
+        `ip link add ${ns.veth.host.name} type veth peer name ${ns.veth.guest.name}`,
+        `ip link set ${ns.veth.guest.name} netns ${ns.name}`,
+        `ip addr add ${ns.veth.host.ip}/30 dev ${ns.veth.host.name}`,
+        `ip link set ${ns.veth.host.name} up`,
+        `ip link set ${ns.veth.host.name} mtu 1500`,
 
         // 进入命名空间内部，配置并激活虚拟网线出口端（guest）的 IP 和 MTU
         // 同时激活本地回环接口（lo），保障内部网络栈基础进程的正常运转
-        `sudo ip netns exec ${ns.name} ip link set ${ns.veth.guest.name} mtu 1500`,
-        `sudo ip netns exec ${ns.name} ip addr add ${ns.veth.guest.ip}/30 dev ${ns.veth.guest.name}`,
-        `sudo ip netns exec ${ns.name} ip link set ${ns.veth.guest.name} up`,
-        `sudo ip netns exec ${ns.name} ip link set lo up`,
+        `ip netns exec ${ns.name} ip link set ${ns.veth.guest.name} mtu 1500`,
+        `ip netns exec ${ns.name} ip addr add ${ns.veth.guest.ip}/30 dev ${ns.veth.guest.name}`,
+        `ip netns exec ${ns.name} ip link set ${ns.veth.guest.name} up`,
+        `ip netns exec ${ns.name} ip link set lo up`,
 
         // 创建并激活二层虚拟网卡（TAP 设备）用以桥接虚机，并分配 /24 子网 IP 作为其内网网关
-        `sudo ip netns exec ${ns.name} ip tuntap add ${Network.TAP} mode tap`,
-        `sudo ip netns exec ${ns.name} ip addr add ${Network.TAP_NS_IP}/24 dev ${Network.TAP}`,
-        `sudo ip netns exec ${ns.name} ip link set ${Network.TAP} up`,
+        `ip netns exec ${ns.name} ip tuntap add ${Network.TAP} mode tap`,
+        `ip netns exec ${ns.name} ip addr add ${Network.TAP_NS_IP}/24 dev ${Network.TAP}`,
+        `ip netns exec ${ns.name} ip link set ${Network.TAP} up`,
 
         // 配置全局默认路由，将命名空间内所有去往外网的流量定向到虚拟网线的宿主机端
-        `sudo ip netns exec ${ns.name} ip route add default via ${ns.veth.host.ip}`,
+        `ip netns exec ${ns.name} ip route add default via ${ns.veth.host.ip}`,
 
         // 开启内核 IP 转发使其具备路由能力，并启用严格的反向路径过滤（rp_filter）防范 IP 欺骗
-        `sudo ip netns exec ${ns.name} sysctl -w net.ipv4.ip_forward=1`,
-        // `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.conf.all.rp_filter=1`,
-        // `sudo ip netns exec ${slot.name} sysctl -w net.ipv4.conf.default.rp_filter=1`,
+        `ip netns exec ${ns.name} sysctl -w net.ipv4.ip_forward=1`,
+        // `ip netns exec ${slot.name} sysctl -w net.ipv4.conf.all.rp_filter=1`,
+        // `ip netns exec ${slot.name} sysctl -w net.ipv4.conf.default.rp_filter=1`,
       ];
 
-      const nft = `sudo ip netns exec ${ns.name} nft`;
+      const nft = `ip netns exec ${ns.name} nft`;
       const dnsSet = `{ ${Network.DNS_RESOLVERS.join(", ")} }`;
       const privateCIDRSet = `{ ${Network.PRIVATE_CIDRS.join(", ")} }`;
 
@@ -236,8 +236,8 @@ export class Network {
       this.#logger.errorFrom(e, `Critical failure deploying network slot [${ns.slot}]. Initiating rollback recovery...`);
 
       await Promise.all([
-        this.#exec(`sudo ip link del ${ns.veth.host.name}`).catch(() => {}),
-        this.#exec(`sudo ip netns del ${ns.name}`).catch(() => {}),
+        this.#exec(`ip link del ${ns.veth.host.name}`).catch(() => {}),
+        this.#exec(`ip netns del ${ns.name}`).catch(() => {}),
         this.#kv.db.remove(`network-${ns.name}-locked`).catch(() => {}),
       ]);
 
@@ -248,7 +248,7 @@ export class Network {
   async release(ns: Network.Namespace) {
     this.#logger.info(`Decommissioning network pipeline for slot [${ns.slot}] (${ns.name})...`);
 
-    const commands = [`sudo ip link del ${ns.veth.host.name}`, `sudo ip netns del ${ns.name}`];
+    const commands = [`ip link del ${ns.veth.host.name}`, `ip netns del ${ns.name}`];
 
     for (const cmd of commands) {
       await this.#exec(cmd).catch((err) => {
@@ -307,7 +307,7 @@ export class Network {
     }
 
     const iface = await this.#findDefaultInterface();
-    const exists = await this.#exec(`sudo nft list table ip ${Network.NFT_TABLE_NAT}`)
+    const exists = await this.#exec(`nft list table ip ${Network.NFT_TABLE_NAT}`)
       .then(() => true)
       .catch(() => false);
 
@@ -319,19 +319,19 @@ export class Network {
 
     const commands = [
       // 启用宿主机的内核参数 IP 转发功能
-      `sudo sysctl -w net.ipv4.ip_forward=1`,
+      `sysctl -w net.ipv4.ip_forward=1`,
 
       // 强制删除已存在的 NAT 表及其所有关联规则，确保网络策略从零开始构建
-      `sudo nft delete table ip ${Network.NFT_TABLE_NAT} 2>/dev/null || true`,
+      `nft delete table ip ${Network.NFT_TABLE_NAT} 2>/dev/null || true`,
 
       // 重新创建 IPv4 类型的 nftables NAT 表，用于集中处理虚拟网段的地址转换
-      `sudo nft add table ip ${Network.NFT_TABLE_NAT}`,
+      `nft add table ip ${Network.NFT_TABLE_NAT}`,
 
       // 在 NAT 表中建立 postrouting 链，作为数据包发出前最后一步的挂载点
-      `sudo nft add chain ip ${Network.NFT_TABLE_NAT} postrouting { type nat hook postrouting priority 100 \\; }`,
+      `nft add chain ip ${Network.NFT_TABLE_NAT} postrouting { type nat hook postrouting priority 100 \\; }`,
 
       // 配置网段级 MASQUERADE 规则：凡是源地址属于虚拟子网的包，统一伪装为物理网卡 IP 外发
-      `sudo nft add rule ip ${Network.NFT_TABLE_NAT} postrouting ip saddr ${Network.NS_VETH_PREFIX}.0.0/16 oifname ${iface} masquerade`,
+      `nft add rule ip ${Network.NFT_TABLE_NAT} postrouting ip saddr ${Network.NS_VETH_PREFIX}.0.0/16 oifname ${iface} masquerade`,
     ];
 
     for (const cmd of commands) {
@@ -351,7 +351,7 @@ export namespace Network {
 
   export const NS_VETH_PREFIX = `${NS_VETH_OCTET_FIRST}.${NS_VETH_OCTET_SECOND}`;
 
-  export const NS_MIN_SLOT = 0;
+  export const NS_MIN_SLOT = 100;
   export const NS_MAX_SLOT = 16383;
 
   export const TAP = "aw-tap";

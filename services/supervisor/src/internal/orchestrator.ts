@@ -1,6 +1,4 @@
 import { createConnection } from "node:net";
-import { customAlphabet } from "nanoid";
-import { alphanumeric } from "nanoid-dictionary";
 
 import { Container } from "@/helpers/container";
 import { FS } from "@/internal/fs";
@@ -22,8 +20,7 @@ export class Orchestrator {
   }
 
   async run(options: Orchestrator.Options): Promise<Orchestrator.Task> {
-    const id = customAlphabet(alphanumeric, 12)();
-
+    const id = options.instanceId;
     const logger = this.#logger.scope(`TASK(${id})`);
 
     let net: Network.Namespace;
@@ -80,6 +77,12 @@ export class Orchestrator {
         });
       });
 
+      if (net) {
+        await this.#net.release(net).catch((err) => {
+          logger.warn("Failed to release network namespace", { err });
+        });
+      }
+
       if (fs) {
         await fs.release().catch((err) => {
           logger.warn("Failed to release web dav server exposed", { err });
@@ -130,7 +133,7 @@ export class Orchestrator {
     })();
 
     // ready 失败时强制回收子进程及网络资源，避免残留僵尸 VM。
-    void ready.catch((error) => {
+    ready.catch(async (error) => {
       logger.errorFrom(error, "Instance failed to become ready, forcibly reclaiming resources");
 
       if (runner.process.exitCode === null) {

@@ -47,9 +47,28 @@ export class Image {
     let containerTemp = "";
 
     try {
-      this.#logger.info("Installing required packages (buildah, qemu-utils, e2fsprogs)...");
+      this.#logger.info("Verifying required environment tools...");
 
-      await this.#exec("sudo apt install -y buildah qemu-utils e2fsprogs");
+      const missingTools: string[] = [];
+      const requiredTools = [
+        { pkg: "buildah", cmd: "buildah" },
+        { pkg: "qemu-utils", cmd: "qemu-img" },
+        { pkg: "e2fsprogs", cmd: "mke2fs" },
+      ];
+
+      for (const tool of requiredTools) {
+        try {
+          await this.#exec(`command -v ${tool.cmd}`);
+        } catch {
+          missingTools.push(tool.pkg);
+        }
+      }
+
+      if (missingTools.length > 0) {
+        throw new Error(`Missing system dependencies: [${missingTools.join(", ")}]. Please install them manually.`);
+      }
+
+      await this.#exec("apt install -y buildah qemu-utils e2fsprogs");
 
       try {
         await this.#exec(`buildah inspect ${RUNTIME_IMAGE_CONTAINER_NAME}`);
@@ -72,11 +91,12 @@ export class Image {
         this.#logger.info("Installing internal packages...");
 
         const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
-        const DEPS = ["tini", "nodejs", "curl", "fuse", "bubblewrap", "davfs2"];
+        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", /*"bubblewrap", */ "davfs2", "ttyd", /*"socat", */ "dtach"];
 
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk update --repository=${MIRROR_MAIN}`);
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ca-certificates --repository=${MIRROR_MAIN}`);
         await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ${DEPS.join(" ")} --repository=${MIRROR_MAIN}`);
+        await this.#exec(`buildah run --net=host ${containerTemp} -- npm install -g --ignore-scripts @earendil-works/pi-coding-agent`);
 
         this.#logger.info(`Renaming container to ${RUNTIME_IMAGE_CONTAINER_NAME} for future caching...`);
 
@@ -97,9 +117,9 @@ export class Image {
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);
 
-      await this.#exec(
-        `buildah unshare sh -c 'set -e && m=$(buildah mount ${RUNTIME_IMAGE_CONTAINER_NAME}) && mksquashfs "$m" "${this.runtime}" -comp xz -noappend'`,
-      );
+      await this.#exec(`buildah mount ${RUNTIME_IMAGE_CONTAINER_NAME}`).then(({ stdout }) => {
+        return this.#exec(`mksquashfs ${stdout.trim()} ${this.runtime} -comp xz -noappend`);
+      });
     } finally {
       if (containerTemp) {
         this.#logger.debug(`Destroying buildah container [${containerTemp}]...`);

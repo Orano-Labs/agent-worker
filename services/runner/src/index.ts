@@ -100,6 +100,8 @@ const main = async () => {
 
   term.loadAddon(serlizer);
 
+  console.log(`[Runner] Spawning command: ${values.command}${positionals.length ? ` ${positionals.join(" ")}` : ""} (cwd: ${cwd})`);
+
   const pty = spawn(values.command, positionals, {
     name: "xterm-256color",
     cols: DEFAULT_COLS,
@@ -119,6 +121,8 @@ const main = async () => {
   });
 
   pty.onExit(({ exitCode }) => {
+    console.log(`[Runner] Command exited with code ${exitCode ?? 0}. Shutting down...`);
+
     if (timeoutTimer) {
       clearTimeout(timeoutTimer);
     }
@@ -139,6 +143,8 @@ const main = async () => {
     connection?.close();
 
     connection = client;
+
+    console.log("[Runner] WebSocket client connected.");
 
     client.send(serlizer.serialize());
 
@@ -171,6 +177,8 @@ const main = async () => {
       if (connection === client) {
         connection = null;
       }
+
+      console.log("[Runner] WebSocket client disconnected.");
     });
   });
 
@@ -267,6 +275,8 @@ const main = async () => {
       reject(error);
     });
   });
+
+  console.log(`[Runner] Listening on http://localhost:${PORT} (WebSocket upgrade at /ws).`);
 };
 
 main().catch((err) => {

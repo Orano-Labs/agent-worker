@@ -1,5 +1,5 @@
 {
-  "extends": ["@aw/shared-config-typescript/tsconfig.common.json"],
+  "extends": ["@aw/shared-config-typescript/tsconfig.node.json"],
   "include": [
     "src",
     "scripts",

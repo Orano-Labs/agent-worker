@@ -14,4 +14,5 @@ export default defineConfig({
   define: {
     VERSION: JSON.stringify(process.env.npm_package_version),
   },
+  copy: ["src/index.html"]
 });

@@ -58,7 +58,7 @@ async function bootstrap() {
     res.end("OK");
   });
 
-  server.listen(3000, () => {
+  server.listen(8000, () => {
     console.log("HTTP Server running at :3000");
   });
 }

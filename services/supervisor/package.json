@@ -23,8 +23,7 @@
     "generate": "drizzle-kit generate",
     "dev": "tsx src/index.ts --env-file ./.env",
     "start": "node ./dist/index.cjs",
-    "generate:firecracker": "openapi-ts -f ./firecracker.openapi.config.ts",
-    "postinstall": "pnpm generate:firecracker"
+    "generate:firecracker": "openapi-ts -f ./firecracker.openapi.config.ts"
   },
   "files": [
     "dist/**/*"

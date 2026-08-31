@@ -14,7 +14,6 @@ allowBuilds:
   lmdb: true
   msgpackr-extract: true
   msw: true
-  node-pty: true
   prisma: true
   protobufjs: true
   sharp: true

@@ -68,8 +68,6 @@ export class Image {
         throw new Error(`Missing system dependencies: [${missingTools.join(", ")}]. Please install them manually.`);
       }
 
-      await this.#exec("apt install -y buildah qemu-utils e2fsprogs");
-
       try {
         await this.#exec(`buildah inspect ${RUNTIME_IMAGE_CONTAINER_NAME}`);
       } catch {
@@ -106,6 +104,8 @@ export class Image {
       }
 
       this.#logger.info("Injecting DNS configurations and init scripts into container...");
+
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- rm -rf /app`);
 
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`);

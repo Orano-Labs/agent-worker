@@ -14,7 +14,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown && ./scripts/build-fs.sh",
+    "build": "tsdown",
     "build:watch": "tsdown --watch",
     "lint": "biome check --write --changed",
     "format": "biome format --write ./",

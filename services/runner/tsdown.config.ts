@@ -7,12 +7,12 @@ export default defineConfig({
   format: ["cjs"],
   dts: true,
   sourcemap: true,
-  clean: false,
+  clean: true,
   target: false,
   unbundle: true,
   deps: {},
   define: {
     VERSION: JSON.stringify(process.env.npm_package_version),
   },
-  copy: ["src/index.html"]
+  copy: ["src/index.html"],
 });

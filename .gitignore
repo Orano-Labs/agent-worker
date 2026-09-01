@@ -17,3 +17,5 @@ node_modules/
 .vm
 
 TestData
+/.pnpm-store
+*.tgz

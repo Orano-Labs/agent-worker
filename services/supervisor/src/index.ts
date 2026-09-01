@@ -34,6 +34,7 @@ Container.singleton(Tunnel, () => new Tunnel());
   const net = Container.inject(Network);
   const image = Container.inject(Image);
   const fs = Container.inject(FS);
+  const o = Container.inject(Orchestrator);
   const director = Container.inject(Director);
   const controller = Container.inject(Controller);
   const tunnel = Container.inject(Tunnel);
@@ -44,9 +45,42 @@ Container.singleton(Tunnel, () => new Tunnel());
   await net.init();
   await fs.init();
   await image.init();
-  await director.init();
-  await tunnel.init();
-  await controller.init();
+  // await director.init();
+  // await tunnel.init();
+  // await controller.init();
+
+  const task = await o.run({
+    instanceId: Math.random().toString().slice(2),
+    config: {
+      metadata: {},
+      projectId: crypto.randomUUID(),
+      machineTier: "minimal",
+      env: {},
+    },
+  });
+
+  await task.ready.then(() => {
+    console.log(`${task.net.veth.guest.ip}:8000`);
+
+    const ws = new WebSocket(`ws://${task.net.veth.guest.ip}:8000/ws`, ["tty"]);
+
+    ws.binaryType = "arraybuffer";
+
+    ws.addEventListener("error", console.log);
+    ws.addEventListener("message", (data) => {
+      console.log(Buffer.from(data.data).toString("utf-8"));
+    });
+    ws.addEventListener("close", () => {
+      console.log("Closed ....");
+    });
+    ws.addEventListener("open", () => {
+      console.log("Open ....");
+      ws.send("1" + JSON.stringify({ columns: 120, rows: 40 }));
+    });
+  });
+  await task.closed;
+
+  console.log("Hello");
 })().catch((error) => {
   console.log(error);
 });

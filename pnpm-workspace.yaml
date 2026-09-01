@@ -14,15 +14,24 @@ allowBuilds:
   lmdb: true
   msgpackr-extract: true
   msw: true
-  node-pty: true
   prisma: true
   protobufjs: true
   sharp: true
   ssh2: true
 
 onlyBuiltDependencies:
-  - esbuild
-  - lefthook
+  - '@bufbuild/buf'
+  - '@google/genai'
+  - '@prisma/engines'
   - better-sqlite3
   - cpu-features
+  - esbuild
+  - lefthook
+  - lmdb
+  - msgpackr-extract
+  - msw
   - node-pty
+  - prisma
+  - protobufjs
+  - sharp
+  - ssh2

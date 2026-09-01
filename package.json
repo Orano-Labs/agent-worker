@@ -3,8 +3,7 @@
   "name": "aw",
   "version": "0.0.1",
   "keywords": [
-    "ai",
-    "5ire"
+    "ai"
   ],
   "packageManager": "pnpm@11.18.0",
   "devDependencies": {

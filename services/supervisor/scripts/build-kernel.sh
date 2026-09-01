@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+DEFAULT_TARGET="${HOME}/.aw-supervisor/kernel/vmlinux"
+TARGET_PATH="${1:-$DEFAULT_TARGET}"
+
 ARCH=$(uname -m)
 
 if [ "$ARCH" == "x86_64" ]; then
@@ -12,7 +15,7 @@ else
     exit 1
 fi
 
-KERNEL_DIR="linux-amazon"
+KERNEL_DIR="/tmp/linux-amazon"
 
 # Clone Amazon Linux kernel if not present
 if [ ! -d "${KERNEL_DIR}" ]; then
@@ -59,7 +62,7 @@ if [ "$ARCH" == "x86_64" ]; then
   echo "Done! Kernel built at: ${KERNEL_DIR}/vmlinux"
 
   cd ..
-  cp "${KERNEL_DIR}/vmlinux" ~/.aw-supervisor/kernel/vmlinux
+  cp "${KERNEL_DIR}/vmlinux" "$TARGET_PATH"
 
   echo "DONE!"
 elif [ "$ARCH" == "aarch64" ]; then
@@ -69,7 +72,7 @@ elif [ "$ARCH" == "aarch64" ]; then
   echo "Done! Kernel built at: ${KERNEL_DIR}/arch/arm64/boot/Image"
 
   cd ..
-  cp "${KERNEL_DIR}/arch/arm64/boot/Image" ~/.aw-supervisor/kernel/vmlinux
+  cp "${KERNEL_DIR}/arch/arm64/boot/Image" "$TARGET_PATH"
 
   echo "DONE!"
 fi

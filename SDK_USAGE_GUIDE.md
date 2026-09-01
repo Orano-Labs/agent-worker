@@ -1,67 +1,72 @@
 # Director SDK 使用指南
 
-本文档对应 `services/director/src/sdk` 当前实现，以及它导出的 `api.v1` Protobuf 定义。SDK 包名为 `@aw/vm-director`，包含两个独立入口：
+本文档基于当前 `services/director/src/sdk`、Protobuf 协议和 Director 服务端路由编写，适用于使用 `@aw/vm-director` 开发管理后台、用户应用、Supervisor 或项目访问网关。
 
-| 入口 | 导出 | 用途 |
+SDK 有两个入口：
+
+| 导入路径 | 核心导出 | 用途 |
 | --- | --- | --- |
-| `@aw/vm-director/sdk` | `Client`、所有 `*PB` 命名空间 | 带请求签名的 Director Connect RPC 客户端 |
-| `@aw/vm-director/tunnel` | `TunnelClient` | 将 Director 的项目隧道反向转发到本地 HTTP/HTTPS 服务 |
+| `@aw/vm-director/sdk` | `Client`、`ProjectPB`、`UserPB`、`SupervisorPB`、`SupervisorPortalPB`、`TemplatePB`、`SignaturePB` | 自动签名的 Connect RPC 客户端，以及全部 Protobuf schema/枚举 |
+| `@aw/vm-director/tunnel` | `TunnelClient` | Supervisor 反向隧道：接收 Director 转发的 HTTP、SSE、WebSocket 请求，并路由到本地目标服务 |
 
-> 本 SDK 是 TypeScript SDK。RPC 采用 Connect 协议，Director 服务端默认挂载在 `${baseUrl}/grpc`；因此示例中的 `baseUrl` 必须包含 `/grpc`。
-
-## 1. 安装与运行环境
-
-在使用方项目中安装 SDK 及 Node.js Connect transport：
+## 1. 安装与前提
 
 ```bash
 pnpm add @aw/vm-director @connectrpc/connect-node
 ```
 
-`Client` 依赖 Web Crypto 的 Ed25519 实现。Node.js 请使用支持 `globalThis.crypto.subtle` 与 Ed25519 的现代版本（推荐 Node.js 20+）。私钥绝不能进入浏览器或提交到代码仓库；推荐将 SDK 运行在后端、CLI 或 Supervisor 进程中。
+SDK 使用 Web Crypto 的 Ed25519 实现签名。建议在 Node.js 20+ 的后端、CLI 或 Supervisor 进程中使用，**不要将私钥下发到浏览器**。
 
-## 2. 最小可用客户端
+Director 提供两类 HTTP 端点：
 
-`Client` 接收一个 Connect `Transport` 和身份信息。它会为每个 unary 或流式 RPC 自动添加签名请求头，调用方不需要自行构造 `x-request-signature`。
+| 端点 | 用途 | 认证身份 |
+| --- | --- | --- |
+| `${DIRECTOR_URL}/grpc/...` | Connect RPC | 取决于 RPC 服务 |
+| `${DIRECTOR_URL}/link/:projectId/:path*` | 访问运行中项目的 HTTP / SSE / WebSocket | user |
+| `${DIRECTOR_URL}/tunnel`（HTTP Upgrade） | Supervisor 建立反向隧道 | supervisor |
+
+创建 Connect transport 时，`baseUrl` 必须带 `/grpc`；建立隧道时，`TunnelClient.baseUrl` 则必须是 Director 的 HTTP 根地址，SDK 会自行请求 `${baseUrl}/tunnel`。
+
+## 2. 认证与 `Client`
+
+`Client` 接收 Connect `Transport` 与身份，自动为每一个 unary、客户端流、服务端流、双向流请求添加签名头。因此业务代码无需手工拼装 `x-request-signature`。
 
 ```ts
 import { Client, ProjectPB } from "@aw/vm-director/sdk";
 import { createConnectTransport } from "@connectrpc/connect-node";
 
 const transport = createConnectTransport({
-  // Director 的 Connect 路由前缀是 /grpc。
   baseUrl: "https://director.example.com/grpc",
+  // 根据部署选择 http/1.1 或 http/2；Connect transport 的其它选项也可照常传入。
   httpVersion: "2",
 });
 
-const client = new Client(transport, {
+const userClient = new Client(transport, {
   type: "user",
   id: process.env.DIRECTOR_USER_ID!,
-  // 32 字节 Ed25519 seed 的十六进制字符串，不是 PEM，也不是 Base64。
   privateKey: process.env.DIRECTOR_USER_PRIVATE_KEY_HEX!,
 });
 
-const projects = client.createProjectService();
-const response = await projects.list(
+const projects = userClient.createProjectService();
+const page = await projects.list(
   Client.createMessageValid(ProjectPB.ProjectServiceListRequestSchema, {
     page: 1,
     pageSize: 20,
   }),
 );
-
-console.log(response.projects, response.total);
 ```
 
-### 2.1 身份与服务权限
+### 2.1 身份与权限
 
-身份决定签名中携带的主体，也决定服务端允许调用的服务。身份与能力的对应关系如下：
+`Client.Identity` 有三种形式。服务端按服务名做访问控制；能创建 service client 不代表该身份有权限调用它。
 
-| `Client.Identity` | 可调用服务 | 典型用途 |
-| --- | --- | --- |
-| `{ type: "manager", privateKey }` | `UserService`、`SupervisorService` | 管理员创建/管理用户和 Supervisor |
-| `{ type: "user", id, privateKey }` | `ProjectService`、`TemplateService` | 上层应用代表某个用户管理项目与模板 |
-| `{ type: "supervisor", id, privateKey }` | `SupervisorPortalService` | Supervisor 保活、接收分配、确认和释放实例 |
+| 身份 | 类型 | 可调用 RPC 服务 | 可调用 HTTP 端点 |
+| --- | --- | --- | --- |
+| 管理员 | `{ type: "manager", privateKey }` | `UserService`、`SupervisorService` | 无 |
+| 用户 | `{ type: "user", id, privateKey }` | `ProjectService`、`TemplateService` | 仅自己拥有项目的 `/link/:projectId/...` |
+| Supervisor | `{ type: "supervisor", id, privateKey }` | `SupervisorPortalService` | `/tunnel` Upgrade |
 
-错误的身份调用其它服务会收到 `PermissionDenied`。生产环境下，用户/Supervisor 的 `id` 必须是已登记且未删除的 24 字符 ID；manager 公钥由 Director 的 `AW_DIRECTOR_MANAGER_PUBLIC_KEY` 配置决定。
+生产环境中，`id` 必须是服务端已登记、未删除的 24 字符 ID。权限不匹配会收到 `PermissionDenied`；HTTP 项目访问会收到 `403`。
 
 ```ts
 const managerClient = new Client(transport, {
@@ -76,9 +81,15 @@ const supervisorClient = new Client(transport, {
 });
 ```
 
-### 2.2 生产签名与开发签名
+### 2.2 私钥格式与签名机制
 
-默认第三个构造参数为 `false`，即生产签名模式。每次 RPC 都会生成新的 32 字节 nonce 和当前秒级时间戳，签名内容为：
+`privateKey` 是**DER 编码 PKCS#8 Ed25519 私钥的十六进制字符串**。创建 user 或 supervisor 后，服务端会把这个二进制私钥放在 `privateKey: Uint8Array` 中返回；应立即转成 hex 并安全保存：
+
+```ts
+const privateKeyHex = Buffer.from(created.privateKey).toString("hex");
+```
+
+生产模式（默认）中，每次请求都会生成新的 32 字节 nonce 和秒级时间戳，签名字符串为：
 
 ```text
 manager:    hex(nonce):unixSeconds
@@ -86,46 +97,46 @@ user:       hex(nonce):unixSeconds:userId
 supervisor: hex(nonce):unixSeconds:supervisorId
 ```
 
-SDK 用身份私钥对上述字符串作 Ed25519 签名，再把序列化后的 Protobuf 放入 `x-request-signature`。服务端会验证签名、5 分钟时间窗口及 nonce 防重放，故不要缓存或复用请求头。
+SDK 将签名、nonce、时间戳和身份编码为 `SignaturePB.Signature`，以 Base64 写入 `x-request-signature`。服务端会校验 Ed25519 签名、5 分钟时间窗口与 nonce 防重放，所以不要缓存或复用该 header。
 
-本地非生产 Director 可使用开发模式：
+本地非生产环境可启用开发模式：
 
 ```ts
 const localClient = new Client(
   transport,
-  { type: "user", id: "24-character-user-id-here", privateKey: "not-used-by-dev-server" },
+  {
+    type: "user",
+    id: "123456789012345678901234",
+    privateKey: "development-mode-does-not-sign",
+  },
   true,
 );
 ```
 
-该模式发送 `x-request-signature-development`，服务端只读取身份、不校验私钥。**只能用于非生产环境**；生产 Director 不接受这个头。
+开发模式使用 `x-request-signature-development`，服务端只读取编码后的身份而不验签。生产服务不会接受该 header。
 
-### 2.3 请求消息、二进制元数据与调用选项
+### 2.3 创建 Protobuf 请求与调用选项
 
-RPC 的请求类型是 Buf Protobuf message。最稳妥的创建方式是 `Client.createMessageValid(schema, value)`；它负责补全 SDK 类型所需的 Protobuf message 标识。
+服务方法需要 Buf Protobuf message。用 `Client.createMessageValid(schema, value)` 创建可获得完整的类型推导，字段名使用 TypeScript camelCase：`page_size` 写为 `pageSize`。
 
 ```ts
 const encodeMetadata = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const decodeMetadata = (value?: Uint8Array) =>
-  value ? JSON.parse(new TextDecoder().decode(value)) : undefined;
+  value === undefined ? undefined : JSON.parse(new TextDecoder().decode(value));
 
-const timeout = AbortSignal.timeout(10_000);
-
-const result = await projects.create(
+const created = await projects.create(
   Client.createMessageValid(ProjectPB.ProjectServiceCreateRequestSchema, {
     name: "my-app",
-    metadata: encodeMetadata({ displayName: "我的应用", region: "cn" }),
+    metadata: encodeMetadata({ title: "我的应用", region: "cn" }),
     resourceTier: ProjectPB.ProjectResourceTier.STANDARD,
   }),
-  { signal: timeout },
+  { signal: AbortSignal.timeout(10_000) },
 );
-
-console.log(decodeMetadata(result.project.metadata));
 ```
 
-`metadata` 是最多 2048 字节的任意 `Uint8Array`，并非 SDK 自动 JSON 字段；上例仅是一种 JSON 编码约定。可选 wrapper 字段在 TypeScript 中以 `undefined` 表示未设置，例如 `templateId?: string`、`disabled?: boolean`。所有列表调用使用从 1 开始的 `page` 和 `pageSize`，且 `pageSize` 范围为 `1..100`。
+`metadata` 是最多 2048 字节的任意 `Uint8Array`，不是自动 JSON 字段；上面的 JSON 编码仅为推荐约定。Proto wrapper 可选字段用 `undefined` 表示未设置，例如 `templateId?: string`、`disabled?: boolean`。列表参数统一为从 1 开始的 `page`，`pageSize` 范围为 `1..100`。
 
-传给每个方法的第二个参数是 Connect `CallOptions`，可用于 `signal`（取消或超时）、`headers`、`timeoutMs` 等。SDK 会保留调用方的 header，并覆盖/写入自己的签名 header。
+每个方法的第二个参数是 Connect `CallOptions`，可传 `signal`、`timeoutMs`、`headers` 等：
 
 ```ts
 await projects.get(
@@ -134,13 +145,9 @@ await projects.get(
 );
 ```
 
-## 3. RPC API 完整参考
-
-以下所有示例均假定已按第 2 节创建了对应身份的 `Client`，并使用 `Client.createMessageValid()` 创建请求。请求字段采用 TypeScript camelCase；例如 proto 的 `page_size` 对应 `pageSize`。
+## 3. RPC 能力完整参考
 
 ### 3.1 管理员：用户管理（`UserService`）
-
-取得服务：
 
 ```ts
 import { Client, UserPB } from "@aw/vm-director/sdk";
@@ -148,25 +155,26 @@ import { Client, UserPB } from "@aw/vm-director/sdk";
 const users = managerClient.createUserService();
 ```
 
-| 方法 | 请求 | 返回/作用 |
+| 方法 | 请求字段 | 返回/作用 |
 | --- | --- | --- |
-| `create` | `disabled?`, `metadata?` | 创建用户并**仅在此时**返回 `user` 与 `privateKey` |
-| `get` | `id` | 返回用户详情 |
+| `create` | `disabled?`, `metadata?` | 创建用户；返回 `user` 与仅返回一次的 `privateKey` |
+| `get` | `id` | 查询用户 |
 | `list` | `page`, `pageSize`, `disabled?` | 返回 `{ users, total }` |
-| `updateMetadata` | `id`, `metadata?` | 更新元数据并返回用户 |
-| `enable` / `disable` | `id` | 切换用户登录状态并返回用户 |
+| `updateMetadata` | `id`, `metadata?` | 更新元数据，返回用户 |
+| `enable` / `disable` | `id` | 切换用户状态，返回用户 |
 | `delete` | `id` | 软删除用户 |
 
 ```ts
-// 创建后立刻持久化 ID 和私钥；私钥不会在后续 get/list 中再次出现。
 const created = await users.create(
   Client.createMessageValid(UserPB.UserServiceCreateRequestSchema, {
     disabled: false,
     metadata: encodeMetadata({ email: "dev@example.com", name: "Dev" }),
   }),
 );
+
 const userId = created.user.id;
-const privateKeyHex = Buffer.from(created.privateKey).toString("hex");
+const userPrivateKeyHex = Buffer.from(created.privateKey).toString("hex");
+// 立即把 userId 和 userPrivateKeyHex 放入密钥管理服务；之后 get/list 不会返回私钥。
 
 await users.updateMetadata(
   Client.createMessageValid(UserPB.UserServiceUpdateMetadataRequestSchema, {
@@ -174,27 +182,21 @@ await users.updateMetadata(
     metadata: encodeMetadata({ email: "dev@example.com", plan: "pro" }),
   }),
 );
-
 await users.disable(Client.createMessageValid(UserPB.UserServiceDisableRequestSchema, { id: userId }));
 await users.enable(Client.createMessageValid(UserPB.UserServiceEnableRequestSchema, { id: userId }));
 
-const page = await users.list(
-  Client.createMessageValid(UserPB.UserServiceListRequestSchema, {
-    page: 1,
-    pageSize: 50,
-    disabled: false,
-  }),
+const { users: items, total } = await users.list(
+  Client.createMessageValid(UserPB.UserServiceListRequestSchema, { page: 1, pageSize: 50 }),
 );
-
-const detail = await users.get(Client.createMessageValid(UserPB.UserServiceGetRequestSchema, { id: userId }));
+const { user } = await users.get(Client.createMessageValid(UserPB.UserServiceGetRequestSchema, { id: userId }));
 await users.delete(Client.createMessageValid(UserPB.UserServiceDeleteRequestSchema, { id: userId }));
 ```
 
-`User` 含 `id`、`publicKey`、`metadata?`、`disabled`、`createTime` 和 `updateTime`。用户 ID 是 24 字符；`privateKey` 与 `publicKey` 都是字节数组，创建用户得到的 `privateKey` 要转换为 hex 后作为 user SDK 的 `privateKey`。
+`User` 含 `id`、`publicKey`、`metadata?`、`disabled`、`createTime` 和 `updateTime`。
 
 ### 3.2 管理员：Supervisor 管理（`SupervisorService`）
 
-取得服务：
+Supervisor 是承载项目实例和隧道连接的节点。创建时必须声明可分配容量 `capacity`（大于等于 1）；该容量会由 Director 的调度器消耗和释放。
 
 ```ts
 import { Client, SupervisorPB } from "@aw/vm-director/sdk";
@@ -202,17 +204,18 @@ import { Client, SupervisorPB } from "@aw/vm-director/sdk";
 const supervisors = managerClient.createSupervisorService();
 ```
 
-| 方法 | 请求 | 返回/作用 |
+| 方法 | 请求字段 | 返回/作用 |
 | --- | --- | --- |
-| `create` | `metadata?` | 注册 Supervisor，返回 `supervisor` 与只返回一次的 `privateKey` |
-| `get` | `id` | 返回详情（含实时 `online`） |
+| `create` | `capacity`, `metadata?` | 注册节点；返回 `supervisor` 与仅返回一次的 `privateKey` |
+| `get` | `id` | 查询节点，含实时 `online` 和总 `capacity` |
 | `list` | `page`, `pageSize`, `disabled?` | 返回 `{ supervisors, total }` |
 | `updateMetadata` | `id`, `metadata?` | 更新元数据 |
-| `delete` | `id` | 删除离线 Supervisor；在线时返回 `FailedPrecondition` |
+| `delete` | `id` | 仅可删除离线节点；在线时为 `FailedPrecondition` |
 
 ```ts
 const created = await supervisors.create(
   Client.createMessageValid(SupervisorPB.SupervisorServiceCreateRequestSchema, {
+    capacity: 8,
     metadata: encodeMetadata({ zone: "cn-shanghai-1", hostname: "sup-01" }),
   }),
 );
@@ -223,41 +226,41 @@ const supervisorPrivateKeyHex = Buffer.from(created.privateKey).toString("hex");
 await supervisors.updateMetadata(
   Client.createMessageValid(SupervisorPB.SupervisorServiceUpdateMetadataRequestSchema, {
     id: supervisorId,
-    metadata: encodeMetadata({ zone: "cn-shanghai-1", capacity: 8 }),
+    metadata: encodeMetadata({ zone: "cn-shanghai-1", labels: ["linux", "x64"] }),
   }),
 );
 
-const { supervisors: items, total } = await supervisors.list(
+const { supervisors: items } = await supervisors.list(
   Client.createMessageValid(SupervisorPB.SupervisorServiceListRequestSchema, { page: 1, pageSize: 20 }),
 );
-
 const { supervisor } = await supervisors.get(
   Client.createMessageValid(SupervisorPB.SupervisorServiceGetRequestSchema, { id: supervisorId }),
 );
 
-// 仅在 supervisor.online 为 false 后执行。
-await supervisors.delete(Client.createMessageValid(SupervisorPB.SupervisorServiceDeleteRequestSchema, { id: supervisorId }));
+if (!supervisor.online) {
+  await supervisors.delete(Client.createMessageValid(SupervisorPB.SupervisorServiceDeleteRequestSchema, { id: supervisorId }));
+}
 ```
 
-将 `supervisorId` 与 `supervisorPrivateKeyHex` 作为 Supervisor 进程的密钥配置。`online` 由服务端 lease 状态计算，并非可写字段。
+`Supervisor` 返回 `id`、`publicKey`、`metadata?`、`online`、`capacity`、创建和更新时间。它不返回剩余容量；剩余容量由调度器内部维护。
 
 ### 3.3 用户：模板管理（`TemplateService`）
 
-模板是可复制的文件系统目录。`create` 新建目录，`fork` 复制源模板目录；可用模板 ID 在创建项目时通过 `templateId` 初始化项目目录。
+模板对应可复制的项目文件目录：`create` 创建新目录，`fork` 复制已有模板目录；创建项目时可通过 `templateId` 使用它初始化项目目录。
 
 ```ts
 import { Client, TemplatePB } from "@aw/vm-director/sdk";
 
-const templates = client.createTemplateService();
+const templates = userClient.createTemplateService();
 ```
 
-| 方法 | 请求 | 返回/作用 |
+| 方法 | 请求字段 | 返回/作用 |
 | --- | --- | --- |
-| `create` | `metadata?` | 创建 draft 模板与其目录 |
-| `get` | `id` | 返回模板详情 |
+| `create` | `metadata?` | 创建 draft 模板和目录 |
+| `get` | `id` | 查询模板 |
 | `list` | `page`, `pageSize`, `status` | 返回 `{ templates, total }` |
 | `updateMetadata` | `id`, `metadata?` | 更新元数据 |
-| `updateStatus` | `id`, `status` | 设为 `DRAFT`、`PUBLISHED` 或 `ARCHIVED` |
+| `updateStatus` | `id`, `status` | 设置为草稿、已发布或已归档 |
 | `fork` | `from`, `metadata?` | 复制源模板目录，返回新模板 |
 | `delete` | `id` | 软删除模板 |
 
@@ -269,12 +272,6 @@ const first = await templates.create(
 );
 const templateId = first.template.id;
 
-await templates.updateMetadata(
-  Client.createMessageValid(TemplatePB.TemplateServiceUpdateMetadataRequestSchema, {
-    id: templateId,
-    metadata: encodeMetadata({ name: "Node Starter", description: "基础 Node 项目" }),
-  }),
-);
 await templates.updateStatus(
   Client.createMessageValid(TemplatePB.TemplateServiceUpdateStatusRequestSchema, {
     id: templateId,
@@ -296,31 +293,28 @@ const listed = await templates.list(
     status: TemplatePB.TemplateStatus.PUBLISHED,
   }),
 );
-const current = await templates.get(
-  Client.createMessageValid(TemplatePB.TemplateServiceGetRequestSchema, { id: fork.template.id }),
-);
 await templates.delete(Client.createMessageValid(TemplatePB.TemplateServiceDeleteRequestSchema, { id: fork.template.id }));
 ```
 
-`Template` 的状态枚举为 `TemplatePB.TemplateStatus.DRAFT`、`PUBLISHED`、`ARCHIVED`（不要传 `UNSPECIFIED`）。`forkedFrom` 存在时表示源模板 ID。
+状态只能使用 `TemplatePB.TemplateStatus.DRAFT`、`PUBLISHED` 或 `ARCHIVED`，不能使用 `UNSPECIFIED`。`Template.forkedFrom` 存在时表示源模板 ID。
 
 ### 3.4 用户：项目管理（`ProjectService`）
 
-项目只对其 owner 可见和可修改。资源档位必须是非 `UNSPECIFIED` 值。
+项目仅对 owner 可见和可修改。资源档位会影响部署调度所需容量：`MINIMUM` 为 1、`STANDARD` 为 2、`PERFORMANCE` 为 4。
 
 ```ts
 import { Client, ProjectPB } from "@aw/vm-director/sdk";
 
-const projects = client.createProjectService();
+const projects = userClient.createProjectService();
 ```
 
-| 方法 | 请求 | 返回/作用 |
+| 方法 | 请求字段 | 返回/作用 |
 | --- | --- | --- |
-| `create` | `name`, `metadata?`, `resourceTier`, `templateId?` | 创建用户项目；传 `templateId` 时复制模板目录 |
-| `get` | `id` | 返回项目详情 |
-| `list` | `page`, `pageSize` | 返回当前用户的 `{ projects, total }` |
-| `updateMetadata` | `id`, `metadata?` | 更新元数据 |
-| `delete` | `id` | 删除项目；项目存在运行中的实例时返回 `FailedPrecondition` |
+| `create` | `name`, `metadata?`, `resourceTier`, `templateId?` | 创建项目；指定模板时复制其目录 |
+| `get` | `id` | 查询项目 |
+| `list` | `page`, `pageSize` | 返回当前用户 `{ projects, total }` |
+| `updateMetadata` | `id`, `metadata?` | 更新项目元数据 |
+| `delete` | `id` | 软删除项目；存在运行中实例时为 `FailedPrecondition` |
 
 ```ts
 const created = await projects.create(
@@ -328,7 +322,7 @@ const created = await projects.create(
     name: "sales-dashboard",
     metadata: encodeMetadata({ title: "销售看板", repo: "git@example.com:team/sales.git" }),
     resourceTier: ProjectPB.ProjectResourceTier.STANDARD,
-    templateId, // 可选：省略则从空目录创建
+    templateId,
   }),
 );
 const projectId = created.project.id;
@@ -339,23 +333,22 @@ await projects.updateMetadata(
     metadata: encodeMetadata({ title: "销售看板 v2" }),
   }),
 );
-
-const project = await projects.get(
+const { project } = await projects.get(
   Client.createMessageValid(ProjectPB.ProjectServiceGetRequestSchema, { id: projectId }),
 );
 const page = await projects.list(
   Client.createMessageValid(ProjectPB.ProjectServiceListRequestSchema, { page: 1, pageSize: 20 }),
 );
 
-// 在项目实例停止后才可删除。
+// 必须在项目实例已经释放后调用。
 await projects.delete(Client.createMessageValid(ProjectPB.ProjectServiceDeleteRequestSchema, { id: projectId }));
 ```
 
-资源档位：`ProjectPB.ProjectResourceTier.MINIMUM`、`STANDARD`、`PERFORMANCE`。`Project` 返回 `id`、`metadata?`、`createTime`、`updateTime`、`resourceTier` 和可选的 `templateId`。
+资源档位使用 `ProjectPB.ProjectResourceTier.MINIMUM`、`STANDARD`、`PERFORMANCE`；不要传 `UNSPECIFIED`。
 
 ### 3.5 Supervisor：实例分配门户（`SupervisorPortalService`）
 
-Supervisor 以自己的身份调用此服务。`watch()` 是 SDK 中唯一的服务端流式 RPC，返回 `AsyncIterable`。同一 Supervisor 同时只能有一个活跃 watch；连接建立后先收到当前负载快照，之后收到更新或 keepalive。
+此服务仅能由 Supervisor 调用。`watch()` 是服务端流，返回 `AsyncIterable`；每个 Supervisor 同时只能存在一个活跃 watch。连接成功后服务端发送当前完整负载，之后发送负载变化或 keepalive。
 
 ```ts
 import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
@@ -363,83 +356,108 @@ import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 const portal = supervisorClient.createSupervisorPortalService();
 ```
 
-| 方法 | 请求 | 返回/作用 |
+| 方法 | 请求字段 | 返回/作用 |
 | --- | --- | --- |
-| `watch` | 空消息 | 服务端流：`keepalive` 或 `load` 事件 |
-| `acknowledge` | `instanceId`, `status` | 接受或拒绝一次实例分配 |
-| `release` | `instanceId` | 通知服务端实例已释放 |
-| `heartbeat` | 空消息 | 刷新 Supervisor lease，维持 online 状态 |
+| `watch` | 空消息 | 服务端流，事件为 `keepalive` 或 `load` |
+| `acknowledge` | `instanceId`, `status` | 接受或拒绝实例分配 |
+| `release` | `instanceId` | 通知实例已停止，释放调度容量 |
+| `heartbeat` | 空消息 | 刷新 Supervisor lease，维持 `online` |
 
 ```ts
-const streamAbort = new AbortController();
+const watchAbort = new AbortController();
 
 async function runWatch() {
-  try {
-    const events = portal.watch(
-      Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {}),
-      { signal: streamAbort.signal },
-    );
+  const stream = portal.watch(
+    Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {}),
+    { signal: watchAbort.signal },
+  );
 
-    for await (const event of events) {
-      switch (event.event.case) {
-        case "keepalive":
-          // 无业务负载时约每 15 秒到达一次。
-          break;
-        case "load":
-          for (const load of event.event.value.list) {
-            try {
-              // 根据 load.projectId、load.projectResourceTier 启动/保持实例。
-              await startInstance(load.instanceId, load.projectId, load.projectResourceTier);
+  for await (const event of stream) {
+    if (event.event.case === "keepalive") continue;
+    if (event.event.case !== "load") continue;
 
-              await portal.acknowledge(
-                Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
-                  instanceId: load.instanceId,
-                  status: SupervisorPortalPB.AcknowledgeStatus.OK,
-                }),
-              );
-            } catch (error) {
-              await portal.acknowledge(
-                Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
-                  instanceId: load.instanceId,
-                  status: SupervisorPortalPB.AcknowledgeStatus.REJECT,
-                }),
-              );
-              console.error("启动实例失败", load.instanceId, error);
-            }
-          }
-          break;
+    // list 是此 Supervisor 的完整当前负载快照，而不是增量。
+    for (const load of event.event.value.list) {
+      try {
+        await ensureInstanceRunning(load.instanceId, load.projectId, load.projectResourceTier);
+        await portal.acknowledge(
+          Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
+            instanceId: load.instanceId,
+            status: SupervisorPortalPB.AcknowledgeStatus.OK,
+          }),
+        );
+      } catch (error) {
+        await portal.acknowledge(
+          Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
+            instanceId: load.instanceId,
+            status: SupervisorPortalPB.AcknowledgeStatus.REJECT,
+          }),
+        );
+        console.error("无法启动实例", load.instanceId, error);
       }
     }
-  } catch (error) {
-    if (!streamAbort.signal.aborted) throw error;
   }
 }
 
-const heartbeatTimer = setInterval(() => {
-  void portal.heartbeat(
-    Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {}),
-  );
+const heartbeat = setInterval(() => {
+  void portal.heartbeat(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {}));
 }, 10_000);
 
 void runWatch();
 
-// 当本地实例退出后：
+// 本地实例停止时：
 await portal.release(
   Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceReleaseRequestSchema, {
-    instanceId: "24-character-instance-id",
+    instanceId: "123456789012345678901234",
   }),
 );
 
-// 正常关闭：
-clearInterval(heartbeatTimer);
-streamAbort.abort();
+clearInterval(heartbeat);
+watchAbort.abort();
 ```
 
-`load` 事件的 `list` 是该 Supervisor 的**完整当前负载列表**，而不是仅增量变更；上层应用应据此做状态收敛。每个 `Load` 含 `instanceId`、`projectId`、`projectResourceTier`、`confirmed` 与 `timestamp`。`AcknowledgeStatus` 只能用 `OK` 或 `REJECT`，不能用 `UNSPECIFIED`。
+`Load` 含 `instanceId`、`projectId`、`projectResourceTier`、`confirmed` 和 `timestamp`。确认状态只能是 `AcknowledgeStatus.OK` 或 `REJECT`，不能是 `UNSPECIFIED`。网络中断后，应用应自行带退避重连 `watch()`。
 
-## 4. 反向隧道（`TunnelClient`）
+## 4. 已认证访问项目 HTTP、SSE 与 WebSocket
 
-`TunnelClient` 为一个本地目标服务维护多条升级后的 TCP 连接。Director 从连接池取连接并将外部 HTTP/SSE/WebSocket 请求转发到本地目标；客户端会把每个 HTTP 请求的 `Host` 头重写为 `target.hostname`，支持 keep-alive 的连续请求和 WebSocket upgrade。
+用户可访问 `/link/:projectId/...`，Director 会校验该用户是否为项目 owner、为项目分配实例、去除签名 header，并加入可信的 `x-instance-id` header 后通过隧道转发。
+
+`Client` 的公开 getter 名称当前为 `singer`（源码拼写如此）。它返回请求签名器，可为普通 HTTP/WS 握手写入签名 header：
+
+```ts
+async function signedHeaders(client: Client, init?: HeadersInit) {
+  return await client.singer.apply(new Headers(init));
+}
+
+const response = await fetch(
+  `https://director.example.com/link/${projectId}/api/health`,
+  {
+    headers: await signedHeaders(userClient, { accept: "application/json" }),
+    signal: AbortSignal.timeout(15_000),
+  },
+);
+
+if (!response.ok) throw new Error(`Project request failed: ${response.status}`);
+console.log(await response.json());
+```
+
+浏览器原生 `WebSocket` 不能设置自定义请求头，因此不能直接使用它发起需要签名的连接。请在 Node.js 后端使用支持 handshake header 的 WebSocket 客户端，或经由自己的后端代理：
+
+```ts
+import WebSocket from "ws";
+
+const ws = new WebSocket(`wss://director.example.com/link/${projectId}/socket`, {
+  headers: Object.fromEntries((await signedHeaders(userClient)).entries()),
+});
+
+ws.on("message", (data) => console.log(data.toString()));
+```
+
+每个 HTTP 请求或 WebSocket 握手必须重新调用 `apply()`，以获得新的 nonce 和时间戳。被转发给项目应用的身份认证头已被 Director 移除；项目应用不应尝试验证 `x-request-signature`，而应把 `x-instance-id` 仅作为 Director 注入的路由上下文。
+
+## 5. Supervisor 反向隧道（`TunnelClient`）
+
+`TunnelClient` 取代了旧版本的固定 `project`、`token`、`target` 隧道配置。现在它以 Supervisor 身份连接 `${baseUrl}/tunnel`，并对**每个转发请求**调用 `targetResolver(headers)` 决定目标 URL。因此单个 Supervisor 可按 `x-instance-id` 将不同项目实例路由至不同本地服务。
 
 ```ts
 import { TunnelClient } from "@aw/vm-director/tunnel";
@@ -447,14 +465,23 @@ import { TunnelClient } from "@aw/vm-director/tunnel";
 const controller = new AbortController();
 
 const tunnel = new TunnelClient({
-  // HTTP 隧道服务基地址；与 gRPC baseUrl 不同，不要附加 /grpc。
+  // Director HTTP 根地址，不能带 /grpc 或 /tunnel。
   baseUrl: "https://director.example.com",
-  project: process.env.PROJECT_ID!,
-  token: process.env.PROJECT_TUNNEL_TOKEN!,
-  // 本地实际运行的应用。http 使用 TCP，https 使用 TLS。
-  target: new URL("http://127.0.0.1:3000"),
-  // 保持多个空闲连接，提高并发能力。
-  maxSockets: 5,
+  identity: {
+    type: "supervisor",
+    id: process.env.DIRECTOR_SUPERVISOR_ID!,
+    privateKey: process.env.DIRECTOR_SUPERVISOR_PRIVATE_KEY_HEX!,
+  },
+  // 每条连接对应一个可并行处理的隧道槽位。
+  maxConnections: 10,
+  // 接收包含 Director 注入的 x-instance-id 在内的完整请求头。
+  targetResolver: async (headers) => {
+    const instanceId = headers.get("x-instance-id");
+    if (!instanceId) throw new Error("Director did not provide x-instance-id");
+
+    const instance = await localRuntime.waitUntilReady(instanceId);
+    return new URL(`http://${instance.ip}:8000`);
+  },
   logger: {
     debug: (message, context) => console.debug(message, context),
     info: (message, context) => console.info(message, context),
@@ -464,18 +491,28 @@ const tunnel = new TunnelClient({
 });
 
 tunnel.start(controller.signal);
-
-process.once("SIGTERM", () => controller.abort());
 process.once("SIGINT", () => controller.abort());
+process.once("SIGTERM", () => controller.abort());
 ```
 
-`start(signal)` 是同步启动方法，不返回“已连接” Promise；连接建立在后台进行。它只能对同一个实例调用一次，否则抛出 `TunnelClient is already started`。当连接失败或断开时，每条 socket 会在约 1 秒后自动重连；调用 `controller.abort()` 会关闭连接池且停止重连。需要重启时，创建新的 `TunnelClient` 实例。
+`targetResolver` 支持同步或异步返回 `URL`，可按任意请求头路由。SDK 使用 `http-proxy-middleware` 代理 HTTP、带流的 SSE 和 WebSocket，且会以目标 URL 的 origin 重写 `Host`（`changeOrigin: true`）。来自 Director 的其它请求头会转发给目标服务。
 
-注意：当 `target` 使用 `https:` 时，当前实现会关闭目标 TLS 证书校验（`rejectUnauthorized: false`）。将 target 指向本机或受控网络服务；不要把它视为对任意公网 HTTPS 上游的证书安全校验。
+| `TunnelClient.Options` | 含义 |
+| --- | --- |
+| `baseUrl: string` | Director HTTP 根 URL |
+| `identity` | 必须为可通过认证的 supervisor 身份；manager/user 会被 `/tunnel` 拒绝 |
+| `dev?: boolean` | 使用开发签名 header，仅限非生产 Director |
+| `targetResolver(headers)` | 每个被代理的请求/升级连接选取目标 URL |
+| `maxConnections: number` | 要长期维持的并行隧道连接数 |
+| `logger` | 必须实现 `debug/info/warn/error(message, context)` |
 
-## 5. 错误处理与工程建议
+`start(signal)` 立即在后台启动连接，不返回“连接成功”的 Promise；同一实例只能调用一次。升级失败、连接关闭或代理连接出错时，SDK 会记录 warning 并在约 2 秒后重连。`AbortController.abort()` 会关闭连接并停止重试；如需重新启动，请创建新的 `TunnelClient`。
 
-Connect RPC 错误通常以 `ConnectError` 抛出，可通过 `code` 判断：
+目标解析或代理失败时，该请求/升级会收到 `502`，而不是终止整个连接池。为避免影响其它实例，`targetResolver` 应快速失败或带上合理超时。
+
+## 6. 错误处理与实施建议
+
+Connect RPC 错误以 `ConnectError` 抛出；HTTP 项目访问则使用标准 HTTP 状态码。
 
 ```ts
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -484,32 +521,35 @@ try {
   await projects.get(Client.createMessageValid(ProjectPB.ProjectServiceGetRequestSchema, { id: projectId }));
 } catch (error) {
   if (error instanceof ConnectError) {
-    if (error.code === Code.Unauthenticated) {
-      // 检查 ID、私钥 hex 格式、Director 时钟及签名环境。
-    } else if (error.code === Code.PermissionDenied) {
-      // 当前 identity 无权调用此服务。
-    } else if (error.code === Code.NotFound) {
-      // ID 不存在、已删除，或项目不属于当前用户。
-    } else if (error.code === Code.FailedPrecondition) {
-      // 例如删除运行中项目，或删除在线 Supervisor。
+    switch (error.code) {
+      case Code.Unauthenticated:
+        // 检查私钥是否为完整 PKCS#8 DER 的 hex、时钟和环境模式。
+        break;
+      case Code.PermissionDenied:
+        // 当前 identity 无权调用该服务。
+        break;
+      case Code.NotFound:
+        // ID 不存在、已删除，或项目并非当前用户所有。
+        break;
+      case Code.FailedPrecondition:
+        // 例如删除运行中的项目，或删除在线 Supervisor。
+        break;
     }
   }
   throw error;
 }
 ```
 
-- 保存 `createUserService().create()` 和 `createSupervisorService().create()` 返回的私钥时，使用密钥管理服务或至少限制文件权限；服务端不会再次返回它们。
-- 生产调用确保客户端和 Director 时钟同步。服务端只接受时间差不超过 5 分钟的签名。
-- 以 `AbortController` 管理页面卸载、进程退出和流重连。对于 `watch()`，网络中断后应在应用层做退避重连。
-- 不要把 `UNSPECIFIED` 用作资源档位、模板状态或确认状态；这些请求会被服务端的 proto 校验拒绝。
-- 对可能重试的变更操作，先评估业务幂等性。SDK 自动重试的是 Tunnel 的连接，不会自动重试 RPC。
+- 创建 user/supervisor 后立刻将私钥存入密钥管理服务；服务端之后不会再返回私钥。
+- 保持客户端和 Director 时钟同步。生产签名的有效时间窗为 5 分钟。
+- 用 `AbortController` 统一管理 RPC 超时、watch 生命周期和 tunnel 退出。
+- 不要传 `UNSPECIFIED` 枚举值；资源档位、模板状态、确认状态均会被协议校验拒绝。
+- RPC 不会由 SDK 自动重试。对于创建、删除、确认等变更操作，请由上层按业务幂等性实现重试。
 
-## 6. 当前版本边界与已知行为
+## 7. 当前版本边界
 
-本节用于避免上层应用依赖“声明了但尚未由 SDK/服务端提供”的能力。
-
-1. `project.proto` 中虽然定义了 `ProjectServiceLaunchRequest/Response`，但 `ProjectService` 描述、SDK 创建的客户端和服务端路由均未暴露 `launch()`；当前不可调用。
-2. `UserService.list` 的 `disabled`、`SupervisorService.list` 的 `disabled` 以及 `TemplateService.list` 的 `status` 字段已出现在请求类型中，但当前服务端实现尚未据此过滤结果。调用可正常成功，但上层应自行过滤，直到服务端补齐筛选逻辑。
-3. 项目 `create` 请求中的 `name` 会参与协议校验，但当前服务端创建项目时不持久化或返回这个名称。需要展示名称时，请在 `metadata` 中保存自己的字段。
-4. SDK 的公共 RPC 能力以五个 `Client#create*Service()` 返回的实际方法为准：User（7）、Supervisor（5）、Template（7）、Project（5）、Supervisor Portal（4）。没有额外的动态/隐式 RPC 方法。
+1. `ProjectServiceLaunchRequest/Response` 虽然存在于 proto 文件中，但 `ProjectService` descriptor、SDK client 和服务端路由均没有 `launch()`，因此当前不可调用。
+2. `UserService.list.disabled`、`SupervisorService.list.disabled`、`TemplateService.list.status` 已出现在请求定义中，但当前服务端 list 实现尚未使用这些字段过滤数据。调用可以成功，筛选请暂时在上层完成。
+3. `ProjectService.create.name` 会通过协议校验，但当前项目实体不会持久化或返回该字段。需要展示名称时，请将名称同时存入 `metadata`。
+4. `Client.singer` 是当前 SDK 的真实公开属性名（拼写为 `singer`，而非 `signer`）；它用于给普通 HTTP/WS 请求签名。
 

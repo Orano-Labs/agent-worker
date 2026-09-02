@@ -92,50 +92,45 @@ export class Orchestrator {
       return status;
     })();
 
-    const ready = Promise.race([
-      (async () => {
-        let attempt = 0;
+    const ready = (async () => {
+      let attempt = 0;
 
-        while (attempt <= 3) {
-          try {
-            attempt += 1;
+      while (attempt <= 3) {
+        try {
+          attempt += 1;
 
-            await new Promise<void>((resolve, reject) => {
-              const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
+          await new Promise<void>((resolve, reject) => {
+            const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
 
-              conn.on("connect", () => {
-                conn.destroy();
-                resolve();
-              });
-
-              conn.on("error", (error) => {
-                conn.destroy();
-                reject(error);
-              });
+            conn.on("connect", () => {
+              conn.destroy();
+              resolve();
             });
 
-            return;
-          } catch (error) {
-            logger.warn("Instance port 8000 is not ready yet, retrying...", {
-              attempt,
-              host: net.veth.guest.ip,
-              error,
+            conn.on("error", (error) => {
+              conn.destroy();
+              reject(error);
             });
+          });
 
-            if (attempt <= 3) {
-              await new Promise<void>((resolve) => {
-                setTimeout(resolve, 3000);
-              });
-            }
+          return;
+        } catch (error) {
+          logger.warn("Instance port 8000 is not ready yet, retrying...", {
+            attempt,
+            host: net.veth.guest.ip,
+            error,
+          });
+
+          if (attempt <= 3) {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, 3000);
+            });
           }
         }
+      }
 
-        throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
-      })(),
-      closed.then(() => {
-        throw new Error("xxx")
-      })
-    ])
+      throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
+    })();
 
     // ready 失败时强制回收子进程及网络资源，避免残留僵尸 VM。
     ready.catch(async (error) => {

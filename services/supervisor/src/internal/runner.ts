@@ -186,7 +186,7 @@ export class Runner {
           vcpu_count: cpuCapacity > 1 ? Math.ceil(cpuCapacity / 2) * 2 : 1,
           track_dirty_pages: false,
           smt: false,
-          // huge_pages: "2M",
+          huge_pages: "2M",
         }),
         fc.putGuestBootSource({
           kernel_image_path: "./kernel",

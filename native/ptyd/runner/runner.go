@@ -8,7 +8,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"agent-worker/ttyd/internal/terminal"
+	"agent-worker/ptyd/internal/terminal"
 )
 
 // defaultPort is the HTTP port used when none is provided on the CLI.

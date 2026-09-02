@@ -15,7 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"agent-worker/ttyd/internal/terminal"
+	"agent-worker/ptyd/internal/terminal"
 )
 
 var upgrader = websocket.Upgrader{

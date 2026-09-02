@@ -5,7 +5,7 @@ import (
 	"io/fs"
 	"os"
 
-	"agent-worker/ttyd/runner"
+	"agent-worker/ptyd/runner"
 )
 
 //go:embed static

@@ -1,4 +1,4 @@
-module agent-worker/ttyd
+module agent-worker/ptyd
 
 go 1.27.0
 

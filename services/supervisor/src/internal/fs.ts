@@ -30,6 +30,16 @@ export class FS {
     return join(this.#env.workdir, "webdav.socket");
   }
 
+  async #fetch(path: string, init: RequestInit) {
+    return fetch(new URL(path, "http://localhost"), {
+      ...init,
+      // @ts-expect-error
+      dispatcher: new Agent({
+        socketPath: this.#socket,
+      }),
+    });
+  }
+
   async create(options: FS.Options) {
     const workspace = join("projects", options.config.projectId);
 
@@ -39,24 +49,11 @@ export class FS {
     formData.append("dir", workspace);
 
     await mkdir(join(this.root, workspace), { recursive: true });
-    await fetch(`http://localhost/expose/${options.id}`, {
-      method: "POST",
-      body: formData,
-      // @ts-expect-error
-      dispatcher: new Agent({
-        socketPath: this.#socket,
-      }),
-    });
+    await this.#fetch(`/expose/${options.id}`, { method: "POST", body: formData });
 
     return {
       release: async () => {
-        await fetch(`http://localhost/expose/${options.id}`, {
-          method: "DELETE",
-          // @ts-expect-error
-          dispatcher: new Agent({
-            socketPath: this.#socket,
-          }),
-        });
+        await this.#fetch(`/expose/${options.id}`, { method: "DELETE" });
       },
     };
   }

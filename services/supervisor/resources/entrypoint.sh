@@ -136,12 +136,10 @@ set +e
 
 # Run Node.js through 'tini' as a sub-reaper.
 # Tini properly forwards OS signals (like SIGTERM) to Node.js and reaps zombie processes.
-/sbin/tini -gs -- /usr/bin/node /app -c pi -- --continue
+# /sbin/tini -gs -- /usr/bin/node /app -c pi -- --continue
 
-# /sbin/tini -gs -- \
-#   ttyd -p 8000 --writable \
-#   dtach -A /tmp/dtach-pi.sock -E -z -r ctrl_l \
-#   pi --continue
+/sbin/tini -gs -- \
+  /bin/ptyd --port 8000
 
 # Safely latch the exit code into a global variable readable by the EXIT trap handler
 NODE_EXIT_CODE=$?

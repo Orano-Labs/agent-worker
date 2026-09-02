@@ -51,13 +51,6 @@ export class Environment {
     return join(this.workdir, `bin/jailer-${v}-${a}`);
   }
 
-  get juicefs() {
-    const v = Environment.FIRECRACKER_VERSION;
-    const a = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : "";
-
-    return join(this.workdir, `bin/juicefs-${v}-${a}`);
-  }
-
   get kernel() {
     return join(this.workdir, "kernel/vmlinux");
   }
@@ -141,10 +134,6 @@ export class Environment {
       {
         path: join(this.workdir, "images"),
         description: "images",
-      },
-      {
-        path: join(this.workdir, "fs"),
-        description: "juice-fs mount point",
       },
     ];
 

@@ -43,7 +43,7 @@ Container.singleton(Tunnel, () => new Tunnel());
   await environment.init();
   await kv.init();
   await net.init();
-  await fs.init();
+  // await fs.init();
   await image.init();
   // await director.init();
   // await tunnel.init();
@@ -61,26 +61,10 @@ Container.singleton(Tunnel, () => new Tunnel());
 
   await task.ready.then(() => {
     console.log(`${task.net.veth.guest.ip}:8000`);
-
-    const ws = new WebSocket(`ws://${task.net.veth.guest.ip}:8000/ws`, ["tty"]);
-
-    ws.binaryType = "arraybuffer";
-
-    ws.addEventListener("error", console.log);
-    ws.addEventListener("message", (data) => {
-      console.log(Buffer.from(data.data).toString("utf-8"));
-    });
-    ws.addEventListener("close", () => {
-      console.log("Closed ....");
-    });
-    ws.addEventListener("open", () => {
-      console.log("Open ....");
-      ws.send("1" + JSON.stringify({ columns: 120, rows: 40 }));
-    });
   });
   await task.closed;
 
-  console.log("Hello");
+  process.exit(0);
 })().catch((error) => {
   console.log(error);
 });

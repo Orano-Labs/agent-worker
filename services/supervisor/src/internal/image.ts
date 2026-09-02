@@ -6,6 +6,7 @@ import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
+import { binaryLinuxARM64, binaryLinuxX64 } from "@aw/ptyd"
 
 const RUNTIME_IMAGE_CONTAINER_NAME = "aw-runtime-image";
 
@@ -109,10 +110,15 @@ export class Image {
 
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`);
-      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/app")} /app`);
+      // await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/app")} /app`);
+
+      const ptyd = this.#env.arch === "arm64" ? binaryLinuxARM64 : binaryLinuxX64;
+
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${ptyd} /bin/ptyd`);
 
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /init`);
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /entrypoint`);
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /bin/ptyd`);
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- mkdir -p /workspace`);
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);

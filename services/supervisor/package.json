@@ -32,6 +32,7 @@
   "dependencies": {
     "@aw/vm-director": "workspace:*",
     "@aw/webdav": "workspace:*",
+    "@aw/ptyd": "workspace:*",
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-node": "^2.1.1",
     "catch-unknown": "^2.0.0",

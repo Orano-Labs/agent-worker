@@ -73,7 +73,7 @@ func New(static fs.FS, version string) *Runner {
 				IdleTimeout: c.Duration("idle-timeout"),
 				Scrollback:  c.Uint("scrollback"),
 			}
-			addr := fmt.Sprintf("127.0.0.1:%d", c.Int("port"))
+			addr := fmt.Sprintf("0.0.0.0:%d", c.Int("port"))
 			return runServer(ctx, r.static, addr, cfg)
 		},
 	}

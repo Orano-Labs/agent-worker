@@ -20,13 +20,15 @@ type Runner struct {
 	cli    *cli.Command
 }
 
-// New builds a Runner serving the given static files (the frontend).
-func New(static fs.FS) *Runner {
+// New builds a Runner serving the given static files (the frontend) and
+// reporting the provided version.
+func New(static fs.FS, version string) *Runner {
 	r := &Runner{static: static}
 
 	r.cli = &cli.Command{
-		Name:  "ptyd",
-		Usage: "Web terminal backed by a PTY process",
+		Name:    "ptyd",
+		Usage:   "Web terminal backed by a PTY process",
+		Version: version,
 		Flags: []cli.Flag{
 			&cli.IntFlag{
 				Name:  "port",

@@ -1,0 +1,29 @@
+{
+  "name": "@aw/ptyd",
+  "version": "0.0.1",
+  "description": "",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "mkdir -p dist && ./build.sh  && tsdown",
+    "lint": "biome check --write --changed",
+    "format": "biome format --write ./",
+    "typecheck": "tsc",
+    "test": "vitest"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "packageManager": "pnpm@10.14.0",
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -8,7 +8,7 @@ export class VMNet {
   #lock: Lock;
 
   constructor() {
-    this.#logger = Container.inject(Logger).prefix("Network");
+    this.#logger = Container.inject(Logger).prefix("VMNet");
     this.#lock = new Lock();
   }
 
@@ -232,6 +232,20 @@ export class VMNet {
     }
   }
 
+  async #release(ns: VMNet.Namespace) {
+    this.#logger.info(`Decommissioning network pipeline for slot [${ns.slot}] (${ns.name})...`);
+
+    const commands = [`ip link del ${ns.veth.host.name}`, `ip netns del ${ns.name}`];
+
+    for (const cmd of commands) {
+      await this.#exec(cmd).catch((err) => {
+        this.#logger.warn(`Non-fatal warning during command teardown [${cmd}]`, { err });
+      });
+    }
+
+    this.#logger.info(`Slot [${ns.slot}] sandbox environment cleanly deleted.`);
+  }
+
   async #getExistingNamespaces() {
     return this.#exec("ip netns list").then((output) => {
       return output
@@ -242,23 +256,13 @@ export class VMNet {
   }
 
   async release(ns: VMNet.Namespace) {
-    await this.#lock.acquire("", async () => {
-      this.#logger.info(`Decommissioning network pipeline for slot [${ns.slot}] (${ns.name})...`);
-
-      const commands = [`ip link del ${ns.veth.host.name}`, `ip netns del ${ns.name}`];
-
-      for (const cmd of commands) {
-        await this.#exec(cmd).catch((err) => {
-          this.#logger.warn(`Non-fatal warning during command teardown [${cmd}]`, { err });
-        });
-      }
-
-      this.#logger.info(`Slot [${ns.slot}] sandbox environment cleanly deleted.`);
+    await this.#lock.acquire("__global__", async () => {
+      return this.#release(ns);
     });
   }
 
   async random() {
-    return this.#lock.acquire("", async () => {
+    return this.#lock.acquire("__global__", async () => {
       const existing = await this.#getExistingNamespaces();
 
       for (let s = VMNet.NS_MIN_SLOT; s <= VMNet.NS_MAX_SLOT; s++) {
@@ -274,58 +278,60 @@ export class VMNet {
   }
 
   async init() {
-    this.#logger.info("Initializing global host network fabric...");
+    await this.#lock.acquire("__global__", async () => {
+      this.#logger.info("Initializing global host network fabric...");
 
-    let cleanCount = 0;
+      let cleanCount = 0;
 
-    for (const nsName of await this.#getExistingNamespaces()) {
-      const hex = nsName.replace("aw-", "");
-      const slot = parseInt(hex, 16);
+      for (const nsName of await this.#getExistingNamespaces()) {
+        const hex = nsName.replace("aw-", "");
+        const slot = parseInt(hex, 16);
 
-      if (!isNaN(slot) && slot >= VMNet.NS_MIN_SLOT && slot <= VMNet.NS_MAX_SLOT) {
-        const ns = this.namespace(slot);
-        await this.release(ns);
-        cleanCount++;
+        if (!isNaN(slot) && slot >= VMNet.NS_MIN_SLOT && slot <= VMNet.NS_MAX_SLOT) {
+          await this.#release(this.namespace(slot)).then(() => {
+            cleanCount++;
+          });
+        }
       }
-    }
 
-    if (cleanCount > 0) {
-      this.#logger.info(`Purged ${cleanCount} legacy/stale network namespaces during bootstrap initialization.`);
-    }
+      if (cleanCount > 0) {
+        this.#logger.info(`Purged ${cleanCount} legacy/stale network namespaces during bootstrap initialization.`);
+      }
 
-    const iface = await this.#findDefaultInterface();
-    const exists = await this.#exec(`nft list table ip ${VMNet.NFT_TABLE_NAT}`)
-      .then(() => true)
-      .catch(() => false);
+      const iface = await this.#findDefaultInterface();
+      const exists = await this.#exec(`nft list table ip ${VMNet.NFT_TABLE_NAT}`)
+        .then(() => true)
+        .catch(() => false);
 
-    if (exists) {
-      return this.#logger.info(`Root nat table ${VMNet.NFT_TABLE_NAT} already exists, skipping init.`);
-    }
+      if (exists) {
+        return this.#logger.info(`Root nat table ${VMNet.NFT_TABLE_NAT} already exists, skipping init.`);
+      }
 
-    this.#logger.info(`Compiling root host routing masquerade tables bound to WAN interface: [${iface}]...`);
+      this.#logger.info(`Compiling root host routing masquerade tables bound to WAN interface: [${iface}]...`);
 
-    const commands = [
-      // 启用宿主机的内核参数 IP 转发功能
-      `sysctl -w net.ipv4.ip_forward=1`,
+      const commands = [
+        // 启用宿主机的内核参数 IP 转发功能
+        `sysctl -w net.ipv4.ip_forward=1`,
 
-      // 强制删除已存在的 NAT 表及其所有关联规则，确保网络策略从零开始构建
-      `nft delete table ip ${VMNet.NFT_TABLE_NAT} 2>/dev/null || true`,
+        // 强制删除已存在的 NAT 表及其所有关联规则，确保网络策略从零开始构建
+        `nft delete table ip ${VMNet.NFT_TABLE_NAT} 2>/dev/null || true`,
 
-      // 重新创建 IPv4 类型的 nftables NAT 表，用于集中处理虚拟网段的地址转换
-      `nft add table ip ${VMNet.NFT_TABLE_NAT}`,
+        // 重新创建 IPv4 类型的 nftables NAT 表，用于集中处理虚拟网段的地址转换
+        `nft add table ip ${VMNet.NFT_TABLE_NAT}`,
 
-      // 在 NAT 表中建立 postrouting 链，作为数据包发出前最后一步的挂载点
-      `nft add chain ip ${VMNet.NFT_TABLE_NAT} postrouting { type nat hook postrouting priority 100 \\; }`,
+        // 在 NAT 表中建立 postrouting 链，作为数据包发出前最后一步的挂载点
+        `nft add chain ip ${VMNet.NFT_TABLE_NAT} postrouting { type nat hook postrouting priority 100 \\; }`,
 
-      // 配置网段级 MASQUERADE 规则：凡是源地址属于虚拟子网的包，统一伪装为物理网卡 IP 外发
-      `nft add rule ip ${VMNet.NFT_TABLE_NAT} postrouting ip saddr ${VMNet.NS_VETH_PREFIX}.0.0/16 oifname ${iface} masquerade`,
-    ];
+        // 配置网段级 MASQUERADE 规则：凡是源地址属于虚拟子网的包，统一伪装为物理网卡 IP 外发
+        `nft add rule ip ${VMNet.NFT_TABLE_NAT} postrouting ip saddr ${VMNet.NS_VETH_PREFIX}.0.0/16 oifname ${iface} masquerade`,
+      ];
 
-    for (const cmd of commands) {
-      await this.#exec(cmd);
-    }
+      for (const cmd of commands) {
+        await this.#exec(cmd);
+      }
 
-    this.#logger.info("Global host network infrastructure ready. Sandboxing fabric initialized.");
+      this.#logger.info("Global host network infrastructure ready. Sandboxing fabric initialized.");
+    });
   }
 }
 

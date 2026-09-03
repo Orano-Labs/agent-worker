@@ -4,7 +4,7 @@ import { createWriteStream } from "node:fs";
 import { cp, mkdir, readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createInterface as createReadLineInterface } from "node:readline";
 
 import type { Readable } from "node:stream";
@@ -13,7 +13,6 @@ import { Container } from "@/helpers/container";
 import { Firecracker } from "@/helpers/firecracker";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
-import { Terminator } from "@/internal/terminator";
 import { VMImage } from "@/internal/vm-image";
 import { VMNet } from "@/internal/vm-net";
 
@@ -24,13 +23,11 @@ export class VM {
   #env: Environment;
   #logger: Logger;
   #image: VMImage;
-  #terminator: Terminator;
 
   constructor() {
     this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).prefix("Runner");
+    this.#logger = Container.inject(Logger).prefix("VM");
     this.#image = Container.inject(VMImage);
-    this.#terminator = Container.inject(Terminator);
   }
 
   async create(options: VM.Options) {
@@ -46,7 +43,7 @@ export class VM {
     })();
 
     const logger = this.#logger.prefix(options.id);
-    const root = join(this.#env.workdir, "jailer", this.#env.firecrackerVersion, options.id, "root");
+    const root = join(this.#env.workdir, "jailer", basename(this.#env.firecracker), options.id, "root");
 
     const memoryLimitMIB = options.machineTier === "minimal" ? 1024 : options.machineTier === "standard" ? 2048 : 4096;
     const cpuCapacity = options.machineTier === "minimal" ? 1 : options.machineTier === "standard" ? 2 : 4;
@@ -54,10 +51,6 @@ export class VM {
     const cpuQuotaUs = cpuCapacity * CPU_CFS_PERIOD_US;
 
     const totalMemoryBytes = (memoryLimitMIB + VMM_OVERHEAD_MIB) * 1024 * 1024;
-
-    if (this.#terminator.signal.aborted) {
-      throw this.#terminator.signal.reason;
-    }
 
     let ps: ChildProcessByStdio<null, Readable, Readable> | undefined;
 
@@ -122,7 +115,7 @@ export class VM {
       });
 
       const socket = join(root, "firecracker.sock");
-      const timeoutSignal = AbortSignal.any([AbortSignal.timeout(1000 * 2), this.#terminator.signal]);
+      const timeoutSignal = AbortSignal.any([AbortSignal.timeout(1000 * 2)]);
 
       await new Promise<void>((resolve, reject) => {
         let error: unknown;
@@ -158,10 +151,6 @@ export class VM {
       const fc = new Firecracker(socket);
       const bootArgs = [] as string[];
 
-      const fs = {
-        password: Buffer.from(crypto.getRandomValues(new Uint8Array(12))).toString("hex"),
-      };
-
       bootArgs.push("console=ttyS0");
       bootArgs.push("reboot=k");
       bootArgs.push("panic=1");
@@ -175,7 +164,7 @@ export class VM {
       bootArgs.push("init=/init");
 
       bootArgs.push(`AW_RUNNER_ID=${options.id}`);
-      bootArgs.push(`AW_RUNNER_FS_PASSWORD=${fs.password}`);
+      bootArgs.push(`AW_RUNNER_FS_PASSWORD=${options.password}`);
       bootArgs.push(`AW_RUNNER_PROJECT=${options.projectId}`);
 
       bootArgs.push("quiet");
@@ -234,7 +223,6 @@ export class VM {
         process: ps,
         fc,
         root,
-        fs,
       };
 
       return instance;
@@ -259,12 +247,12 @@ export namespace VM {
     readonly projectId: string;
     readonly machineTier: "minimal" | "standard" | "performance";
     readonly metadata: Record<string, unknown>;
+    readonly password: string;
   };
 
   export type Instance = {
     readonly process: ChildProcessByStdio<null, Readable, Readable>;
     readonly fc: Firecracker;
     readonly root: string;
-    readonly fs: Record<"password", string>;
   };
 }

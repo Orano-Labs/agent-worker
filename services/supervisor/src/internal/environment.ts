@@ -39,7 +39,7 @@ export class Environment {
   }
 
   get firecrackerVersion() {
-    return Environment.FIRECRACKER_VERSION
+    return Environment.FIRECRACKER_VERSION;
   }
 
   get jailer() {

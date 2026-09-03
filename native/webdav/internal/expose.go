@@ -12,6 +12,7 @@ type expose struct {
 	id       string
 	password string
 	dir      string
+	clientIP string
 	handler  webdav.Handler
 }
 
@@ -45,11 +46,12 @@ func (e *expose) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 // newExpose instantiates a new Expose instance configured with the given credentials,
 // a local root directory path mapping, and a structured logger.
-func newExpose(id, password, dir string, logger *slog.Logger) *expose {
+func newExpose(id, password, dir, clientIP string, logger *slog.Logger) *expose {
 	return &expose{
 		id:       id,
 		password: password,
 		dir:      dir,
+		clientIP: clientIP,
 		handler: webdav.Handler{
 			FileSystem: webdav.Dir(dir),
 			LockSystem: webdav.NewMemLS(),

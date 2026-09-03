@@ -4,6 +4,7 @@ import { Director } from "@/internal/director";
 import { KVStorage } from "@/internal/kv-storage";
 import { Logger } from "@/internal/logger";
 import { Orchestrator } from "@/internal/orchestrator";
+import { Terminator } from "./terminator";
 
 export class Controller {
   #logger: Logger;
@@ -12,6 +13,7 @@ export class Controller {
   #orchestrator: Orchestrator;
   #portal?: ReturnType<Client["createSupervisorPortalService"]>;
   #processings: Map<string, Promise<Orchestrator.Task>>;
+  #terminator: Terminator;
 
   constructor() {
     this.#logger = Container.inject(Logger).prefix("Controller");
@@ -19,6 +21,7 @@ export class Controller {
     this.#director = Container.inject(Director);
     this.#orchestrator = Container.inject(Orchestrator);
     this.#processings = new Map();
+    this.#terminator = Container.inject(Terminator);
   }
 
   get #portalMust() {
@@ -42,6 +45,20 @@ export class Controller {
 
     this.#watch().catch((error) => {
       this.#logger.errorFrom(error, "Watch loop terminated unexpectedly");
+    });
+
+    this.#terminator.register(async (signal) => {
+      await Promise.all(
+        [...this.#processings.values()].map(async (task) => {
+          return task
+            .then((t) => {
+              t.runner.process.kill(signal as NodeJS.Signals);
+
+              return t.closed;
+            })
+            .catch(() => {});
+        }),
+      );
     });
   }
 

@@ -5,12 +5,10 @@ import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
-import { Terminator } from "@/internal/terminator";
 
 export class VMKernel {
   #env: Environment;
   #logger: Logger;
-  #terminator: Terminator;
 
   get path() {
     return this.#env.kernel;
@@ -18,8 +16,7 @@ export class VMKernel {
 
   constructor() {
     this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).prefix("Kernel");
-    this.#terminator = Container.inject(Terminator);
+    this.#logger = Container.inject(Logger).prefix("VMKernel");
   }
 
   async #exec(command: string) {
@@ -53,19 +50,6 @@ export class VMKernel {
       cp.on("error", (error) => {
         reject(error);
       });
-
-      const abortHandler = () => {
-        cp.kill("SIGKILL");
-      };
-
-      this.#terminator.signal.addEventListener("abort", abortHandler);
-
-      const cleanup = () => {
-        this.#terminator.signal.removeEventListener("abort", abortHandler);
-      };
-
-      cp.once("close", cleanup);
-      cp.once("error", cleanup);
     });
   }
 

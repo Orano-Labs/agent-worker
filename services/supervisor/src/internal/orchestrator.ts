@@ -1,21 +1,21 @@
 import { createConnection } from "node:net";
 
 import { Container } from "@/helpers/container";
-import { FS } from "@/internal/fs";
 import { Logger } from "@/internal/logger";
 import { VM } from "@/internal/vm";
 import { VMNet } from "@/internal/vm-net";
+import { VMWorkspace } from "@/internal/vm-workspace";
 
 export class Orchestrator {
   #logger: Logger;
   #net: VMNet;
-  #fs: FS;
+  #fs: VMWorkspace;
   #vm: VM;
 
   constructor() {
     this.#logger = Container.inject(Logger).prefix("Orchestrator");
     this.#net = Container.inject(VMNet);
-    this.#fs = Container.inject(FS);
+    this.#fs = Container.inject(VMWorkspace);
     this.#vm = Container.inject(VM);
   }
 
@@ -23,150 +23,154 @@ export class Orchestrator {
     const id = options.instanceId;
     const logger = this.#logger.prefix(`TASK(${id})`);
 
-    let net: VMNet.Namespace;
-    let vm: VM.Instance;
-    let fs: FS.Instance;
+    let net: VMNet.Namespace | undefined;
+    let vm: VM.Instance | undefined;
+
+    const cleanups: Array<() => Promise<void>> = [];
 
     try {
-      net = await this.#net.random();
-      vm = await this.#vm.create({
-        id,
-        net,
-        ...options.config,
-      });
-      fs = await this.#fs.create({
-        id,
-        projectId: options.config.projectId,
-        password: vm.fs.password,
+      const namespace = await this.#net.random();
+
+      cleanups.push(async () => {
+        if (net) {
+          await this.#net.release(net);
+        }
       });
 
-      await vm.fc.createSyncAction({ action_type: "InstanceStart" });
+      const password = await this.#fs.expose({
+        id,
+        projectId: options.config.projectId,
+        ip: namespace.veth.guest.ip,
+      });
+
+      cleanups.push(async () => {
+        await this.#fs.unexpose(id);
+      });
+
+      const instance = await this.#vm.create({
+        id,
+        net: namespace,
+        password,
+        ...options.config,
+      });
+
+      cleanups.push(async () => {
+        if (instance.process.exitCode === null) {
+          instance.process.kill("SIGKILL");
+        }
+      });
+
+      await instance.fc.createSyncAction({ action_type: "InstanceStart" });
+
+      net = namespace;
+      vm = instance;
     } catch (error) {
       logger.errorFrom(error, "Failed to initialize task instances, starting forced resource cleanup...");
 
-      // @ts-expect-error
-      if (net) {
-        await this.#net.release(net).catch((err) => {
-          logger.warn("Failed to release network namespace", { err });
-        });
-      }
-
-      // @ts-expect-error
-      if (fs) {
-        await fs.release().catch((err) => {
-          logger.warn("Failed to release web dav server exposed", { err });
-        });
-      }
-
-      // @ts-expect-error
-      if (vm && vm.process.exitCode !== null) {
+      for (const cleanup of [...cleanups].reverse()) {
         try {
-          vm.process.kill("SIGKILL");
+          await cleanup();
         } catch (err) {
-          logger.warn(`Exception occurred while killing Runner child process (PID: ${vm.process.pid})`, { err });
+          logger.warn("Cleanup step failed", { err });
         }
       }
 
       throw error;
     }
 
-    const closed = (async () => {
+    let exited = false;
+
+    const waitClosed = (async () => {
       const status = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-        vm.process.once("close", (code, signal) => {
+        vm!.process.once("close", (code, signal) => {
           resolve({ code, signal });
         });
-        vm.process.once("error", () => {
+        vm!.process.once("error", () => {
           resolve({ code: null, signal: null });
         });
       });
 
-      if (net) {
-        await this.#net.release(net).catch((err) => {
-          logger.warn("Failed to release network namespace", { err });
-        });
-      }
+      exited = true;
 
-      if (fs) {
-        await fs.release().catch((err) => {
-          logger.warn("Failed to release web dav server exposed", { err });
-        });
+      for (const cleanup of [...cleanups].reverse()) {
+        try {
+          await cleanup();
+        } catch (err) {
+          logger.warn("Cleanup step failed", { err });
+        }
       }
 
       return status;
     })();
 
-    const ready = Promise.race([
-      (async () => {
-        let attempt = 0;
+    const waitPort = (async () => {
+      let attempt = 0;
 
-        while (attempt <= 3) {
-          try {
-            attempt += 1;
-
-            await new Promise<void>((resolve, reject) => {
-              const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
-
-              conn.on("connect", () => {
-                conn.destroy();
-                resolve();
-              });
-
-              conn.on("error", (error) => {
-                conn.destroy();
-                reject(error);
-              });
-            });
-
-            return;
-          } catch (error) {
-            logger.warn("Instance port 8000 is not ready yet, retrying...", {
-              attempt,
-              host: net.veth.guest.ip,
-              error,
-            });
-
-            if (attempt <= 3) {
-              await new Promise<void>((resolve) => {
-                setTimeout(resolve, 3000);
-              });
-            }
-          }
+      while (attempt <= 3) {
+        if (exited) {
+          throw new Error("VM closed before becoming ready");
         }
 
-        throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
-      })(),
-      closed.then(() => {
-        throw new Error("xxx");
+        try {
+          attempt += 1;
+
+          await new Promise<void>((resolve, reject) => {
+            const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
+
+            conn.on("connect", () => {
+              conn.destroy();
+              resolve();
+            });
+
+            conn.on("error", (error) => {
+              conn.destroy();
+              reject(error);
+            });
+          });
+
+          return;
+        } catch (error) {
+          logger.warn("Instance port 8000 is not ready yet, retrying...", {
+            host: net.veth.guest.ip,
+          });
+
+          if (attempt <= 3) {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, 3000);
+            });
+          }
+        }
+      }
+
+      throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
+    })();
+
+    const ready = Promise.race([
+      waitPort,
+      waitClosed.then(() => {
+        throw new Error("VM closed before becoming ready");
       }),
     ]);
 
-    // ready 失败时强制回收子进程及网络资源，避免残留僵尸 VM。
     ready.catch(async (error) => {
       logger.errorFrom(error, "Instance failed to become ready, forcibly reclaiming resources");
 
-      if (vm.process.exitCode === null) {
+      if (vm!.process.exitCode === null) {
         try {
-          vm.process.kill("SIGKILL");
+          vm!.process.kill("SIGKILL");
         } catch (err) {
           logger.warn("Failed to kill runner child process during reclaim", { err });
         }
       }
-
-      return this.#net.release(net).catch((err) => {
-        logger.warn("Failed to release network namespace during reclaim", { err });
-      });
     });
 
-    const task: Orchestrator.Task = {
+    return {
       net,
       runner: vm,
-      fs,
       config: options.config,
-      closed,
+      closed: waitClosed,
       ready,
     };
-
-    return task;
   }
 }
 
@@ -179,7 +183,6 @@ export namespace Orchestrator {
   export type Task = {
     readonly net: VMNet.Namespace;
     readonly runner: VM.Instance;
-    readonly fs: FS.Instance;
     readonly config: TaskConfig;
     readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
     readonly ready: Promise<void>;

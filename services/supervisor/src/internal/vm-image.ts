@@ -6,14 +6,12 @@ import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
-import { Terminator } from "@/internal/terminator";
 
 const RUNTIME_IMAGE_CONTAINER_NAME = "aw-runtime-image";
 
 export class VMImage {
   #env: Environment;
   #logger: Logger;
-  #terminator: Terminator;
 
   get runtime() {
     return join(this.#env.workdir, "images", "runtime.squashfs");
@@ -21,8 +19,7 @@ export class VMImage {
 
   constructor() {
     this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).prefix("Image");
-    this.#terminator = Container.inject(Terminator);
+    this.#logger = Container.inject(Logger).prefix("VMImage");
   }
 
   async #exec(command: string) {
@@ -56,19 +53,6 @@ export class VMImage {
       cp.on("error", (error) => {
         reject(error);
       });
-
-      const abortHandler = () => {
-        cp.kill("SIGKILL");
-      };
-
-      this.#terminator.signal.addEventListener("abort", abortHandler);
-
-      const cleanup = () => {
-        this.#terminator.signal.removeEventListener("abort", abortHandler);
-      };
-
-      cp.once("close", cleanup);
-      cp.once("error", cleanup);
     });
   }
 

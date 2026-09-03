@@ -2,71 +2,76 @@ import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
 
 export class Terminator {
-  get name() {
-    return "runtime.Terminator";
-  }
-
-  #signal: AbortSignal;
-  #terminating: boolean;
+  #signal?: string;
+  #done: boolean;
   #tasks: Set<Terminator.Task>;
+  #inflight: Set<Promise<void>>;
+  #shutdown?: Promise<void>;
 
   #logger: Logger;
 
-  constructor(signal: AbortSignal) {
-    this.#signal = signal;
+  constructor() {
     this.#tasks = new Set();
-    this.#terminating = false;
     this.#logger = Container.inject(Logger).prefix("Terminator");
+    this.#inflight = new Set();
+    this.#done = false;
   }
 
   register(task: Terminator.Task) {
-    if (this.#terminating) {
-      throw new Error("Terminator is already shutting down.");
+    if (this.#done) {
+      throw new Error("Shutdown has already completed. Cannot register new tasks.");
+    }
+
+    if (this.#signal) {
+      return this.#execute(task, this.#signal);
     }
 
     this.#tasks.add(task);
-
-    return () => {
-      this.#tasks.delete(task);
-    };
   }
 
-  get signal() {
-    return this.#signal;
-  }
-
-  async terminate() {
-    if (this.#terminating) {
-      throw new Error("Terminator is already shutting down; terminate() was called more than once.");
+  async terminate(signal: string) {
+    if (!this.#shutdown) {
+      this.#shutdown = this.#doTerminate(signal);
     }
 
-    this.#terminating = true;
+    return this.#shutdown;
+  }
 
-    if (!this.#signal.aborted) {
-      await new Promise((resolve) => {
-        this.#signal.addEventListener("abort", resolve, { once: true });
+  #execute(task: Terminator.Task, signal: string) {
+    const promise = task(signal)
+      .catch((err) => {
+        this.#logger.error("Terminator task failed:", err);
+      })
+      .finally(() => {
+        this.#inflight.delete(promise);
       });
-    }
 
-    const reason = this.#signal.reason;
+    this.#inflight.add(promise);
+  }
+
+  async #doTerminate(signal: string) {
+    this.#signal = signal;
+
     const startedAt = performance.now();
 
-    this.#logger.info("Graceful shutdown started", { reason: String(reason) });
+    this.#logger.info("Graceful shutdown started", { signal });
 
-    await Promise.allSettled([...this.#tasks].map((task) => task(reason))).then((results) => {
-      for (const result of results) {
-        if (result.status === "rejected") {
-          this.#logger.error("Terminator task failed:", result.reason);
-        }
-      }
-    });
+    for (const task of this.#tasks) {
+      this.#execute(task, signal);
+    }
+
+    while (this.#inflight.size > 0) {
+      await Promise.allSettled([...this.#inflight]);
+    }
 
     const elapsed = performance.now() - startedAt;
 
     this.#logger.info(`Graceful shutdown finished in ${elapsed.toFixed(0)}ms`);
+
+    this.#done = true;
   }
 }
 
 export namespace Terminator {
-  export type Task = (reason: unknown) => Promise<void>;
+  export type Task = (signal: string) => Promise<void>;
 }

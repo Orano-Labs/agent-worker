@@ -2,8 +2,10 @@ package internal
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +38,11 @@ func (c *controller) serveExternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if expose.clientIP != "" && clientIP(r) != expose.clientIP {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	expose.handler.ServeHTTP(w, r)
 }
 
@@ -59,11 +66,13 @@ func newController(root string, logger *slog.Logger) *controller {
 		id := ctx.Param("id")
 		password := ctx.PostForm("password")
 		dir := ctx.PostForm("dir")
+		cip := ctx.PostForm("client_ip")
 
-		if id == "" || password == "" || dir == "" {
+		if id == "" || password == "" || dir == "" || cip == "" {
 			logger.Warn("invalid expose create request",
 				slog.String("id", id),
 				slog.String("dir", dir),
+				slog.String("client_ip", cip),
 			)
 
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -89,11 +98,12 @@ func newController(root string, logger *slog.Logger) *controller {
 		dir = filepath.Clean("/" + dir)
 		dir = filepath.Join(c.root, dir)
 
-		c.exposes[id] = newExpose(id, password, dir, logger)
+		c.exposes[id] = newExpose(id, password, dir, cip, logger)
 
 		logger.Info("expose created",
 			slog.String("id", id),
 			slog.String("dir", dir),
+			slog.String("client_ip", cip),
 		)
 
 		ctx.JSON(http.StatusOK, gin.H{
@@ -146,4 +156,14 @@ func newController(root string, logger *slog.Logger) *controller {
 	c.internalHandler = router
 
 	return c
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+
+	if err != nil {
+		return r.RemoteAddr
+	}
+
+	return host
 }

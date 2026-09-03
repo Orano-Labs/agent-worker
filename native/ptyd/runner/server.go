@@ -117,23 +117,47 @@ func (h *hub) release() {
 	h.mu.Unlock()
 }
 
+const (
+	pongWait   = 30 * time.Second
+	pingPeriod = 10 * time.Second
+	writeWait  = 10 * time.Second
+)
+
 // handleWS bridges the browser to the shared Terminal. If another connection
 // is already active, the new one is rejected.
 func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
+
 	if err != nil {
 		slog.Warn("websocket upgrade failed", "err", err)
 		return
 	}
+
 	defer conn.Close()
+
+	// gorilla/websocket forbids concurrent writers on one connection; route
+	// every write (terminal output, pings, rejection notices) through this.
+	var writeMu sync.Mutex
+
+	write := func(typ int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+
+		_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+
+		return conn.WriteMessage(typ, data)
+	}
 
 	if !h.acquire() {
 		slog.Warn("rejecting websocket: another session is active")
-		_ = conn.WriteMessage(websocket.TextMessage,
-			[]byte("\r\n\x1b[31mAnother terminal session is already active.\r\n\x1b[0m"))
+
+		_ = write(websocket.TextMessage, []byte("\r\n\x1b[31mAnother terminal session is already active.\r\n\x1b[0m"))
+
 		return
 	}
+
 	defer h.release()
+
 	slog.Info("websocket session active")
 
 	// Apply the size advertised by the client to the shared terminal.
@@ -147,19 +171,54 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Forward the snapshot and all live output to this client.
 	sub := h.term.Subscribe(func(b []byte) {
-		if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+		if err := write(websocket.TextMessage, b); err != nil {
 			slog.Warn("write websocket message failed", "err", err)
 		}
 	})
+
 	defer sub()
 
-	// Bridge incoming client frames to the shared PTY.
 	readDone := make(chan struct{})
+
+	// Pings keep the connection alive through idle proxies/tunnels and detect
+	// dead peers: the browser answers with a pong, which refreshes the read
+	// deadline below; if no pong arrives within pongWait the read loop errors
+	// out and the session is released for a reconnect.
+	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
+
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+
+	go func() {
+		ticker := time.NewTicker(pingPeriod)
+
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := write(websocket.PingMessage, nil); err != nil {
+					// Close the conn so the blocked reader unblocks and the
+					// session is released.
+					_ = conn.Close()
+					return
+				}
+			case <-readDone:
+				return
+			}
+		}
+	}()
+
+	// Bridge incoming client frames to the shared PTY.
 	go func() {
 		defer close(readDone)
+
 		for {
+			_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
+				slog.Info("websocket session read closed", "err", err)
 				return
 			}
 			var m wsMessage
@@ -181,5 +240,6 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-readDone
+
 	slog.Info("websocket session ended")
 }

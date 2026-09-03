@@ -45,16 +45,19 @@
       term.loadAddon(fitAddon);
       term.open(document.getElementById("terminal"));
 
-      term.onData((data) => {
-        console.log(data);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "data", data }));
-        }
-      });
+      let ws = null;
+      let reconnectAttempts = 0;
+      let reconnectTimer = null;
 
-      window.addEventListener("resize", () => {
-        fitAddon.fit();
+      const maxReconnectDelay = 15000;
 
+      const status = (text) => term.write(`\r\n\x1b[33m${text}\x1b[0m\r\n`);
+
+      const wsUrl = () => {
+        return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws?cols=${term.cols}&rows=${term.rows}`;
+      };
+
+      const sendResize = () => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({
@@ -64,39 +67,68 @@
             }),
           );
         }
+      };
+
+      const scheduleReconnect = () => {
+        if (reconnectTimer) {
+          return;
+        };
+
+        const delay = Math.min(1000 * 2 ** reconnectAttempts, maxReconnectDelay);
+
+        reconnectAttempts += 1;
+
+        status(`Connection lost; retrying in ${Math.round(delay / 1000)}s...`);
+
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, delay);
+      };
+
+      const connect = () => {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+
+        ws = new WebSocket(wsUrl());
+
+        ws.onopen = () => {
+          reconnectAttempts = 0;
+          status("Connection established.");
+          sendResize();
+        };
+
+        ws.onerror = () => {
+          // onclose follows; handled there.
+        };
+
+        ws.onclose = (event) => {
+          ws = null;
+          status(`Connection closed (Code: ${event.code}); reconnecting...`);
+          scheduleReconnect();
+        };
+
+        ws.onmessage = (message) => {
+          term.write(message.data);
+          fitAddon.fit();
+        };
+      };
+
+      term.onData((data) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "data", data }));
+        }
+      });
+
+      window.addEventListener("resize", () => {
+        fitAddon.fit();
+        sendResize();
       });
 
       fitAddon.fit();
-
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${protocol}//${window.location.host}/ws?cols=${term.cols}&rows=${term.rows}`;
-      const ws = new WebSocket(url);
-
-      ws.onopen = () => {
-        ws.send(
-          JSON.stringify({
-            type: "resize",
-            cols: term.cols,
-            rows: term.rows,
-          }),
-        );
-      };
-
-      ws.onerror = () => {
-        term.write("\r\n\x1b[31mError: Connection error occurred.\x1b[0m\r\n");
-      };
-
-      ws.onclose = (event) => {
-        term.write(
-          `\r\n\x1b[33mConnection closed (Code: ${event.code}).\x1b[0m\r\n`,
-        );
-      };
-
-      ws.onmessage = (message) => {
-        term.write(message.data);
-
-        fitAddon.fit();
-      };
+      connect();
     </script>
   </body>
 </html>

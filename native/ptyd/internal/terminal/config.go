@@ -19,7 +19,9 @@ type Config struct {
 	Rows       uint16
 	Scrollback uint
 	// IdleTimeout is how long the terminal may stay idle (no subscribers and
-	// no output) before it shuts itself down. Zero selects DefaultIdleTimeout.
+	// no output) before it shuts itself down. Zero or a negative value
+	// disables the idle shutdown, keeping the terminal alive until its
+	// process exits on its own. DefaultIdleTimeout is only the CLI default.
 	IdleTimeout time.Duration
 }
 
@@ -45,9 +47,9 @@ func (c Config) Normalize() Config {
 		cfg.Scrollback = DefaultScrollback
 	}
 
-	if cfg.IdleTimeout == 0 {
-		cfg.IdleTimeout = DefaultIdleTimeout
-	}
+	// IdleTimeout is left untouched: <=0 means the idle shutdown is disabled
+	// and must not be silently replaced by the CLI default here, otherwise
+	// callers could never opt out.
 
 	return cfg
 }

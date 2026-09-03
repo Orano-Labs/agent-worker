@@ -138,8 +138,12 @@ set +e
 # Tini properly forwards OS signals (like SIGTERM) to Node.js and reaps zombie processes.
 # /sbin/tini -gs -- /usr/bin/node /app -c pi -- --continue
 
+# --idle-timeout=0 disables ptyd's idle reaper: the terminal (and any process
+# running inside it, e.g. pi) must NOT be killed just because nobody is viewing
+# it or because output paused for a few seconds. The VM still powers off when
+# the shell session itself exits.
 /sbin/tini -gs -- \
-  /bin/ptyd --port 8000
+  /bin/ptyd --port 8000 --idle-timeout=0
 
 # Safely latch the exit code into a global variable readable by the EXIT trap handler
 NODE_EXIT_CODE=$?

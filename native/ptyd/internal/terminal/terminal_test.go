@@ -89,6 +89,47 @@ func TestTerminalResizeAndWrite(t *testing.T) {
 	}
 }
 
+func TestTerminalIdleShutdownDisabled(t *testing.T) {
+	// A zero (or negative) IdleTimeout must disable the idle reaper: a silent,
+	// unattended terminal stays alive instead of being killed after the default
+	// 20s would have elapsed. We assert it survives far past the reaper's check
+	// granularity for a short explicit timeout.
+	for _, idleTimeout := range []time.Duration{0, -1 * time.Second} {
+		cfg := Config{
+			Command:     "/bin/sh",
+			Args:        []string{"-c", "sleep 30"},
+			IdleTimeout: idleTimeout,
+		}
+
+		term, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New (IdleTimeout=%v): %v", idleTimeout, err)
+		}
+
+		waitErr := make(chan error, 1)
+		go func() { waitErr <- term.Wait() }()
+
+		select {
+		case err := <-waitErr:
+			term.Close()
+			t.Fatalf("IdleTimeout=%v: terminal exited despite disabled idle shutdown: %v", idleTimeout, err)
+		case <-time.After(700 * time.Millisecond):
+			// Still running, as expected.
+		}
+
+		term.Close()
+	}
+}
+
+func TestConfigNormalizeKeepsZeroIdleTimeout(t *testing.T) {
+	// Normalize must not silently map IdleTimeout==0 to the CLI default,
+	// otherwise callers could never opt out of the idle reaper.
+	cfg := Config{Command: "/bin/true"}.Normalize()
+	if cfg.IdleTimeout != 0 {
+		t.Fatalf("expected IdleTimeout to stay 0 (disabled), got %v", cfg.IdleTimeout)
+	}
+}
+
 func TestTerminalIdleShutdown(t *testing.T) {
 	cfg := Config{
 		Command:     "/bin/sh",

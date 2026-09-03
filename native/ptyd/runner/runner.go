@@ -56,7 +56,7 @@ func New(static fs.FS, version string) *Runner {
 			&cli.DurationFlag{
 				Name:  "idle-timeout",
 				Value: terminal.DefaultIdleTimeout,
-				Usage: "shut the terminal down after this idle period",
+				Usage: "shut the terminal down after this idle period (0 disables the idle shutdown)",
 			},
 			&cli.UintFlag{
 				Name:  "scrollback",

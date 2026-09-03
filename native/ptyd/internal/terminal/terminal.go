@@ -90,7 +90,7 @@ func (t *Terminal) Subscribe(fn func([]byte)) func() {
 	count := len(t.subs)
 	t.mu.Unlock()
 
-	slog.Debug("terminal subscriber added", "id", s.id, "count", count)
+	slog.Info("terminal subscriber added", "id", s.id, "count", count)
 	go t.runSubscriber(s, fn, snapshot)
 
 	return func() {
@@ -99,7 +99,7 @@ func (t *Terminal) Subscribe(fn func([]byte)) func() {
 			delete(t.subs, s.id)
 			close(s.stop)
 			count := len(t.subs)
-			slog.Debug("terminal subscriber removed", "id", s.id, "count", count)
+			slog.Info("terminal subscriber removed", "id", s.id, "count", count)
 		}
 		t.mu.Unlock()
 	}
@@ -163,12 +163,16 @@ func (t *Terminal) readLoop() {
 		copy(chunk, buf[:n])
 
 		t.mu.Lock()
+
 		t.xterm.Write(chunk)
 		t.lastOutput = time.Now()
+
 		subs := make([]*subscriber, 0, len(t.subs))
+
 		for _, s := range t.subs {
 			subs = append(subs, s)
 		}
+
 		t.mu.Unlock()
 
 		for _, s := range subs {
@@ -183,13 +187,11 @@ func (t *Terminal) readLoop() {
 
 // watchIdle shuts the terminal down once it has been idle for the configured
 // duration, where idle means no subscribers and no process output. It stops as
-// soon as the terminal is closed.
+// soon as the terminal is closed. A non-positive IdleTimeout disables the
+// reaper entirely; callers then must rely on the process exiting on its own.
 func (t *Terminal) watchIdle() {
-	check := t.idleTimeout / 2
-	if check < time.Second {
-		check = time.Second
-	}
-	ticker := time.NewTicker(check)
+	ticker := time.NewTicker(time.Second * 2)
+
 	defer ticker.Stop()
 
 	for {
@@ -204,11 +206,13 @@ func (t *Terminal) watchIdle() {
 		}
 
 		t.mu.Lock()
-		idle := len(t.subs) == 0 && time.Since(t.lastOutput) >= t.idleTimeout
+		subCount := len(t.subs)
+		idleFor := time.Since(t.lastOutput)
+		idle := subCount == 0 && idleFor >= t.idleTimeout
 		t.mu.Unlock()
 
 		if idle {
-			slog.Info("terminal idle; shutting down", "pid", t.p.pid(), "idle_timeout", t.idleTimeout)
+			slog.Info("terminal idle; shutting down", "pid", t.p.pid(), "idle_timeout", t.idleTimeout, "subscribers", subCount, "idle_for", idleFor.Round(time.Second).String())
 			_ = t.Close()
 			return
 		}
@@ -243,10 +247,15 @@ func New(cfg Config) (*Terminal, error) {
 		done:        make(chan struct{}),
 	}
 
-	slog.Info("terminal created", "cmd", cfg.Command, "args", cfg.Args, "pid", p.pid(), "cols", cfg.Cols, "rows", cfg.Rows)
+	slog.Info("terminal created", "cmd", cfg.Command, "args", cfg.Args, "pid", p.pid(), "cols", cfg.Cols, "rows", cfg.Rows, "idle_timeout", cfg.IdleTimeout)
 
 	go t.readLoop()
-	go t.watchIdle()
+
+	if cfg.IdleTimeout > 0 {
+		go t.watchIdle()
+	} else {
+		slog.Debug("idle shutdown disabled", "pid", p.pid())
+	}
 
 	return t, nil
 }

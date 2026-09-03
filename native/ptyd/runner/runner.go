@@ -43,7 +43,7 @@ func New(static fs.FS, version string) *Runner {
 			&cli.StringSliceFlag{
 				Name:    "arg",
 				Aliases: []string{"a"},
-				Usage:   "argument passed to the command (repeatable)",
+				Usage:   "argument passed to the command (repeatable); or pass arguments after '--'",
 			},
 			&cli.StringFlag{
 				Name:  "dir",
@@ -65,9 +65,12 @@ func New(static fs.FS, version string) *Runner {
 			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
+			args := c.StringSlice("arg")
+			args = append(args, c.Args().Slice()...)
+
 			cfg := terminal.Config{
 				Command:     c.String("command"),
-				Args:        c.StringSlice("arg"),
+				Args:        args,
 				Dir:         c.String("dir"),
 				Env:         c.StringSlice("env"),
 				IdleTimeout: c.Duration("idle-timeout"),

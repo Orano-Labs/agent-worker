@@ -91,7 +91,7 @@ func newProcess(cfg Config) (*process, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 
 	cmd.Dir = cfg.Dir
-	cmd.Env = cfg.Env
+	cmd.Env = append(os.Environ(), cfg.Env...)
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: cfg.Cols,

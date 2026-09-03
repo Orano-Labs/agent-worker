@@ -4,7 +4,7 @@ import { createWriteStream } from "node:fs";
 import { cp, mkdir, readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { userInfo } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { createInterface as createReadLineInterface } from "node:readline";
 
 import type { Readable } from "node:stream";
@@ -46,7 +46,7 @@ export class VM {
     })();
 
     const logger = this.#logger.prefix(options.id);
-    const root = join(this.#env.workdir, "jailer", basename(this.#env.firecracker), options.id, "root");
+    const root = join(this.#env.workdir, "jailer", this.#env.firecrackerVersion, options.id, "root");
 
     const memoryLimitMIB = options.machineTier === "minimal" ? 1024 : options.machineTier === "standard" ? 2048 : 4096;
     const cpuCapacity = options.machineTier === "minimal" ? 1 : options.machineTier === "standard" ? 2 : 4;

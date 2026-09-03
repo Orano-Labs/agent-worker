@@ -1,6 +1,6 @@
 import { cp, mkdir, rm, stat } from "node:fs/promises";
 import { arch, homedir, platform, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { x } from "tar";
@@ -24,7 +24,7 @@ export class Environment {
   }
 
   get workdir() {
-    return process.env.AW_SUPERVISOR_ROOT_DIR || join(homedir(), ".aw-supervisor");
+    return resolve(process.env.AW_SUPERVISOR_ROOT_DIR || join(homedir(), ".aw-supervisor"));
   }
 
   get version() {
@@ -36,6 +36,10 @@ export class Environment {
     const a = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : "";
 
     return join(this.workdir, `bin/firecracker-${v}-${a}`);
+  }
+
+  get firecrackerVersion() {
+    return Environment.FIRECRACKER_VERSION
   }
 
   get jailer() {

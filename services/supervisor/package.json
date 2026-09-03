@@ -21,7 +21,7 @@
     "typecheck": "tsc",
     "test": "vitest",
     "generate": "drizzle-kit generate",
-    "dev": "tsx src/index.ts --env-file ./.env",
+    "dev": "tsx --env-file=./.env src/index.ts",
     "start": "node ./dist/index.cjs",
     "generate:firecracker": "openapi-ts -f ./firecracker.openapi.config.ts"
   },

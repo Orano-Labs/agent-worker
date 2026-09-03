@@ -3,18 +3,15 @@ import { Container } from "@/helpers/container";
 import { Controller } from "@/internal/controller";
 import { Logger } from "@/internal/logger";
 import type { Orchestrator } from "@/internal/orchestrator";
-import { Variables } from "@/internal/variables";
 
 export class Tunnel {
   #client?: TunnelClient;
   #logger: Logger;
-  #variables: Variables;
   #controller: Controller;
   #abort?: AbortController;
 
   constructor() {
-    this.#logger = Container.inject(Logger).scope("Tunnel");
-    this.#variables = Container.inject(Variables);
+    this.#logger = Container.inject(Logger).prefix("Tunnel");
     this.#controller = Container.inject(Controller);
   }
 
@@ -31,9 +28,9 @@ export class Tunnel {
       throw new Error("Tunnel is already initialized.");
     }
 
-    const supervisorId = this.#variables.get("AW_SUPERVISOR_ID");
-    const supervisorPrivateKey = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
-    const baseUrl = this.#variables.get("AW_SUPERVISOR_DIRECTOR_HOST_URL");
+    const supervisorId = process.env.AW_SUPERVISOR_ID;
+    const supervisorPrivateKey = process.env.AW_SUPERVISOR_PRIVATE_KEY;
+    const baseUrl = process.env.AW_SUPERVISOR_DIRECTOR_HOST_URL;
 
     if (!supervisorId) {
       throw new Error("AW_SUPERVISOR_ID is not set.");

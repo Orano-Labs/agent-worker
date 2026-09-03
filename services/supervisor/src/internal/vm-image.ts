@@ -1,17 +1,19 @@
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { binaryLinuxARM64, binaryLinuxX64 } from "@aw/ptyd";
 import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
+import { Terminator } from "@/internal/terminator";
 
 const RUNTIME_IMAGE_CONTAINER_NAME = "aw-runtime-image";
 
-export class Image {
+export class VMImage {
   #env: Environment;
   #logger: Logger;
+  #terminator: Terminator;
 
   get runtime() {
     return join(this.#env.workdir, "images", "runtime.squashfs");
@@ -19,11 +21,55 @@ export class Image {
 
   constructor() {
     this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).scope("Image");
+    this.#logger = Container.inject(Logger).prefix("Image");
+    this.#terminator = Container.inject(Terminator);
   }
 
   async #exec(command: string) {
-    return promisify(exec)(command);
+    return new Promise<Record<"stderr" | "stdout", string>>((resolve, reject) => {
+      const [cmd, ...args] = command.split(" ");
+
+      const cp = spawn(cmd, args, {
+        shell: true,
+        stdio: "pipe",
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      cp.stdout?.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      cp.stderr?.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      cp.on("close", (code) => {
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(`Command failed with exit code ${code}: ${stderr}`));
+        }
+      });
+
+      cp.on("error", (error) => {
+        reject(error);
+      });
+
+      const abortHandler = () => {
+        cp.kill("SIGKILL");
+      };
+
+      this.#terminator.signal.addEventListener("abort", abortHandler);
+
+      const cleanup = () => {
+        this.#terminator.signal.removeEventListener("abort", abortHandler);
+      };
+
+      cp.once("close", cleanup);
+      cp.once("error", cleanup);
+    });
   }
 
   async init() {
@@ -89,12 +135,14 @@ export class Image {
         this.#logger.info("Installing internal packages...");
 
         const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
-        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", /*"bubblewrap", */ "davfs2", "ttyd", /*"socat", */ "dtach"];
+        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", "davfs2"];
 
-        await this.#exec(`buildah run --net=host ${containerTemp} -- apk update --repository=${MIRROR_MAIN}`);
-        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ca-certificates --repository=${MIRROR_MAIN}`);
-        await this.#exec(`buildah run --net=host ${containerTemp} -- apk add ${DEPS.join(" ")} --repository=${MIRROR_MAIN}`);
-        await this.#exec(`buildah run --net=host ${containerTemp} -- npm install -g --ignore-scripts @earendil-works/pi-coding-agent`);
+        const runInTempContainer = `buildah run --net=host ${containerTemp} --`;
+
+        await this.#exec(`${runInTempContainer} apk update --repository=${MIRROR_MAIN}`);
+        await this.#exec(`${runInTempContainer} apk add ca-certificates --repository=${MIRROR_MAIN}`);
+        await this.#exec(`${runInTempContainer} apk add ${DEPS.join(" ")} --repository=${MIRROR_MAIN}`);
+        await this.#exec(`${runInTempContainer} npm install -g --ignore-scripts @earendil-works/pi-coding-agent`);
 
         this.#logger.info(`Renaming container to ${RUNTIME_IMAGE_CONTAINER_NAME} for future caching...`);
 
@@ -105,14 +153,15 @@ export class Image {
 
       this.#logger.info("Injecting DNS configurations and init scripts into container...");
 
-      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- rm -rf /app`);
+      const ptyd = this.#env.arch === "arm64" ? binaryLinuxARM64 : binaryLinuxX64;
 
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`);
-      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/app")} /app`);
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${ptyd} /bin/ptyd`);
 
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /init`);
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /entrypoint`);
+      await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /bin/ptyd`);
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- mkdir -p /workspace`);
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);

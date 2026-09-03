@@ -14,7 +14,7 @@ export class Controller {
   #processings: Map<string, Promise<Orchestrator.Task>>;
 
   constructor() {
-    this.#logger = Container.inject(Logger).scope("Controller");
+    this.#logger = Container.inject(Logger).prefix("Controller");
     this.#kv = Container.inject(KVStorage);
     this.#director = Container.inject(Director);
     this.#orchestrator = Container.inject(Orchestrator);
@@ -34,7 +34,6 @@ export class Controller {
   }
 
   async init() {
-    // 延迟初始化 portal，后续所有使用都会通过 #portalMust 校验是否已初始化。
     this.#portal = this.#director.client.createSupervisorPortalService();
 
     await this.#releaseAllRunningInstances();

@@ -3,44 +3,44 @@ import { createConnection } from "node:net";
 import { Container } from "@/helpers/container";
 import { FS } from "@/internal/fs";
 import { Logger } from "@/internal/logger";
-import { Network } from "@/internal/network";
-import { Runner } from "@/internal/runner";
+import { VM } from "@/internal/vm";
+import { VMNet } from "@/internal/vm-net";
 
 export class Orchestrator {
   #logger: Logger;
-  #net: Network;
+  #net: VMNet;
   #fs: FS;
-  #runner: Runner;
+  #vm: VM;
 
   constructor() {
-    this.#logger = Container.inject(Logger).scope("Orchestrator");
-    this.#net = Container.inject(Network);
+    this.#logger = Container.inject(Logger).prefix("Orchestrator");
+    this.#net = Container.inject(VMNet);
     this.#fs = Container.inject(FS);
-    this.#runner = Container.inject(Runner);
+    this.#vm = Container.inject(VM);
   }
 
   async run(options: Orchestrator.Options): Promise<Orchestrator.Task> {
     const id = options.instanceId;
-    const logger = this.#logger.scope(`TASK(${id})`);
+    const logger = this.#logger.prefix(`TASK(${id})`);
 
-    let net: Network.Namespace;
-    let runner: Runner.Instance;
+    let net: VMNet.Namespace;
+    let vm: VM.Instance;
     let fs: FS.Instance;
 
     try {
       net = await this.#net.random();
-      runner = await this.#runner.create({
+      vm = await this.#vm.create({
         id,
         net,
-        config: options.config,
+        ...options.config,
       });
       fs = await this.#fs.create({
         id,
-        config: options.config,
-        password: runner.fs.password,
+        projectId: options.config.projectId,
+        password: vm.fs.password,
       });
 
-      await runner.fc.createSyncAction({ action_type: "InstanceStart" });
+      await vm.fc.createSyncAction({ action_type: "InstanceStart" });
     } catch (error) {
       logger.errorFrom(error, "Failed to initialize task instances, starting forced resource cleanup...");
 
@@ -59,11 +59,11 @@ export class Orchestrator {
       }
 
       // @ts-expect-error
-      if (runner && runner.process.exitCode !== null) {
+      if (vm && vm.process.exitCode !== null) {
         try {
-          runner.process.kill("SIGKILL");
+          vm.process.kill("SIGKILL");
         } catch (err) {
-          logger.warn(`Exception occurred while killing Runner child process (PID: ${runner.process.pid})`, { err });
+          logger.warn(`Exception occurred while killing Runner child process (PID: ${vm.process.pid})`, { err });
         }
       }
 
@@ -72,8 +72,11 @@ export class Orchestrator {
 
     const closed = (async () => {
       const status = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-        runner.process.once("close", (code, signal) => {
+        vm.process.once("close", (code, signal) => {
           resolve({ code, signal });
+        });
+        vm.process.once("error", () => {
+          resolve({ code: null, signal: null });
         });
       });
 
@@ -92,53 +95,58 @@ export class Orchestrator {
       return status;
     })();
 
-    const ready = (async () => {
-      let attempt = 0;
+    const ready = Promise.race([
+      (async () => {
+        let attempt = 0;
 
-      while (attempt <= 3) {
-        try {
-          attempt += 1;
+        while (attempt <= 3) {
+          try {
+            attempt += 1;
 
-          await new Promise<void>((resolve, reject) => {
-            const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
+            await new Promise<void>((resolve, reject) => {
+              const conn = createConnection({ host: net.veth.guest.ip, port: 8000 });
 
-            conn.on("connect", () => {
-              conn.destroy();
-              resolve();
+              conn.on("connect", () => {
+                conn.destroy();
+                resolve();
+              });
+
+              conn.on("error", (error) => {
+                conn.destroy();
+                reject(error);
+              });
             });
 
-            conn.on("error", (error) => {
-              conn.destroy();
-              reject(error);
+            return;
+          } catch (error) {
+            logger.warn("Instance port 8000 is not ready yet, retrying...", {
+              attempt,
+              host: net.veth.guest.ip,
+              error,
             });
-          });
 
-          return;
-        } catch (error) {
-          logger.warn("Instance port 8000 is not ready yet, retrying...", {
-            attempt,
-            host: net.veth.guest.ip,
-            error,
-          });
-
-          if (attempt <= 3) {
-            await new Promise<void>((resolve) => {
-              setTimeout(resolve, 3000);
-            });
+            if (attempt <= 3) {
+              await new Promise<void>((resolve) => {
+                setTimeout(resolve, 3000);
+              });
+            }
           }
         }
-      }
 
-      throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
-    })();
+        throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
+      })(),
+      closed.then(() => {
+        throw new Error("xxx");
+      }),
+    ]);
 
     // ready 失败时强制回收子进程及网络资源，避免残留僵尸 VM。
     ready.catch(async (error) => {
       logger.errorFrom(error, "Instance failed to become ready, forcibly reclaiming resources");
 
-      if (runner.process.exitCode === null) {
+      if (vm.process.exitCode === null) {
         try {
-          runner.process.kill("SIGKILL");
+          vm.process.kill("SIGKILL");
         } catch (err) {
           logger.warn("Failed to kill runner child process during reclaim", { err });
         }
@@ -151,7 +159,7 @@ export class Orchestrator {
 
     const task: Orchestrator.Task = {
       net,
-      runner,
+      runner: vm,
       fs,
       config: options.config,
       closed,
@@ -164,13 +172,13 @@ export class Orchestrator {
 
 export namespace Orchestrator {
   export type Options = {
-    instanceId: string;
-    config: TaskConfig;
+    readonly instanceId: string;
+    readonly config: TaskConfig;
   };
 
   export type Task = {
-    readonly net: Network.Namespace;
-    readonly runner: Runner.Instance;
+    readonly net: VMNet.Namespace;
+    readonly runner: VM.Instance;
     readonly fs: FS.Instance;
     readonly config: TaskConfig;
     readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;

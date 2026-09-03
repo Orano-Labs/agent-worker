@@ -1,53 +1,53 @@
 import { Container } from "@/helpers/container";
-import { CommandLine } from "@/internal/command-line";
 import { Controller } from "@/internal/controller";
 import { Director } from "@/internal/director";
 import { Environment } from "@/internal/environment";
 import { FS } from "@/internal/fs";
-import { Image } from "@/internal/image";
 import { KVStorage } from "@/internal/kv-storage";
 import { Logger } from "@/internal/logger";
-import { Network } from "@/internal/network";
 import { Orchestrator } from "@/internal/orchestrator";
-import { Runner } from "@/internal/runner";
+import { Terminator } from "@/internal/terminator";
 import { Tunnel } from "@/internal/tunnel";
-import { Variables } from "@/internal/variables";
+import { VM } from "@/internal/vm";
+import { VMImage } from "@/internal/vm-image";
+import { VMNet } from "@/internal/vm-net";
 
-Container.singleton(CommandLine, () => new CommandLine());
+const ctrl = new AbortController();
+
+process.on("SIGINT", (signal) => ctrl.abort(new Error(`Process terminated by signal: ${signal}`))); // Ctrl+C
+process.on("SIGTERM", (signal) => ctrl.abort(new Error(`Process terminated by signal: ${signal}`))); // System or process manager
+process.on("SIGHUP", (signal) => ctrl.abort(new Error(`Process terminated by signal: ${signal}`))); // Terminal close or nodemon restart
+
 Container.singleton(Logger, () => new Logger());
 Container.singleton(Environment, () => new Environment());
-Container.singleton(Variables, () => new Variables());
 Container.singleton(Controller, () => new Controller());
-Container.singleton(Image, () => new Image());
+Container.singleton(VMImage, () => new VMImage());
 Container.singleton(KVStorage, () => new KVStorage());
-Container.singleton(Network, () => new Network());
+Container.singleton(VMNet, () => new VMNet());
 Container.singleton(Orchestrator, () => new Orchestrator());
 Container.singleton(FS, () => new FS());
 Container.singleton(Director, () => new Director());
-Container.singleton(Runner, () => new Runner());
+Container.singleton(VM, () => new VM());
 Container.singleton(Tunnel, () => new Tunnel());
+Container.singleton(Terminator, () => new Terminator(ctrl.signal));
 
 (async () => {
-  const variables = Container.inject(Variables);
   const environment = Container.inject(Environment);
+  const terminator = Container.inject(Terminator);
   const kv = Container.inject(KVStorage);
-  const net = Container.inject(Network);
-  const image = Container.inject(Image);
+  const image = Container.inject(VMImage);
+  const net = Container.inject(VMNet);
   const fs = Container.inject(FS);
   const o = Container.inject(Orchestrator);
-  const director = Container.inject(Director);
-  const controller = Container.inject(Controller);
-  const tunnel = Container.inject(Tunnel);
+  //   const director = Container.inject(Director);
+  //   const controller = Container.inject(Controller);
+  //   const tunnel = Container.inject(Tunnel);
 
-  await variables.init();
   await environment.init();
   await kv.init();
-  await net.init();
-  await fs.init();
   await image.init();
-  // await director.init();
-  // await tunnel.init();
-  // await controller.init();
+  await fs.init();
+  await net.init();
 
   const task = await o.run({
     instanceId: Math.random().toString().slice(2),
@@ -61,28 +61,11 @@ Container.singleton(Tunnel, () => new Tunnel());
 
   await task.ready.then(() => {
     console.log(`${task.net.veth.guest.ip}:8000`);
-
-    const ws = new WebSocket(`ws://${task.net.veth.guest.ip}:8000/ws`, ["tty"]);
-
-    ws.binaryType = "arraybuffer";
-
-    ws.addEventListener("error", console.log);
-    ws.addEventListener("message", (data) => {
-      console.log(Buffer.from(data.data).toString("utf-8"));
-    });
-    ws.addEventListener("close", () => {
-      console.log("Closed ....");
-    });
-    ws.addEventListener("open", () => {
-      console.log("Open ....");
-      ws.send("1" + JSON.stringify({ columns: 120, rows: 40 }));
-    });
   });
   await task.closed;
-
-  console.log("Hello");
+  await terminator.terminate();
 })().catch((error) => {
   console.log(error);
 });
 
-process.on("unhandledRejection", console.log);
+// process.on("unhandledRejection", console.log);

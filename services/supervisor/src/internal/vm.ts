@@ -12,26 +12,28 @@ import { asError } from "catch-unknown";
 import { Container } from "@/helpers/container";
 import { Firecracker } from "@/helpers/firecracker";
 import { Environment } from "@/internal/environment";
-import { Image } from "@/internal/image";
 import { Logger } from "@/internal/logger";
-import { Network } from "@/internal/network";
-import type { Orchestrator } from "./orchestrator";
+import { Terminator } from "@/internal/terminator";
+import { VMImage } from "@/internal/vm-image";
+import { VMNet } from "@/internal/vm-net";
 
 const CPU_CFS_PERIOD_US = 100000;
 const VMM_OVERHEAD_MIB = 64;
 
-export class Runner {
+export class VM {
   #env: Environment;
   #logger: Logger;
-  #image: Image;
+  #image: VMImage;
+  #terminator: Terminator;
 
   constructor() {
     this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).scope("Runner");
-    this.#image = Container.inject(Image);
+    this.#logger = Container.inject(Logger).prefix("Runner");
+    this.#image = Container.inject(VMImage);
+    this.#terminator = Container.inject(Terminator);
   }
 
-  async create(options: Runner.Options) {
+  async create(options: VM.Options) {
     const mac = (() => {
       const hash = createHash("sha256").update(options.id).digest();
       const bytes: string[] = [];
@@ -43,15 +45,19 @@ export class Runner {
       return `02:${bytes.join(":")}`;
     })();
 
-    const logger = this.#logger.scope(options.id);
+    const logger = this.#logger.prefix(options.id);
     const root = join(this.#env.workdir, "jailer", basename(this.#env.firecracker), options.id, "root");
 
-    const memoryLimitMIB = options.config.machineTier === "minimal" ? 1024 : options.config.machineTier === "standard" ? 2048 : 4096;
-    const cpuCapacity = options.config.machineTier === "minimal" ? 1 : options.config.machineTier === "standard" ? 2 : 4;
+    const memoryLimitMIB = options.machineTier === "minimal" ? 1024 : options.machineTier === "standard" ? 2048 : 4096;
+    const cpuCapacity = options.machineTier === "minimal" ? 1 : options.machineTier === "standard" ? 2 : 4;
     const cpuPeriodUs = CPU_CFS_PERIOD_US;
     const cpuQuotaUs = cpuCapacity * CPU_CFS_PERIOD_US;
 
     const totalMemoryBytes = (memoryLimitMIB + VMM_OVERHEAD_MIB) * 1024 * 1024;
+
+    if (this.#terminator.signal.aborted) {
+      throw this.#terminator.signal.reason;
+    }
 
     let ps: ChildProcessByStdio<null, Readable, Readable> | undefined;
 
@@ -92,7 +98,7 @@ export class Runner {
       args.push("--");
       args.push("--api-sock", "/firecracker.sock");
 
-      ps = spawn("sudo", args, { stdio: ["inherit", "pipe", "pipe"] });
+      ps = spawn("sudo", args, { stdio: ["ignore", "pipe", "pipe"] });
 
       createReadLineInterface(ps.stderr).on("line", (line) => {
         if (process.env.NODE_ENV !== "production") {
@@ -116,7 +122,7 @@ export class Runner {
       });
 
       const socket = join(root, "firecracker.sock");
-      const timeoutSignal = AbortSignal.timeout(1000 * 2);
+      const timeoutSignal = AbortSignal.any([AbortSignal.timeout(1000 * 2), this.#terminator.signal]);
 
       await new Promise<void>((resolve, reject) => {
         let error: unknown;
@@ -146,7 +152,7 @@ export class Runner {
           });
         };
 
-        attempt();
+        setTimeout(attempt, 50);
       });
 
       const fc = new Firecracker(socket);
@@ -160,7 +166,7 @@ export class Runner {
       bootArgs.push("reboot=k");
       bootArgs.push("panic=1");
 
-      bootArgs.push(`ip=${Network.TAP_VM_IP}:${Network.TAP_NS_IP}:${Network.TAP_NS_IP}:255.255.255.0::eth0:off`);
+      bootArgs.push(`ip=${VMNet.TAP_VM_IP}:${VMNet.TAP_NS_IP}:${VMNet.TAP_NS_IP}:255.255.255.0::eth0:off`);
 
       if (process.arch === "arm64") {
         bootArgs.push("keep_bootcon");
@@ -170,23 +176,22 @@ export class Runner {
 
       bootArgs.push(`AW_RUNNER_ID=${options.id}`);
       bootArgs.push(`AW_RUNNER_FS_PASSWORD=${fs.password}`);
-      bootArgs.push(`AW_RUNNER_PROJECT=${options.config.projectId}`);
+      bootArgs.push(`AW_RUNNER_PROJECT=${options.projectId}`);
 
       bootArgs.push("quiet");
       bootArgs.push("loglevel=3");
 
       await Promise.all([
         fc.putLogger({ log_path: "./firecracker.log", level: "Debug", show_level: true, show_log_origin: true }),
-        fc.putGuestNetworkInterfaceById("eth0", { iface_id: "eth0", guest_mac: mac, host_dev_name: Network.TAP }),
+        fc.putGuestNetworkInterfaceById("eth0", { iface_id: "eth0", guest_mac: mac, host_dev_name: VMNet.TAP }),
         fc.putMmdsConfig({ version: "V2", network_interfaces: ["eth0"], ipv4_address: "169.254.169.254", imds_compat: false }),
-        fc.putMmds({ latest: { "meta-data": options.config.metadata ?? {} } }),
+        fc.putMmds({ latest: { "meta-data": options.metadata ?? {} } }),
         fc.putMachineConfiguration({
           cpu_template: "None",
           mem_size_mib: memoryLimitMIB,
           vcpu_count: cpuCapacity > 1 ? Math.ceil(cpuCapacity / 2) * 2 : 1,
           track_dirty_pages: false,
           smt: false,
-          huge_pages: "2M",
         }),
         fc.putGuestBootSource({
           kernel_image_path: "./kernel",
@@ -225,7 +230,7 @@ export class Runner {
         }
       });
 
-      const instance: Runner.Instance = {
+      const instance: VM.Instance = {
         process: ps,
         fc,
         root,
@@ -247,11 +252,13 @@ export class Runner {
   }
 }
 
-export namespace Runner {
+export namespace VM {
   export type Options = {
     readonly id: string;
-    readonly net: Network.Namespace;
-    readonly config: Orchestrator.TaskConfig;
+    readonly net: VMNet.Namespace;
+    readonly projectId: string;
+    readonly machineTier: "minimal" | "standard" | "performance";
+    readonly metadata: Record<string, unknown>;
   };
 
   export type Instance = {

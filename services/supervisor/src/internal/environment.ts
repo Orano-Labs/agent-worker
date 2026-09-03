@@ -6,16 +6,14 @@ import { pipeline } from "node:stream/promises";
 import { x } from "tar";
 
 import { Container } from "@/helpers/container";
-import { CommandLine } from "@/internal/command-line";
 import { Logger } from "@/internal/logger";
-import { Variables } from "@/internal/variables";
+import { Terminator } from "@/internal/terminator";
 
 declare const VERSION: string;
 
 export class Environment {
   #logger: Logger;
-  #cli: CommandLine;
-  #variables: Variables;
+  #terminator: Terminator;
 
   get platform() {
     return platform();
@@ -26,15 +24,11 @@ export class Environment {
   }
 
   get workdir() {
-    return this.#variables.get("AW_SUPERVISOR_ROOT_DIR") || join(homedir(), ".aw-supervisor");
+    return process.env.AW_SUPERVISOR_ROOT_DIR || join(homedir(), ".aw-supervisor");
   }
 
   get version() {
     return VERSION;
-  }
-
-  get cwd() {
-    return this.#cli.cwd;
   }
 
   get firecracker() {
@@ -51,21 +45,13 @@ export class Environment {
     return join(this.workdir, `bin/jailer-${v}-${a}`);
   }
 
-  get juicefs() {
-    const v = Environment.FIRECRACKER_VERSION;
-    const a = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : "";
-
-    return join(this.workdir, `bin/juicefs-${v}-${a}`);
-  }
-
   get kernel() {
     return join(this.workdir, "kernel/vmlinux");
   }
 
   constructor() {
-    this.#logger = Container.inject(Logger).scope("Environment");
-    this.#cli = Container.inject(CommandLine);
-    this.#variables = Container.inject(Variables);
+    this.#logger = Container.inject(Logger).prefix("Environment");
+    this.#terminator = Container.inject(Terminator);
   }
 
   async #installFirecracker() {
@@ -93,7 +79,7 @@ export class Environment {
 
     this.#logger.info(`Downloading Firecracker ${Environment.FIRECRACKER_VERSION} from ${url}...`);
 
-    const body = await fetch(url).then((response) => {
+    const body = await fetch(url, { signal: this.#terminator.signal }).then((response) => {
       if (!response.ok) {
         throw new Error(`Download failed (${url}): ${response.statusText}`);
       }
@@ -142,13 +128,13 @@ export class Environment {
         path: join(this.workdir, "images"),
         description: "images",
       },
-      {
-        path: join(this.workdir, "fs"),
-        description: "juice-fs mount point",
-      },
     ];
 
     for (const directory of directories) {
+      if (this.#terminator.signal.aborted) {
+        throw this.#terminator.signal.reason;
+      }
+
       await mkdir(directory.path, { recursive: true });
     }
 

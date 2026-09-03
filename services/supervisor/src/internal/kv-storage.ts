@@ -15,7 +15,7 @@ export class KVStorage {
 
   constructor() {
     this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).scope("KVStorage");
+    this.#logger = Container.inject(Logger).prefix("KVStorage");
   }
 
   get db() {

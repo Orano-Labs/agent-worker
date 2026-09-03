@@ -2,19 +2,15 @@ import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 import { createGrpcWebTransport } from "@connectrpc/connect-node";
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
-import { Variables } from "@/internal/variables";
 
 export class Director {
   #client?: Client;
   #host?: string;
   #identity?: Readonly<Client.Identity>;
-
-  #variables: Variables;
   #logger: Logger;
 
   constructor() {
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("Director");
+    this.#logger = Container.inject(Logger).prefix("Director");
   }
 
   get client() {
@@ -58,10 +54,9 @@ export class Director {
   }
 
   async init() {
-    const supervisorId = this.#variables.get("AW_SUPERVISOR_ID");
-    const supervisorPrivateKey = this.#variables.get("AW_SUPERVISOR_PRIVATE_KEY");
-
-    const baseUrl = this.#variables.get("AW_SUPERVISOR_DIRECTOR_HOST_URL");
+    const supervisorId = process.env.AW_SUPERVISOR_ID;
+    const supervisorPrivateKey = process.env.AW_SUPERVISOR_PRIVATE_KEY;
+    const baseUrl = process.env.AW_SUPERVISOR_DIRECTOR_HOST_URL;
 
     if (!supervisorId) {
       throw new Error("AW_SUPERVISOR_ID is not set.");

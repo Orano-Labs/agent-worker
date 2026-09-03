@@ -9,29 +9,39 @@ import { Container } from "@/helpers/container";
 import { Environment } from "@/internal/environment";
 import { Logger } from "@/internal/logger";
 import type { Orchestrator } from "@/internal/orchestrator";
-import { Variables } from "@/internal/variables";
+import { Terminator } from "./terminator";
 
 export class FS {
   #logger: Logger;
-  #variables: Variables;
   #env: Environment;
+  #terminator: Terminator;
 
   constructor() {
-    this.#logger = Container.inject(Logger).scope("FS");
-    this.#variables = Container.inject(Variables);
+    this.#logger = Container.inject(Logger).prefix("FS");
     this.#env = Container.inject(Environment);
+    this.#terminator = Container.inject(Terminator);
   }
 
   get root() {
-    return this.#variables.get("AW_SUPERVISOR_FS_ROOT") || join(this.#env.workdir, "fs");
+    return process.env.AW_SUPERVISOR_FS_ROOT || join(this.#env.workdir, "fs");
   }
 
   get #socket() {
     return join(this.#env.workdir, "webdav.socket");
   }
 
+  async #fetch(path: string, init: RequestInit) {
+    return fetch(new URL(path, "http://localhost"), {
+      ...init,
+      // @ts-expect-error
+      dispatcher: new Agent({
+        socketPath: this.#socket,
+      }),
+    });
+  }
+
   async create(options: FS.Options) {
-    const workspace = join("projects", options.config.projectId);
+    const workspace = join("projects", options.projectId);
 
     const formData = new FormData();
 
@@ -39,24 +49,11 @@ export class FS {
     formData.append("dir", workspace);
 
     await mkdir(join(this.root, workspace), { recursive: true });
-    await fetch(`http://localhost/expose/${options.id}`, {
-      method: "POST",
-      body: formData,
-      // @ts-expect-error
-      dispatcher: new Agent({
-        socketPath: this.#socket,
-      }),
-    });
+    await this.#fetch(`/expose/${options.id}`, { method: "POST", body: formData });
 
     return {
       release: async () => {
-        await fetch(`http://localhost/expose/${options.id}`, {
-          method: "DELETE",
-          // @ts-expect-error
-          dispatcher: new Agent({
-            socketPath: this.#socket,
-          }),
-        });
+        await this.#fetch(`/expose/${options.id}`, { method: "DELETE" });
       },
     };
   }
@@ -75,7 +72,7 @@ export class FS {
 
     const socket = join(this.#env.workdir, "webdav.socket");
     const ps = spawn(bin, ["-p", "26088", "-s", socket, "-r", root], {
-      stdio: ["inherit", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -92,13 +89,26 @@ export class FS {
     createReadLineInterface(ps.stdout).on("line", (line) => {
       this.#logger.info(line);
     });
+
+    this.#terminator.register(async () => {
+      if (ps.killed) {
+        return;
+      }
+
+      ps.kill("SIGTERM");
+
+      await new Promise<void>((resolve) => {
+        ps.once("close", resolve);
+        ps.once("error", resolve);
+      });
+    });
   }
 }
 
 export namespace FS {
   export type Options = {
     readonly id: string;
-    readonly config: Orchestrator.TaskConfig;
+    readonly projectId: string;
     readonly password: string;
   };
 

@@ -1,52 +1,42 @@
 import { default as pino } from "pino";
 import { default as pretty } from "pino-pretty";
 
-import { Container } from "@/helpers/container";
 import { ErrorHelpers } from "@/helpers/error-helpers";
-import { CommandLine } from "@/internal/command-line";
 
 const PRODUCTION = process.env.NODE_ENV === "production";
+const ENGINE = pino(
+  pretty({
+    customPrettifiers: {
+      level: (_data, _key, _log, extra) => {
+        return extra.labelColorized.replace(extra.label, extra.label.padEnd(5));
+      },
+    },
+    colorize: !PRODUCTION,
+  }),
+);
+
+if (PRODUCTION) {
+  ENGINE.level = "info";
+} else {
+  ENGINE.level = "trace";
+}
 
 export class Logger {
-  #logger: ReturnType<typeof pino>;
+  #engine: typeof ENGINE;
+  #prefixs: string[];
+  #context: Logger.Context;
 
-  #cli: CommandLine;
-
-  constructor(options?: Logger.Options) {
-    this.#cli = Container.inject(CommandLine);
-
-    if (options?.parent) {
-      this.#logger = options.parent.#logger.child(options.context || {}, {
-        msgPrefix: options.scope ? `[${options.scope}] ` : undefined,
-      });
-    } else {
-      this.#logger = pino(
-        pretty({
-          customPrettifiers: {
-            level: (_data, _key, _log, extra) => {
-              return extra.labelColorized.replace(extra.label, extra.label.padEnd(5));
-            },
-          },
-          colorize: this.#cli.logColorize ?? !PRODUCTION,
-        }),
-      );
-
-      if (this.#cli.logLevel && ["fatal", "error", "warn", "info", "debug", "trace", "silent"].includes(this.#cli.logLevel)) {
-        this.#logger.level = this.#cli.logLevel;
-      } else if (PRODUCTION) {
-        this.#logger.level = "info";
-      } else {
-        this.#logger.level = "trace";
-      }
-    }
+  constructor() {
+    this.#engine = ENGINE;
+    this.#prefixs = [];
+    this.#context = {};
   }
 
   #write(level: Logger.Level, message: string, context?: Logger.Context) {
-    if (context) {
-      this.#logger[level](context, message);
-    } else {
-      this.#logger[level](message);
-    }
+    const prefix = this.#prefixs.length ? `[${this.#prefixs.join("::")}] ` : "";
+    const bindings = { ...context, ...this.#context };
+
+    this.#engine[level](bindings, `${prefix}${message}`);
   }
 
   info(message: string, context?: Record<string, unknown>) {
@@ -70,7 +60,7 @@ export class Logger {
   }
 
   fatalFrom(error: unknown, message?: string) {
-    this.#logger.fatal(ErrorHelpers.as(error), message);
+    this.#engine.fatal(ErrorHelpers.as(error), message);
   }
 
   error(message: string, context?: Record<string, unknown>) {
@@ -78,19 +68,29 @@ export class Logger {
   }
 
   errorFrom(error: unknown, message?: string) {
-    this.#logger.error(ErrorHelpers.as(error), message);
+    this.#engine.error(ErrorHelpers.as(error), message);
   }
 
-  scope(prefix: string, context?: Logger.Context) {
-    return new Logger({ parent: this, scope: prefix, context });
+  prefix(prefix: string, context?: Logger.Context) {
+    const child = new Logger();
+
+    child.#prefixs = [...this.#prefixs, prefix];
+    child.#context = { ...context, ...this.#context };
+
+    return child;
   }
 
   with(context: Logger.Context) {
-    return new Logger({ parent: this, context });
+    const child = new Logger();
+
+    child.#prefixs = [...this.#prefixs];
+    child.#context = { ...context, ...this.#context };
+
+    return child;
   }
 
   flush() {
-    this.#logger.flush();
+    this.#engine.flush();
   }
 }
 

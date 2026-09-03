@@ -30,10 +30,12 @@
   ],
   "packageManager": "pnpm@10.14.0",
   "dependencies": {
+    "@aw/ptyd": "workspace:*",
     "@aw/vm-director": "workspace:*",
     "@aw/webdav": "workspace:*",
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-node": "^2.1.1",
+    "async-lock": "^1.4.1",
     "catch-unknown": "^2.0.0",
     "lmdb": "^3.5.4",
     "nanoid": "^5.1.11",
@@ -48,6 +50,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@hey-api/openapi-ts": "^0.98.2"
+    "@hey-api/openapi-ts": "^0.98.2",
+    "@types/async-lock": "^1.4.2"
   }
 }

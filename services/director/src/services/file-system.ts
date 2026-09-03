@@ -4,14 +4,18 @@ import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@co
 import { ZipArchive } from "archiver";
 import {
   FileSystemService,
+  FileSystemServiceCopyRequestValid,
   type FileSystemServiceCreateRequestValid,
   FileSystemServiceCreateResponseSchema,
   type FileSystemServiceDeleteRequestValid,
   FileSystemServiceDeleteResponseSchema,
   type FileSystemServiceDownloadRequestValid,
   FileSystemServiceDownloadResponseSchema,
+  type FileSystemServiceMoveRequestValid,
+  FileSystemServiceReadRequestValid,
   type FileSystemServiceTreeRequestValid,
   FileSystemServiceTreeResponseSchema,
+  FileSystemServiceWriteRequestValid,
   TreeNodeDirectorySchema,
   TreeNodeFileSchema,
   TreeNodeSchema,
@@ -59,6 +63,22 @@ export class FileSystemServiceImplementation {
       where: {
         id: projectId,
         ownerId: user,
+        deleteTime: null,
+      },
+    });
+
+    if (!project) {
+      throw new ConnectError("Project not found.", Code.NotFound);
+    }
+
+    return project;
+  }
+
+  async #findTemplateMust(templateId: string, context: HandlerContext) {
+    const user = this.#server.getUserIdentityContextMust(context);
+    const project = await this.#repository.client.template.findFirst({
+      where: {
+        id: templateId,
         deleteTime: null,
       },
     });
@@ -283,6 +303,14 @@ export class FileSystemServiceImplementation {
 
     return Protobuf.createValid(FileSystemServiceDeleteResponseSchema, {});
   }
+
+  async #move(request: FileSystemServiceMoveRequestValid, context: HandlerContext) {}
+
+  async #copy(request: FileSystemServiceCopyRequestValid, context: HandlerContext) {}
+
+  async #write(request: FileSystemServiceWriteRequestValid, context: HandlerContext) {}
+
+  async #read(request: FileSystemServiceReadRequestValid, context: HandlerContext) {};
 
   setup(router: ConnectRouter) {
     router.service(FileSystemService, {

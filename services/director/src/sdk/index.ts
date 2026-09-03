@@ -10,6 +10,7 @@ import {
   type MessageValidType,
 } from "@bufbuild/protobuf";
 import { type CallOptions, createClient, type Transport } from "@connectrpc/connect";
+import { FileSystemService } from "@/generated/proto/api/v1/file-system_pb";
 import { ProjectService } from "@/generated/proto/api/v1/project_pb";
 import { SupervisorService } from "@/generated/proto/api/v1/supervisor_pb";
 import { SupervisorPortalService } from "@/generated/proto/api/v1/supervisor-portal_pb";
@@ -78,6 +79,10 @@ export class Client {
     return createClient(TemplateService, this.#transport) as InferServiceValid<typeof TemplateService>;
   }
 
+  createFileSystemService() {
+    return createClient(FileSystemService, this.#transport) as InferServiceValid<typeof FileSystemService>;
+  }
+
   static createMessageValid<T extends DescMessage>(desc: T, message: Omit<MessageValidType<T>, "$typeName" | "$unknown">) {
     return create(desc, message as unknown as MessageInitShape<T>) as MessageValidType<T>;
   }
@@ -87,6 +92,7 @@ export namespace Client {
   export type Identity = RequestSigner.Identity;
 }
 
+export * as FileSystemPB from "@/generated/proto/api/v1/file-system_pb";
 export * as ProjectPB from "@/generated/proto/api/v1/project_pb";
 export * as SignaturePB from "@/generated/proto/api/v1/signature_pb";
 export * as SupervisorPB from "@/generated/proto/api/v1/supervisor_pb";

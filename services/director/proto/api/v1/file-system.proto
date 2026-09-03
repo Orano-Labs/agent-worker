@@ -6,11 +6,19 @@ import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 
+enum FileSystemType {
+  FILE_SYSTEM_TYPE_UNSPECIFIED = 0;
+  FILE_SYSTEM_TYPE_PROJECT = 1;
+  FILE_SYSTEM_TYPE_TEMPLATE = 2;
+}
+
+message FileSystem {
+  api.v1.FileSystemType type = 1;
+  string id = 2;
+}
+
 message TreeNodeFile {
-  string mimetype = 1 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {max_len: 255}
-  ];
+  string mimetype = 1 [(buf.validate.field).string = {max_len: 255}];
 }
 
 message TreeNodeDirectory {
@@ -19,13 +27,10 @@ message TreeNodeDirectory {
 }
 
 message TreeNodeSymlink {
-  string target = 1 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
+  string target = 1 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
 }
 
 message TreeNode {
@@ -37,119 +42,94 @@ message TreeNode {
     TreeNodeSymlink symlink = 3;
   }
 
-  string name = 4 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {max_len: 255}
-  ];
+  string name = 4 [(buf.validate.field).string = {max_len: 255}];
   google.protobuf.Timestamp mtime = 6 [(buf.validate.field).required = true];
   google.protobuf.Timestamp ctime = 7 [(buf.validate.field).required = true];
-  int64 size = 8 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).int64 = {gte: 0}
-  ];
+  int64 size = 8 [(buf.validate.field).int64 = {gte: 0}];
 }
 
 message FileSystemServiceTreeRequest {
   string project_id = 1 [(buf.validate.field).string = {len: 24}];
   google.protobuf.StringValue root = 2 [(buf.validate.field).string = {max_len: 4096}];
-  int32 depth = 3 [(buf.validate.field).int32 = {gte: 0, lte: 10}];
+  int32 depth = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 10
+  }];
 }
 message FileSystemServiceTreeResponse {
-  string name = 1 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {max_len: 255}
-  ];
+  string name = 1 [(buf.validate.field).string = {max_len: 255}];
   google.protobuf.Timestamp mtime = 3 [(buf.validate.field).required = true];
   google.protobuf.Timestamp ctime = 4 [(buf.validate.field).required = true];
-  int64 size = 5 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).int64 = {gte: 0}
-  ];
+  int64 size = 5 [(buf.validate.field).int64 = {gte: 0}];
   repeated TreeNode children = 6;
 }
 
 message FileSystemServiceDownloadRequest {
   string project_id = 1 [(buf.validate.field).string = {len: 24}];
-  string path = 2 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
+  string path = 2 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
 }
 message FileSystemServiceDownloadResponse {
-  bytes chunk = 1 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).bytes = {
-      min_len: 1
-      max_len: 65536 // 64KB
-    }
-  ];
+  bytes chunk = 1 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 65536 // 64KB
+  }];
 }
 
 message FileSystemServiceDeleteRequest {
   string project_id = 1 [(buf.validate.field).string = {len: 24}];
-  string path = 2 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
+  string path = 2 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
 }
 message FileSystemServiceDeleteResponse {}
 
 message FileSystemServiceMoveRequest {
   string project_id = 1 [(buf.validate.field).string = {len: 24}];
-  string source = 2 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
-  string target = 3 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
+  string source = 2 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
+  string target = 3 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
 }
 message FileSystemServiceMoveResponse {}
 
 message FileSystemServiceCopyRequest {
   string project_id = 1 [(buf.validate.field).string = {len: 24}];
-  string source = 2 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
-  string target = 3 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
+  string source = 2 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
+  string target = 3 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
 }
 message FileSystemServiceCopyResponse {}
 
 message FileSystemServiceCreateRequest {
   string project_id = 1 [(buf.validate.field).string = {len: 24}];
-  string target = 2 [
-    (buf.validate.field).required = true,
-    (buf.validate.field).string = {
-      max_len: 4096
-      min_len: 1
-    }
-  ];
+  string target = 2 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
   bool directory = 3;
 }
 message FileSystemServiceCreateResponse {}
+
+message FileSystemServiceWriteRequest {
+  api.v1.FileSystem fs = 1 [(buf.validate.field).required = true];
+}
+message FileSystemServiceWriteResponse {}
+
+message FileSystemServiceReadRequest {}
+message FileSystemServiceReadResponse {}
 
 service FileSystemService {
   rpc Tree(FileSystemServiceTreeRequest) returns (FileSystemServiceTreeResponse);
@@ -158,45 +138,49 @@ service FileSystemService {
   rpc Move(FileSystemServiceMoveRequest) returns (FileSystemServiceMoveResponse);
   rpc Copy(FileSystemServiceCopyRequest) returns (FileSystemServiceCopyResponse);
   rpc Create(FileSystemServiceCreateRequest) returns (FileSystemServiceCreateResponse);
+  // 小文件读 (SIZE < 1024KB)
+  rpc Write(FileSystemServiceWriteRequest) returns (FileSystemServiceWriteResponse);
+  // 小文件写 (SIZE < 1024KB)
+  rpc Read(FileSystemServiceReadRequest) returns (FileSystemServiceReadResponse);
 }
 
 message FileUploadServiceCreateRequest {
-  string target = 1;
-  string hash = 2;
-  int64 size = 3;
+  api.v1.FileSystem fs = 1 [(buf.validate.field).required = true];
+  string target = 2 [(buf.validate.field).string = {
+    max_len: 4096
+    min_len: 1
+  }];
+  // SHA256 生成的 HASH 值
+  bytes hash = 3 [(buf.validate.field).bytes = {len: 32}];
+  int64 size = 4 [(buf.validate.field).int64 = {gt: 0}];
 }
 message FileUploadServiceCreateResponse {
-  string id = 1;
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 
 message FileUploadServiceUploadRequest {
-  string id = 1;
-  bytes chunk = 2;
-  int32 chunk_index = 3;
+  string id = 1 [(buf.validate.field).string = {len: 24}];
+  bytes chunk = 2 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 65536 // 64KB
+  }];
+  int32 chunk_index = 3 [(buf.validate.field).int32 = {gt: 0}];
 }
 message FileUploadServiceUploadResponse {}
 
 message FileUploadServiceCompleteRequest {
-  string id = 1;
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 message FileUploadServiceCompleteResponse {}
 
 message FileUploadServiceCancelRequest {
-  string id = 1;
+  string id = 1 [(buf.validate.field).string = {len: 24}];
 }
 message FileUploadServiceCancelResponse {}
-
-message FileUploadServiceListRequest {}
-message FileUploadServiceListResponse {}
-
-message FileUploadServiceStatusRequest {}
-message FileUploadServiceStatusResponse {}
 
 service FileUploadService {
   rpc Create(FileUploadServiceCreateRequest) returns (FileUploadServiceCreateResponse);
   rpc Upload(FileUploadServiceUploadRequest) returns (FileUploadServiceUploadResponse);
   rpc Complete(FileUploadServiceCompleteRequest) returns (FileUploadServiceCompleteResponse);
   rpc Cancel(FileUploadServiceCancelRequest) returns (FileUploadServiceCancelResponse);
-  rpc List(FileUploadServiceListRequest) returns (FileUploadServiceListResponse);
-  rpc Status(FileUploadServiceStatusRequest) returns (FileUploadServiceStatusResponse);
 }

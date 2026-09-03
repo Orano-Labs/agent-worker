@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { parseEnv } from "node:util";
 
 import { Container } from "@/helpers/container";
@@ -43,7 +44,7 @@ export class Variables {
         let content: string;
 
         try {
-          content = await readFile(file, "utf-8");
+          content = await readFile(join(process.cwd(), file), "utf-8");
         } catch {
           this.#logger.warn(`Failed to read environment file: ${file}`);
 

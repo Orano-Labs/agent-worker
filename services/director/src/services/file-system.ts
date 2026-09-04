@@ -1,10 +1,10 @@
-import { mkdir, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, normalize } from "node:path";
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { ZipArchive } from "archiver";
 import {
   FileSystemService,
-  FileSystemServiceCopyRequestValid,
+  type FileSystemServiceCopyRequestValid,
   type FileSystemServiceCreateRequestValid,
   FileSystemServiceCreateResponseSchema,
   type FileSystemServiceDeleteRequestValid,
@@ -12,10 +12,14 @@ import {
   type FileSystemServiceDownloadRequestValid,
   FileSystemServiceDownloadResponseSchema,
   type FileSystemServiceMoveRequestValid,
-  FileSystemServiceReadRequestValid,
+  type FileSystemServiceReadRequestValid,
+  FileSystemServiceReadResponseSchema,
   type FileSystemServiceTreeRequestValid,
   FileSystemServiceTreeResponseSchema,
-  FileSystemServiceWriteRequestValid,
+  type FileSystemServiceWriteRequestValid,
+  FileSystemServiceWriteResponseSchema,
+  FileSystemType,
+  type FileSystemValid,
   TreeNodeDirectorySchema,
   TreeNodeFileSchema,
   TreeNodeSchema,
@@ -57,37 +61,50 @@ export class FileSystemServiceImplementation {
     return join("/", normalize(path));
   }
 
-  async #findProjectMust(projectId: string, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
-    const project = await this.#repository.client.project.findFirst({
-      where: {
-        id: projectId,
-        ownerId: user,
-        deleteTime: null,
-      },
-    });
+  async #resolveFileSystemInfo(fs: FileSystemValid, context: HandlerContext) {
+    const identityType = this.#server.getIdentityCaseContextMust(context);
 
-    if (!project) {
-      throw new ConnectError("Project not found.", Code.NotFound);
+    if (fs.type === FileSystemType.TEMPLATE && identityType !== "manager") {
+      throw new ConnectError("Template file systems require a manager identity.", Code.PermissionDenied);
     }
 
-    return project;
-  }
-
-  async #findTemplateMust(templateId: string, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
-    const project = await this.#repository.client.template.findFirst({
-      where: {
-        id: templateId,
-        deleteTime: null,
-      },
-    });
-
-    if (!project) {
-      throw new ConnectError("Project not found.", Code.NotFound);
+    if (fs.type === FileSystemType.PROJECT && identityType !== "user") {
+      throw new ConnectError("Project file systems require a user identity.", Code.PermissionDenied);
     }
 
-    return project;
+    if (fs.type !== FileSystemType.TEMPLATE && fs.type !== FileSystemType.PROJECT) {
+      throw new ConnectError("Unsupported file system type.", Code.InvalidArgument);
+    }
+
+    if (fs.type === FileSystemType.TEMPLATE) {
+      const template = await this.#repository.client.template.findFirst({
+        where: {
+          id: fs.id,
+          deleteTime: null,
+        },
+      });
+
+      if (!template) {
+        throw new ConnectError("Template not found.", Code.NotFound);
+      }
+
+      return { type: "template", root: join(this.#root, "templates", template.id), ...template } as const;
+    } else {
+      const user = this.#server.getUserIdentityContextMust(context);
+      const project = await this.#repository.client.project.findFirst({
+        where: {
+          id: fs.id,
+          ownerId: user,
+          deleteTime: null,
+        },
+      });
+
+      if (!project) {
+        throw new ConnectError("Project not found.", Code.NotFound);
+      }
+
+      return { type: "project", root: join(this.#root, "projects", project.id), ...project } as const;
+    }
   }
 
   async #buildDirectoryTree(from: string, depth: number): Promise<TreeNodeValid[]> {
@@ -158,11 +175,9 @@ export class FileSystemServiceImplementation {
   }
 
   async #tree(request: FileSystemServiceTreeRequestValid, context: HandlerContext) {
-    const project = await this.#findProjectMust(request.projectId, context);
-
-    const projectRoot = join(this.#root, "projects", project.id);
+    const info = await this.#resolveFileSystemInfo(request.fs, context);
     const path = this.#normalizePath(request.root || "/");
-    const fullpath = join(projectRoot, path);
+    const fullpath = join(info.root, path);
 
     const resolved = await stat(fullpath).catch(() => {
       throw new ConnectError("Path not found.", Code.NotFound);
@@ -177,17 +192,14 @@ export class FileSystemServiceImplementation {
       size: BigInt(resolved.size),
       mtime: Protobuf.Timestamp.fromDate(resolved.mtime),
       ctime: Protobuf.Timestamp.fromDate(resolved.ctime),
-      // TODO:xxx
       children: await this.#buildDirectoryTree(fullpath, request.depth),
     });
   }
 
   async #download(request: FileSystemServiceDownloadRequestValid, context: HandlerContext) {
-    const project = await this.#findProjectMust(request.projectId, context);
-
-    const projectRoot = join(this.#root, "projects", project.id);
-    const path = this.#normalizePath(request.path);
-    const fullpath = join(projectRoot, path);
+    const info = await this.#resolveFileSystemInfo(request.fs, context);
+    const path = this.#normalizePath(request.path || "/");
+    const fullpath = join(info.root, path);
 
     const resolved = await stat(fullpath).catch(() => {
       throw new ConnectError("Path not found.", Code.NotFound);
@@ -245,13 +257,11 @@ export class FileSystemServiceImplementation {
   }
 
   async #create(request: FileSystemServiceCreateRequestValid, context: HandlerContext) {
-    const project = await this.#findProjectMust(request.projectId, context);
+    const info = await this.#resolveFileSystemInfo(request.fs, context);
+    const path = this.#normalizePath(request.target || "/");
+    const fullpath = join(info.root, path);
 
-    const projectRoot = join(this.#root, "projects", project.id);
-    const path = this.#normalizePath(request.target);
-    const fullpath = join(projectRoot, path);
-
-    if (!fullpath.startsWith(`${projectRoot}/`) && fullpath !== projectRoot) {
+    if (!fullpath.startsWith(`${info.root}/`) && fullpath !== info.root) {
       throw new ConnectError("Path traversal denied.", Code.PermissionDenied);
     }
 
@@ -281,11 +291,9 @@ export class FileSystemServiceImplementation {
   }
 
   async #delete(request: FileSystemServiceDeleteRequestValid, context: HandlerContext) {
-    const project = await this.#findProjectMust(request.projectId, context);
-
-    const projectRoot = join(this.#root, "projects", project.id);
+    const info = await this.#resolveFileSystemInfo(request.fs, context);
     const path = this.#normalizePath(request.path);
-    const fullpath = join(projectRoot, path);
+    const fullpath = join(info.root, path);
 
     if (path === "/") {
       throw new ConnectError("Cannot delete root directory.", Code.FailedPrecondition);
@@ -294,7 +302,7 @@ export class FileSystemServiceImplementation {
     try {
       await rm(fullpath, { recursive: true });
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
         throw new ConnectError("Path not found.", Code.NotFound);
       }
 
@@ -304,13 +312,45 @@ export class FileSystemServiceImplementation {
     return Protobuf.createValid(FileSystemServiceDeleteResponseSchema, {});
   }
 
-  async #move(request: FileSystemServiceMoveRequestValid, context: HandlerContext) {}
+  async #read(request: FileSystemServiceReadRequestValid, context: HandlerContext) {
+    const info = await this.#resolveFileSystemInfo(request.fs, context);
+    const path = this.#normalizePath(request.target);
+    const fullpath = join(info.root, path);
 
-  async #copy(request: FileSystemServiceCopyRequestValid, context: HandlerContext) {}
+    const resolved = await stat(fullpath).catch(() => {
+      throw new ConnectError("Path not found.", Code.NotFound);
+    });
 
-  async #write(request: FileSystemServiceWriteRequestValid, context: HandlerContext) {}
+    if (!resolved.isFile()) {
+      throw new ConnectError("Path is not a file.", Code.FailedPrecondition);
+    }
 
-  async #read(request: FileSystemServiceReadRequestValid, context: HandlerContext) {};
+    if (resolved.size > 1024 * 1024) {
+      throw new ConnectError("File exceeds the maximum readable size of 1 MiB.", Code.FailedPrecondition);
+    }
+
+    return Protobuf.createValid(FileSystemServiceReadResponseSchema, {
+      content: await readFile(fullpath),
+    });
+  }
+
+  async #write(request: FileSystemServiceWriteRequestValid, context: HandlerContext) {
+    const info = await this.#resolveFileSystemInfo(request.fs, context);
+    const path = this.#normalizePath(request.target);
+    const fullpath = join(info.root, path);
+
+    const resolved = await stat(fullpath).catch(() => {
+      throw new ConnectError("Path not found.", Code.NotFound);
+    });
+
+    if (!resolved.isFile()) {
+      throw new ConnectError("Path is not a file.", Code.FailedPrecondition);
+    }
+
+    await writeFile(fullpath, request.content);
+
+    return Protobuf.createValid(FileSystemServiceWriteResponseSchema, {});
+  }
 
   setup(router: ConnectRouter) {
     router.service(FileSystemService, {
@@ -328,7 +368,13 @@ export class FileSystemServiceImplementation {
         return this.#create(request as FileSystemServiceCreateRequestValid, context);
       },
       delete: async (request, context) => {
-        return this.#delete(request, context);
+        return this.#delete(request as FileSystemServiceDeleteRequestValid, context);
+      },
+      read: async (request, context) => {
+        return this.#read(request as FileSystemServiceReadRequestValid, context);
+      },
+      write: async (request, context) => {
+        return this.#write(request as FileSystemServiceWriteRequestValid, context);
       },
     });
   }

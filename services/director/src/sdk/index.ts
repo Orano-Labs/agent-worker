@@ -10,7 +10,7 @@ import {
   type MessageValidType,
 } from "@bufbuild/protobuf";
 import { type CallOptions, createClient, type Transport } from "@connectrpc/connect";
-import { FileSystemService } from "@/generated/proto/api/v1/file-system_pb";
+import { FileSystemService, FileUploadService } from "@/generated/proto/api/v1/file-system_pb";
 import { ProjectService } from "@/generated/proto/api/v1/project_pb";
 import { SupervisorService } from "@/generated/proto/api/v1/supervisor_pb";
 import { SupervisorPortalService } from "@/generated/proto/api/v1/supervisor-portal_pb";
@@ -81,6 +81,10 @@ export class Client {
 
   createFileSystemService() {
     return createClient(FileSystemService, this.#transport) as InferServiceValid<typeof FileSystemService>;
+  }
+
+  createFileUploadService() {
+    return createClient(FileUploadService, this.#transport) as InferServiceValid<typeof FileUploadService>;
   }
 
   static createMessageValid<T extends DescMessage>(desc: T, message: Omit<MessageValidType<T>, "$typeName" | "$unknown">) {

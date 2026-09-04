@@ -35,8 +35,8 @@ const SERVICE_ACCESS: Readonly<Record<string, ReadonlyArray<SignatureIdentityVal
   "api.v1.SupervisorPortalService": ["supervisor"],
   "api.v1.ProjectService": ["user"],
   "api.v1.TemplateService": ["user"],
-  "api.v1.FileUploadService": ["user"],
-  "api.v1.FileSystemService": ["user"],
+  "api.v1.FileUploadService": ["user", "manager"],
+  "api.v1.FileSystemService": ["user", "manager"],
 };
 
 export class GRPCServer {
@@ -177,6 +177,20 @@ export class GRPCServer {
     });
 
     return Result.ok();
+  }
+
+  getIdentityCaseContext(context: HandlerContext) {
+    return context.values.get(IDENTITY_CASE_CONTEXT);
+  }
+
+  getIdentityCaseContextMust(context: HandlerContext) {
+    const identityCase = this.getIdentityCaseContext(context);
+
+    if (!identityCase) {
+      throw new Error("Missing identity case context.");
+    }
+
+    return identityCase;
   }
 
   getUserIdentityContext(context: HandlerContext) {

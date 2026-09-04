@@ -69,6 +69,17 @@
         }
       };
 
+      const sendData = (data) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "data",
+              data
+            }),
+          );
+        }
+      }
+
       const scheduleReconnect = () => {
         if (reconnectTimer) {
           return;
@@ -87,12 +98,9 @@
       };
 
       const connect = () => {
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-
         ws = new WebSocket(wsUrl());
+
+        ws.binaryType = 'arraybuffer';
 
         ws.onopen = () => {
           reconnectAttempts = 0;
@@ -111,15 +119,20 @@
         };
 
         ws.onmessage = (message) => {
-          term.write(message.data);
+          const data = message.data;
+
+          if (data instanceof ArrayBuffer) {
+            term.write(new Uint8Array(data));
+          } else if (typeof data === "string") {
+            term.write(data);
+          }
+
           fitAddon.fit();
         };
       };
 
       term.onData((data) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "data", data }));
-        }
+        sendData(data)
       });
 
       window.addEventListener("resize", () => {

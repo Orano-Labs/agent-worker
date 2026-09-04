@@ -83,6 +83,7 @@ func runServer(ctx context.Context, static fs.FS, addr string, cfg terminal.Conf
 	}()
 
 	slog.Info("http server listening", "addr", addr)
+
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -151,7 +152,7 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 	if !h.acquire() {
 		slog.Warn("rejecting websocket: another session is active")
 
-		_ = write(websocket.TextMessage, []byte("\r\n\x1b[31mAnother terminal session is already active.\r\n\x1b[0m"))
+		_ = write(websocket.BinaryMessage, []byte("\r\n\x1b[31mAnother terminal session is already active.\r\n\x1b[0m"))
 
 		return
 	}
@@ -171,7 +172,7 @@ func (h *hub) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Forward the snapshot and all live output to this client.
 	sub := h.term.Subscribe(func(b []byte) {
-		if err := write(websocket.TextMessage, b); err != nil {
+		if err := write(websocket.BinaryMessage, b); err != nil {
 			slog.Warn("write websocket message failed", "err", err)
 		}
 	})

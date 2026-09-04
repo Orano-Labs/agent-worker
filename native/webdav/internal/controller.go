@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"

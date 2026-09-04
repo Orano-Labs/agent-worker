@@ -88,6 +88,9 @@ export class Orchestrator {
         vm!.process.once("error", () => {
           resolve({ code: null, signal: null });
         });
+        vm.process.once("exit", () => {
+          resolve({ code: null, signal: null });
+        })
       });
 
       exited = true;

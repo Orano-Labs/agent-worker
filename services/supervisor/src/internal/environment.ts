@@ -13,7 +13,6 @@ declare const VERSION: string;
 
 export class Environment {
   #logger: Logger;
-  #terminator: Terminator;
 
   get platform() {
     return platform();
@@ -55,7 +54,6 @@ export class Environment {
 
   constructor() {
     this.#logger = Container.inject(Logger).prefix("Environment");
-    this.#terminator = Container.inject(Terminator);
   }
 
   async #installFirecracker() {
@@ -83,7 +81,7 @@ export class Environment {
 
     this.#logger.info(`Downloading Firecracker ${Environment.FIRECRACKER_VERSION} from ${url}...`);
 
-    const body = await fetch(url, { signal: this.#terminator.signal }).then((response) => {
+    const body = await fetch(url).then((response) => {
       if (!response.ok) {
         throw new Error(`Download failed (${url}): ${response.statusText}`);
       }
@@ -135,10 +133,6 @@ export class Environment {
     ];
 
     for (const directory of directories) {
-      if (this.#terminator.signal.aborted) {
-        throw this.#terminator.signal.reason;
-      }
-
       await mkdir(directory.path, { recursive: true });
     }
 

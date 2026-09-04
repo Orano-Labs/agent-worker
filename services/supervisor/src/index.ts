@@ -15,8 +15,6 @@ import { VMKernel } from "@/internal/vm-kernel";
 import { VMNet } from "@/internal/vm-net";
 import { VMWorkspace } from "@/internal/vm-workspace";
 
-const ctrl = new AbortController();
-
 Container.singleton(Logger, () => new Logger());
 Container.singleton(Environment, () => new Environment());
 Container.singleton(Controller, () => new Controller());
@@ -40,9 +38,9 @@ Container.singleton(Terminator, () => new Terminator());
   const net = Container.inject(VMNet);
   const workspace = Container.inject(VMWorkspace);
   const o = Container.inject(Orchestrator);
-  //   const director = Container.inject(Director);
-  //   const controller = Container.inject(Controller);
-  //   const tunnel = Container.inject(Tunnel);
+  const director = Container.inject(Director);
+  const controller = Container.inject(Controller);
+  const tunnel = Container.inject(Tunnel);
 
   await environment.init();
   await kv.init();
@@ -50,6 +48,9 @@ Container.singleton(Terminator, () => new Terminator());
   await kernel.init();
   await workspace.init();
   await net.init();
+  // await director.init();
+  // await controller.init();
+  // await tunnel.init();
 
   (async () => {
     const project = crypto.randomUUID();
@@ -69,8 +70,9 @@ Container.singleton(Terminator, () => new Terminator());
     await task.ready.then(() => {
       console.log(`${task.net.veth.guest.ip}:8000`);
     });
+
     await task.closed;
-  })();
+  })().catch(() => {});
 
   process.on("SIGINT", (signal) => terminator.terminate(signal)); // Ctrl+C
   process.on("SIGTERM", (signal) => terminator.terminate(signal)); // System or process manager
@@ -78,5 +80,3 @@ Container.singleton(Terminator, () => new Terminator());
 })().catch((error) => {
   console.log(error);
 });
-
-// process.on("unhandledRejection", console.log);

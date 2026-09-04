@@ -51,6 +51,7 @@
   },
   "devDependencies": {
     "@hey-api/openapi-ts": "^0.98.2",
-    "@types/async-lock": "^1.4.2"
+    "@types/async-lock": "^1.4.2",
+    "tsx": "^4.23.13"
   }
 }

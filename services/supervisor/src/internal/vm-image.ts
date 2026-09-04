@@ -120,8 +120,16 @@ export class VMImage {
 
         const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
         const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", "davfs2"];
+        const NAMESERVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1", "114.114.114.114"];
+
+        // Pi needed
+        DEPS.push("fd", "ripgrep")
 
         const runInTempContainer = `buildah run --net=host ${containerTemp} --`;
+
+        for (const item of NAMESERVERS) {
+          await this.#exec(`${runInTempContainer} echo "nameserver ${item}" >> /etc/resolv.conf`);
+        }
 
         await this.#exec(`${runInTempContainer} apk update --repository=${MIRROR_MAIN}`);
         await this.#exec(`${runInTempContainer} apk add ca-certificates --repository=${MIRROR_MAIN}`);
@@ -142,6 +150,8 @@ export class VMImage {
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${ptyd} /bin/ptyd`);
+
+      // await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- which pi`).then(console.log);
 
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /init`);
       await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /entrypoint`);

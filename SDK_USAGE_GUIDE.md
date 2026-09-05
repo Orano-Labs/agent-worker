@@ -6,7 +6,7 @@ SDK 有两个入口：
 
 | 导入路径 | 核心导出 | 用途 |
 | --- | --- | --- |
-| `@aw/vm-director/sdk` | `Client`、`ProjectPB`、`UserPB`、`SupervisorPB`、`SupervisorPortalPB`、`TemplatePB`、`SignaturePB` | 自动签名的 Connect RPC 客户端，以及全部 Protobuf schema/枚举 |
+| `@aw/vm-director/sdk` | `Client`、`FileSystemPB`、`ProjectPB`、`UserPB`、`SupervisorPB`、`SupervisorPortalPB`、`TemplatePB`、`SignaturePB` | 自动签名的 Connect RPC 客户端，以及全部 Protobuf schema 和枚举 |
 | `@aw/vm-director/tunnel` | `TunnelClient` | Supervisor 反向隧道：接收 Director 转发的 HTTP、SSE、WebSocket 请求，并路由到本地目标服务 |
 
 ## 1. 安装与前提
@@ -62,8 +62,8 @@ const page = await projects.list(
 
 | 身份 | 类型 | 可调用 RPC 服务 | 可调用 HTTP 端点 |
 | --- | --- | --- | --- |
-| 管理员 | `{ type: "manager", privateKey }` | `UserService`、`SupervisorService` | 无 |
-| 用户 | `{ type: "user", id, privateKey }` | `ProjectService`、`TemplateService` | 仅自己拥有项目的 `/link/:projectId/...` |
+| 管理员 | `{ type: "manager", privateKey }` | `UserService`、`SupervisorService`、模板类型的 `FileSystemService` | 无 |
+| 用户 | `{ type: "user", id, privateKey }` | `ProjectService`、`TemplateService`、自己项目的 `FileSystemService` | 仅自己拥有项目的 `/link/:projectId/...` |
 | Supervisor | `{ type: "supervisor", id, privateKey }` | `SupervisorPortalService` | `/tunnel` Upgrade |
 
 生产环境中，`id` 必须是服务端已登记、未删除的 24 字符 ID。权限不匹配会收到 `PermissionDenied`；HTTP 项目访问会收到 `403`。
@@ -346,7 +346,203 @@ await projects.delete(Client.createMessageValid(ProjectPB.ProjectServiceDeleteRe
 
 资源档位使用 `ProjectPB.ProjectResourceTier.MINIMUM`、`STANDARD`、`PERFORMANCE`；不要传 `UNSPECIFIED`。
 
-### 3.5 Supervisor：实例分配门户（`SupervisorPortalService`）
+### 3.5 文件系统（`FileSystemService`）
+
+`FileSystemService` 读写项目或模板的持久化目录。身份和文件系统类型必须匹配：
+
+| `FileSystemType` | 可用身份 | 访问范围 |
+| --- | --- | --- |
+| `PROJECT` | user | 仅当前用户拥有且未删除的项目 |
+| `TEMPLATE` | manager | 任意未删除的模板 |
+
+user 不能访问模板目录，manager 也不能访问项目目录。Supervisor 无权调用该服务。每个请求都通过 `FileSystem` 消息选择目录：
+
+```ts
+import { Client, FileSystemPB } from "@aw/vm-director/sdk";
+
+const fileSystem = userClient.createFileSystemService();
+const projectFs = Client.createMessageValid(FileSystemPB.FileSystemSchema, {
+	type: FileSystemPB.FileSystemType.PROJECT,
+	id: projectId,
+});
+```
+
+当前服务端实现六个方法。`move` 和 `copy` 已出现在协议和客户端类型中，但服务端尚未实现。
+
+| 方法 | 请求字段 | 返回或行为 |
+| --- | --- | --- |
+| `tree` | `fs`, `root?`, `depth` | 返回目录信息和子节点。`depth` 范围是 `0..10` |
+| `read` | `fs`, `target` | 一次读取一个不超过 1 MiB 的文件 |
+| `write` | `fs`, `target`, `content` | 覆盖已存在的普通文件。内容不超过 1 MiB |
+| `create` | `fs`, `target`, `directory` | 创建空文件，或递归创建目录 |
+| `delete` | `fs`, `path` | 递归删除文件或目录，但不能删除文件系统根目录 |
+| `download` | `fs`, `path` | 以服务端流返回 ZIP 数据块。每块不超过 64 KiB。当前实现有归档结束缺陷，见下文 |
+
+#### 查看目录树
+
+```ts
+const tree = await fileSystem.tree(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceTreeRequestSchema, {
+		fs: projectFs,
+		root: "/src",
+		depth: 2,
+	}),
+);
+
+function printNode(node: FileSystemPB.TreeNodeValid, prefix = "") {
+	console.log(`${prefix}${node.name} (${node.size} bytes)`);
+
+	switch (node.type.case) {
+		case "file":
+			console.log(`${prefix}  MIME: ${node.type.value.mimetype}`);
+			break;
+		case "directory":
+			if (node.type.value.loaded) {
+				for (const child of node.type.value.children) {
+					printNode(child, `${prefix}  `);
+				}
+			}
+			break;
+		case "symlink":
+			console.log(`${prefix}  -> ${node.type.value.target}`);
+			break;
+		case undefined:
+			throw new Error(`Tree node ${node.name} has no type`);
+	}
+}
+
+for (const node of tree.children) {
+	printNode(node);
+}
+```
+
+`depth: 0` 返回 `root` 的直接子节点，但不加载子目录内容。`TreeNodeDirectory.loaded` 表示 `children` 是否已加载。大小使用 `bigint`。当前服务端将普通文件的 MIME 类型统一返回为 `application/octet-stream`。
+
+#### 创建、读取、写入和删除
+
+`write` 只覆盖已存在的文件。先用 `create` 创建文件；如果父目录不存在，也先创建目录。
+
+```ts
+await fileSystem.create(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceCreateRequestSchema, {
+		fs: projectFs,
+		target: "/config",
+		directory: true,
+	}),
+);
+
+await fileSystem.create(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceCreateRequestSchema, {
+		fs: projectFs,
+		target: "/config/app.json",
+		directory: false,
+	}),
+);
+
+const content = new TextEncoder().encode(JSON.stringify({ port: 8000 }));
+
+await fileSystem.write(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceWriteRequestSchema, {
+		fs: projectFs,
+		target: "/config/app.json",
+		content,
+	}),
+);
+
+const result = await fileSystem.read(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceReadRequestSchema, {
+		fs: projectFs,
+		target: "/config/app.json",
+	}),
+);
+console.log(new TextDecoder().decode(result.content));
+
+await fileSystem.delete(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceDeleteRequestSchema, {
+		fs: projectFs,
+		path: "/config",
+	}),
+);
+```
+
+请求路径最长为 4096 个字符。使用以 `/` 开头、相对于所选项目或模板根目录的路径，能让调用意图更清楚。`read` 只接受普通文件。读取目录或超过 1 MiB 的文件会返回 `FailedPrecondition`。
+
+#### 下载文件或目录
+
+`download` 的协议总是返回 ZIP。下载单个文件时，ZIP 内包含该文件。下载目录时，ZIP 内包含目录的内容。
+
+当前服务端没有调用 Archiver 的 `finalize()`。根据 [Archiver API](https://www.archiverjs.com/docs/archiver/)，服务端必须调用该方法来结束归档。当前下载流可能不会结束，ZIP 也可能无效。服务端修复前不要在生产应用中使用 `download()`。修复后的调用方式如下：
+
+```ts
+import { once } from "node:events";
+import { createWriteStream } from "node:fs";
+
+const chunks = fileSystem.download(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceDownloadRequestSchema, {
+		fs: projectFs,
+		path: "/src",
+	}),
+);
+
+const output = createWriteStream("project-src.zip");
+
+try {
+	for await (const { chunk } of chunks) {
+		if (!output.write(chunk)) {
+			await once(output, "drain");
+		}
+	}
+	const finished = once(output, "finish");
+	output.end();
+	await finished;
+} catch (error) {
+	output.destroy();
+	throw error;
+}
+```
+
+#### 使用模板文件系统
+
+用 manager client 访问模板目录，并把类型改为 `TEMPLATE`：
+
+```ts
+const templateFiles = managerClient.createFileSystemService();
+const templateFs = Client.createMessageValid(FileSystemPB.FileSystemSchema, {
+	type: FileSystemPB.FileSystemType.TEMPLATE,
+	id: templateId,
+});
+
+await templateFiles.create(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceCreateRequestSchema, {
+		fs: templateFs,
+		target: "/README.md",
+		directory: false,
+	}),
+);
+
+await templateFiles.write(
+	Client.createMessageValid(FileSystemPB.FileSystemServiceWriteRequestSchema, {
+		fs: templateFs,
+		target: "/README.md",
+		content: new TextEncoder().encode("# Starter\n"),
+	}),
+);
+```
+
+### 3.6 文件分片上传（`FileUploadService`，尚未实现）
+
+SDK 已导出 `createFileUploadService()` 和完整的分片上传协议。协议定义了以下流程：
+
+| 方法 | 请求字段 | 协议含义 |
+| --- | --- | --- |
+| `create` | `fs`, `target`, `hash`, `size` | 创建上传。`hash` 是 32 字节 SHA-256，`size` 大于 0 |
+| `upload` | `id`, `chunk`, `chunkIndex` | 上传 1 到 65536 字节的分片。`chunkIndex` 从 1 开始 |
+| `complete` | `id` | 完成上传并校验结果 |
+| `cancel` | `id` | 取消上传 |
+
+当前 `FileUploadServiceImplementation` 没有注册任何处理函数。这四个方法都会返回 `Unimplemented`。不要在上层应用中调用它们。文件内容不超过 1 MiB 时，使用 `FileSystemService.write()`；更大的文件需等待服务端实现分片上传。
+
+### 3.7 Supervisor：实例分配门户（`SupervisorPortalService`）
 
 此服务仅能由 Supervisor 调用。`watch()` 是服务端流，返回 `AsyncIterable`；每个 Supervisor 同时只能存在一个活跃 watch。连接成功后服务端发送当前完整负载，之后发送负载变化或 keepalive。
 
@@ -532,7 +728,16 @@ try {
         // ID 不存在、已删除，或项目并非当前用户所有。
         break;
       case Code.FailedPrecondition:
-        // 例如删除运行中的项目，或删除在线 Supervisor。
+        // 例如读取目录、删除文件系统根目录，或删除在线 Supervisor。
+        break;
+      case Code.InvalidArgument:
+        // 例如 FileSystem.type 为 UNSPECIFIED。
+        break;
+      case Code.Unimplemented:
+        // 当前版本尚未实现 move、copy 和 FileUploadService。
+        break;
+      case Code.Unavailable:
+        // Director 未配置文件系统根目录，或服务暂时不可用。
         break;
     }
   }
@@ -548,8 +753,17 @@ try {
 
 ## 7. 当前版本边界
 
-1. `ProjectServiceLaunchRequest/Response` 虽然存在于 proto 文件中，但 `ProjectService` descriptor、SDK client 和服务端路由均没有 `launch()`，因此当前不可调用。
-2. `UserService.list.disabled`、`SupervisorService.list.disabled`、`TemplateService.list.status` 已出现在请求定义中，但当前服务端 list 实现尚未使用这些字段过滤数据。调用可以成功，筛选请暂时在上层完成。
-3. `ProjectService.create.name` 会通过协议校验，但当前项目实体不会持久化或返回该字段。需要展示名称时，请将名称同时存入 `metadata`。
-4. `Client.singer` 是当前 SDK 的真实公开属性名（拼写为 `singer`，而非 `signer`）；它用于给普通 HTTP/WS 请求签名。
+1. `ProjectServiceLaunchRequest` 和 `ProjectServiceLaunchResponse` 存在于 proto 文件中，但 `ProjectService` descriptor、SDK client 和服务端路由均没有 `launch()`。当前不可调用该方法。
+2. `FileSystemService.move()` 和 `FileSystemService.copy()` 存在于 proto 和 SDK client 中，但服务端未注册处理函数。当前调用会返回 `Unimplemented`。
+3. `FileUploadService` 的 `create()`、`upload()`、`complete()` 和 `cancel()` 均存在于 proto 和 SDK client 中，但服务端未注册处理函数。当前调用会返回 `Unimplemented`。
+4. `UserService.list.disabled`、`SupervisorService.list.disabled` 和 `TemplateService.list.status` 已出现在请求定义中，但当前服务端 list 实现尚未使用这些字段过滤数据。调用可以成功，筛选请暂时在上层完成。
+5. `ProjectService.create.name` 会通过协议校验，但当前项目实体不会持久化或返回该字段。需要展示名称时，请将名称同时存入 `metadata`。
+6. `FileSystemService.download()` 没有调用 Archiver 的 `finalize()`。当前下载流可能不会结束，也可能无法生成有效 ZIP。
+7. `TreeNode` 协议包含 `symlink` 类型，但当前目录扫描使用 `stat()`。符号链接可能按其目标类型返回，不能依赖 `symlink` 分支识别符号链接。
+8. `Client.singer` 是当前 SDK 的真实公开属性名。它的拼写是 `singer`，不是 `signer`。该属性用于给普通 HTTP 和 WebSocket 请求签名。
 
+如果你从仓库源码构建 SDK，在 proto 变化后运行以下命令。`services/director/src/generated/proto/api/v1/file-system_pb.ts` 由该命令生成，不在当前提交中直接维护。
+
+```bash
+pnpm --filter @aw/vm-director generate
+```

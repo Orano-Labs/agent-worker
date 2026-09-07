@@ -91,13 +91,15 @@ export class Director {
 
     // 进程每次启动生成唯一 ID,随心跳上报;
     // Director 据此判断 Supervisor 是否重启,并及时销毁遗留的假死 Tunnel Socket。
-    this.#processId = randomUUID();
+    const processId = randomUUID();
+
+    this.#processId = processId;
 
     const heartbeat = async () => {
       return portal
         .heartbeat(
           Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {
-            processId: this.#processId!,
+            processId,
           }),
         )
         .then(() => {

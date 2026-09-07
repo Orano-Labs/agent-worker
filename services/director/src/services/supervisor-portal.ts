@@ -11,6 +11,7 @@ import {
   SupervisorPortalService,
   type SupervisorPortalServiceAcknowledgeRequestValid,
   SupervisorPortalServiceAcknowledgeResponseSchema,
+  type SupervisorPortalServiceHeartbeatRequestValid,
   SupervisorPortalServiceHeartbeatResponseSchema,
   type SupervisorPortalServiceReleaseRequestValid,
   SupervisorPortalServiceReleaseResponseSchema,
@@ -39,18 +40,35 @@ export class SupervisorPortalServiceImplementation {
     this.#watchers = new Map();
   }
 
-  #watch(_: SupervisorPortalServiceWatchRequestValid, context: HandlerContext) {
+  #watch(request: SupervisorPortalServiceWatchRequestValid, context: HandlerContext) {
     const identity = this.#server.getSupervisorIdentityContextMust(context);
+    const processId = request.processId;
 
-    if (this.#watchers.has(identity)) {
-      throw new ConnectError("Supervisor already has an active watch stream", Code.AlreadyExists);
+    const existing = this.#watchers.get(identity);
+
+    if (existing) {
+      if (existing.processId === processId) {
+        throw new ConnectError("Supervisor already has an active watch stream", Code.AlreadyExists);
+      }
+
+      // Supervisor 重启后携带新的 process_id 重连,接管并关闭旧进程遗留的假死 Watch 流,
+      // 否则旧的流会一直占用 watcher 导致新连接反复被 AlreadyExists 拒绝。
+      this.#logger.warn("Supervisor restarted, taking over stale watch stream", {
+        supervisorId: identity,
+        oldProcessId: existing.processId,
+        newProcessId: processId,
+      });
+
+      existing.close();
     }
 
-    const watcher = new SupervisorPortalServiceImplementation.Watcher(identity, () => {
+    const watcher = new SupervisorPortalServiceImplementation.Watcher(identity, processId, () => {
       this.#watchers.delete(identity);
 
       this.#logger.debug("Supervisor watch stream closed", { supervisorId: identity });
     });
+
+    this.#watchers.set(identity, watcher);
 
     return watcher;
   }
@@ -59,14 +77,14 @@ export class SupervisorPortalServiceImplementation {
     const pending = this.#allocator.getPending(request.instanceId);
 
     if (!pending) {
-      throw new ConnectError("");
+      throw new ConnectError("No pending allocation found for the instance.", Code.NotFound);
     }
 
     try {
       pending.acknowledge(request.status === AcknowledgeStatus.OK);
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("Instance acknowledgment already settled")) {
-        throw new ConnectError("XXX");
+        throw new ConnectError("Instance acknowledgment already settled.", Code.FailedPrecondition);
       }
 
       throw error;
@@ -75,9 +93,13 @@ export class SupervisorPortalServiceImplementation {
     return Protobuf.createValid(SupervisorPortalServiceAcknowledgeResponseSchema, {});
   }
 
-  async #heartbeat(_: unknown, context: HandlerContext) {
+  async #heartbeat(request: SupervisorPortalServiceHeartbeatRequestValid, context: HandlerContext) {
     const identity = this.#server.getSupervisorIdentityContextMust(context);
-    const lease = this.#allocator.getOrCreateLease(identity);
+    const processId = request.processId;
+
+    // process_id 用于识别心跳是否来自同一个 Supervisor 进程;
+    // 不一致时 Allocator 会销毁旧 Lease 及其遗留的(可能假死的)Tunnel Socket。
+    const lease = this.#allocator.getOrCreateLease(identity, processId);
 
     lease.touch();
 
@@ -100,8 +122,8 @@ export class SupervisorPortalServiceImplementation {
       acknowledge: async (request, context) => {
         return this.#acknowledge(request as SupervisorPortalServiceAcknowledgeRequestValid, context);
       },
-      heartbeat: async (_, context) => {
-        return this.#heartbeat(null, context);
+      heartbeat: async (request, context) => {
+        return this.#heartbeat(request as SupervisorPortalServiceHeartbeatRequestValid, context);
       },
       release: async (request, context) => {
         return this.#release(request as SupervisorPortalServiceReleaseRequestValid, context);
@@ -132,15 +154,16 @@ export namespace SupervisorPortalServiceImplementation {
     #closed = false;
     #keepaliveTimer: ReturnType<typeof setInterval>;
     #unsubscribe: () => void;
+    #processId: string;
 
-    constructor(supervisor: string, onClose: () => void) {
+    constructor(supervisor: string, processId: string, onClose: () => void) {
       this.#logger = Container.inject(Logger).scope("Watcher");
       this.#repository = Container.inject(Repository);
       this.#allocator = Container.inject(Allocator);
       this.#supervisor = supervisor;
+      this.#processId = processId;
       this.#onClose = onClose;
 
-      // 订阅该 Supervisor 的分配变化：变化时下发其完整负载
       this.#unsubscribe = this.#allocator.onChange(supervisor, () => {
         void this.#publishLoad();
       });
@@ -154,6 +177,10 @@ export namespace SupervisorPortalServiceImplementation {
 
     get closed() {
       return this.#closed;
+    }
+
+    get processId() {
+      return this.#processId;
     }
 
     close() {

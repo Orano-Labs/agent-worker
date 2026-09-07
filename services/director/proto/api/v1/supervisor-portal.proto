@@ -24,7 +24,10 @@ message Load {
   google.protobuf.Timestamp timestamp = 5 [(buf.validate.field).required = true];
 }
 
-message SupervisorPortalServiceWatchRequest {}
+message SupervisorPortalServiceWatchRequest {
+  // 每次进程启动时生成的唯一标识,用于在重启后接管旧 Watch 流。
+  string process_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
+}
 message SupervisorPortalServiceWatchResponse {
   oneof event {
     api.v1.EventKeepalive keepalive = 4;
@@ -52,7 +55,10 @@ message EventLoadList {
 
 message EventKeepalive {}
 
-message SupervisorPortalServiceHeartbeatRequest {}
+message SupervisorPortalServiceHeartbeatRequest {
+  // 每次进程启动时生成的唯一标识,用于识别 Supervisor 是否发生过重启。
+  string process_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
+}
 message SupervisorPortalServiceHeartbeatResponse {}
 
 service SupervisorPortalService {

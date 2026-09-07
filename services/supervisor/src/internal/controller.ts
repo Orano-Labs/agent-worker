@@ -64,7 +64,11 @@ export class Controller {
 
   async #watch() {
     while (true) {
-      const stream = this.#portalMust.watch(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {}));
+      const stream = this.#portalMust.watch(
+        Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {
+          processId: this.#director.processId,
+        }),
+      );
 
       try {
         for await (const response of stream) {

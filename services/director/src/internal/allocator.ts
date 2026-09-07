@@ -148,11 +148,25 @@ export class Allocator {
     return this.#leases.get(supervisor);
   }
 
-  getOrCreateLease(supervisor: string) {
+  getOrCreateLease(supervisor: string, processId: string) {
     let lease = this.#leases.get(supervisor);
 
+    // 心跳携带的 process_id 变了,说明该 Supervisor 进程已经重启:
+    // 旧 Lease 内的 Tunnel Socket 可能已假死(对端进程已不存在却未收到断开事件),
+    // 必须立即销毁并重建,避免请求被转发到这些假死 Socket 上。
+    if (lease && lease.processId !== processId) {
+      this.#logger.warn("Supervisor restarted, replacing stale lease and tunnel", {
+        supervisor,
+        oldProcessId: lease.processId,
+        newProcessId: processId,
+      });
+
+      lease.expire();
+      lease = undefined;
+    }
+
     if (!lease) {
-      lease = new Allocator.Lease(supervisor, () => {
+      lease = new Allocator.Lease(supervisor, processId, () => {
         this.#leases.delete(supervisor);
       });
 
@@ -425,11 +439,17 @@ export namespace Allocator {
     #timer: ReturnType<typeof setTimeout>;
     #expired: () => void;
     #tunnel: Tunnel;
+    #processId: string;
 
-    constructor(supervisor: string, expired: () => void) {
+    constructor(supervisor: string, processId: string, expired: () => void) {
       this.#expired = expired;
+      this.#processId = processId;
       this.#timer = setTimeout(() => this.expire(), 3000).unref();
       this.#tunnel = new Tunnel(supervisor, 300);
+    }
+
+    get processId() {
+      return this.#processId;
     }
 
     touch() {

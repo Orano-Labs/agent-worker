@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 import { createGrpcWebTransport } from "@connectrpc/connect-node";
 import { Container } from "@/helpers/container";
@@ -7,6 +8,7 @@ export class Director {
   #client?: Client;
   #host?: string;
   #identity?: Readonly<Client.Identity>;
+  #processId?: string;
   #logger: Logger;
 
   constructor() {
@@ -35,6 +37,14 @@ export class Director {
     }
 
     return this.#identity;
+  }
+
+  get processId() {
+    if (!this.#processId) {
+      throw new Error("Director process id has not been initialized. Call init() first.");
+    }
+
+    return this.#processId;
   }
 
   async #startHeartbeatLoop(heartbeat: () => Promise<void>) {
@@ -79,16 +89,26 @@ export class Director {
     const client = new Client(transport, { type: "supervisor", id: supervisorId, privateKey: supervisorPrivateKey });
     const portal = client.createSupervisorPortalService();
 
+    // 进程每次启动生成唯一 ID,随心跳上报;
+    // Director 据此判断 Supervisor 是否重启,并及时销毁遗留的假死 Tunnel Socket。
+    this.#processId = randomUUID();
+
     const heartbeat = async () => {
-      return portal.heartbeat(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {})).then(() => {
-        this.#client = client;
-        this.#host = baseUrl;
-        this.#identity = Object.freeze({
-          type: "supervisor",
-          id: supervisorId,
-          privateKey: supervisorPrivateKey,
+      return portal
+        .heartbeat(
+          Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {
+            processId: this.#processId!,
+          }),
+        )
+        .then(() => {
+          this.#client = client;
+          this.#host = baseUrl;
+          this.#identity = Object.freeze({
+            type: "supervisor",
+            id: supervisorId,
+            privateKey: supervisorPrivateKey,
+          });
         });
-      });
     };
 
     try {

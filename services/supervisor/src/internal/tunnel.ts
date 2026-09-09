@@ -3,16 +3,18 @@ import { Container } from "@/helpers/container";
 import { Controller } from "@/internal/controller";
 import { Logger } from "@/internal/logger";
 import type { Orchestrator } from "@/internal/orchestrator";
+import { Terminator } from "./terminator";
 
 export class Tunnel {
   #client?: TunnelClient;
   #logger: Logger;
   #controller: Controller;
-  #abort?: AbortController;
+  #terminator: Terminator;
 
   constructor() {
     this.#logger = Container.inject(Logger).prefix("Tunnel");
     this.#controller = Container.inject(Controller);
+    this.#terminator = Container.inject(Terminator);
   }
 
   get client() {
@@ -44,7 +46,7 @@ export class Tunnel {
       throw new Error("AW_SUPERVISOR_DIRECTOR_HOST_URL is not set.");
     }
 
-    this.#abort = new AbortController();
+    const ctrl = new AbortController();
 
     this.#client = new TunnelClient({
       identity: {
@@ -52,24 +54,19 @@ export class Tunnel {
         id: supervisorId,
         privateKey: supervisorPrivateKey,
       },
-      maxConnections: Tunnel.MAX_CONNECTIONS,
+      maxConnections: 1,
       baseUrl,
       targetResolver: (headers) => this.#resolveTarget(headers),
       logger: this.#logger,
     });
 
-    this.#client.start(this.#abort.signal);
+    this.#client.start(ctrl.signal);
 
     this.#logger.info("Tunnel initialized and started", { baseUrl });
-  }
 
-  async close() {
-    if (!this.#abort) {
-      return;
-    }
-
-    this.#abort.abort();
-    this.#logger.info("Tunnel closed");
+    this.#terminator.register(async () => {
+      ctrl.abort();
+    });
   }
 
   async #resolveTarget(headers: Headers): Promise<URL> {

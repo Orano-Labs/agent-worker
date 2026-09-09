@@ -43,13 +43,14 @@ export class Controller {
 
     this.#logger.info("Controller initialized, starting supervisor portal watch stream");
 
-    this.#watch().catch((error) => {
-      this.#logger.errorFrom(error, "Watch loop terminated unexpectedly");
-    });
+    const ctrl = new AbortController();
+    const watching = this.#watch(ctrl.signal);
 
     this.#terminator.register(async (signal) => {
-      await Promise.all(
-        [...this.#processings.values()].map(async (task) => {
+      ctrl.abort();
+
+      await Promise.all([
+        ...[...this.#processings.values()].map(async (task) => {
           return task
             .then((t) => {
               t.runner.process.kill(signal as NodeJS.Signals);
@@ -58,19 +59,25 @@ export class Controller {
             })
             .catch(() => {});
         }),
-      );
+        watching,
+      ]);
     });
   }
 
-  async #watch() {
+  async #watch(signal: AbortSignal) {
     while (true) {
-      const stream = this.#portalMust.watch(
-        Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {
-          processId: this.#director.processId,
-        }),
-      );
+      signal.throwIfAborted();
 
       try {
+        const stream = this.#portalMust.watch(
+          Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {
+            processId: this.#director.processId,
+          }),
+          {
+            signal,
+          },
+        );
+
         for await (const response of stream) {
           if (response.event.case !== "load") {
             continue;
@@ -107,10 +114,14 @@ export class Controller {
 
         this.#logger.warn("Watch stream closed, reconnecting", { delay: 2000 });
       } catch (error) {
-        this.#logger.errorFrom(error, "Watch stream terminated with error, reconnecting");
+        if (!signal.aborted) {
+          this.#logger.errorFrom(error, "Watch stream closed with error, reconnecting");
+        }
       }
 
-      await this.#sleep(2000);
+      if (!signal.aborted) {
+        await this.#sleep(2000);
+      }
     }
   }
 

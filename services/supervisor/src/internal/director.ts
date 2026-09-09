@@ -3,6 +3,7 @@ import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 import { createGrpcWebTransport } from "@connectrpc/connect-node";
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
+import { Terminator } from "./terminator";
 
 export class Director {
   #client?: Client;
@@ -10,9 +11,11 @@ export class Director {
   #identity?: Readonly<Client.Identity>;
   #processId?: string;
   #logger: Logger;
+  #terminator: Terminator;
 
   constructor() {
     this.#logger = Container.inject(Logger).prefix("Director");
+    this.#terminator = Container.inject(Terminator);
   }
 
   get client() {
@@ -47,8 +50,12 @@ export class Director {
     return this.#processId;
   }
 
-  async #startHeartbeatLoop(heartbeat: () => Promise<void>) {
+  async #startHeartbeatLoop(heartbeat: () => Promise<void>, signal: AbortSignal) {
     while (true) {
+      if (signal.aborted) {
+        return;
+      }
+
       try {
         await heartbeat();
       } catch (error) {
@@ -119,8 +126,15 @@ export class Director {
       throw new Error("Failed to establish initial connection to supervisor portal.", { cause: error });
     }
 
-    void this.#startHeartbeatLoop(heartbeat);
+    const ctrl = new AbortController();
+    const loop = this.#startHeartbeatLoop(heartbeat, ctrl.signal);
 
     this.#logger.info("Director initialized and connected to supervisor portal", { baseUrl });
+
+    this.#terminator.register(async () => {
+      ctrl.abort();
+
+      return loop;
+    });
   }
 }

@@ -21,7 +21,6 @@ export class Allocator {
   #logger: Logger;
 
   #leases: Map<string, Allocator.Lease>;
-  #activeInstances: Map<string, Allocator.AllocationResult>;
   #allocations: Map<string, Promise<Allocator.AllocationResult>>;
   #pending: Map<string, Allocator.Pending>;
   #releasing: Map<string, Promise<void>>;
@@ -31,7 +30,6 @@ export class Allocator {
     this.#repository = Container.inject(Repository);
     this.#logger = Container.inject(Logger).scope("Allocator");
     this.#leases = new Map();
-    this.#activeInstances = new Map();
     this.#allocations = new Map();
     this.#pending = new Map();
     this.#releasing = new Map();
@@ -39,18 +37,6 @@ export class Allocator {
   }
 
   async allocate(project: string) {
-    // 先看内存强缓存 (极速返回，不走 DB)
-    const cached = this.#activeInstances.get(project);
-
-    if (cached) {
-      // 检查承接该实例的 Supervisor 是否依旧在线
-      if (this.#leases.has(cached.supervisor)) {
-        return cached;
-      }
-      // 如果 Supervisor 内存 Lease 已失效，清理本地缓存，降级走分配逻辑
-      this.#activeInstances.delete(project);
-    }
-
     // 如果正在进行 release，等待 release 完成
     await this.#releasing.get(project)?.catch(() => {});
 
@@ -73,75 +59,65 @@ export class Allocator {
   }
 
   async release(id: string, supervisor: string) {
-    // 先清理内存热缓存，让后续请求立刻无法读到旧实例
-    for (const [proj, res] of this.#activeInstances.entries()) {
-      if (res.id === id) {
-        this.#activeInstances.delete(proj);
-        break;
-      }
-    }
-
-    await this.#repository.client.$transaction(async (tx) => {
-      const instance = await tx.instance.findUnique({
-        where: {
-          id: id,
-          supervisorId: supervisor,
-          confirmed: true,
-        },
-        include: {
-          project: {
-            select: {
-              id: true,
-              resourceTier: true,
-            },
+    const instance = await this.#repository.client.instance.findUnique({
+      where: {
+        id: id,
+        supervisorId: supervisor,
+        confirmed: true,
+      },
+      include: {
+        project: {
+          select: {
+            id: true,
+            resourceTier: true,
           },
         },
-      });
+      },
+    });
 
-      if (!instance) return;
+    if (!instance) return;
 
-      const projectId = instance.projectId;
+    const projectId = instance.projectId;
 
-      let releasePromise = this.#releasing.get(projectId);
+    let releasePromise = this.#releasing.get(projectId);
 
-      if (!releasePromise) {
-        releasePromise = (async () => {
-          try {
-            await this.#repository.client.$transaction(async (tx) => {
-              const deleted = await tx.instance.deleteMany({
-                where: {
-                  id,
-                  supervisorId: supervisor,
+    if (!releasePromise) {
+      releasePromise = (async () => {
+        try {
+          await this.#repository.client.$transaction(async (tx) => {
+            const deleted = await tx.instance.deleteMany({
+              where: {
+                id,
+                supervisorId: supervisor,
+              },
+            });
+
+            if (deleted.count > 0) {
+              const capacity = getTierWeight(instance.project.resourceTier);
+
+              await tx.supervisor.update({
+                where: { id: supervisor },
+                data: {
+                  remainingCapacity: {
+                    increment: capacity,
+                  },
                 },
               });
 
-              if (deleted.count > 0) {
-                const capacity = getTierWeight(instance.project.resourceTier);
+              this.#logger.info("Instance released, capacity restored", { id, supervisor, capacity });
+            }
+          });
 
-                await tx.supervisor.update({
-                  where: { id: supervisor },
-                  data: {
-                    remainingCapacity: {
-                      increment: capacity,
-                    },
-                  },
-                });
+          this.#notify(supervisor);
+        } finally {
+          this.#releasing.delete(projectId);
+        }
+      })();
 
-                this.#logger.info("Instance released, capacity restored", { id, supervisor, capacity });
-              }
-            });
+      this.#releasing.set(projectId, releasePromise);
+    }
 
-            this.#notify(supervisor);
-          } finally {
-            this.#releasing.delete(projectId);
-          }
-        })();
-
-        this.#releasing.set(projectId, releasePromise);
-      }
-
-      await releasePromise;
-    });
+    await releasePromise;
   }
 
   getLease(supervisor: string) {
@@ -220,11 +196,6 @@ export class Allocator {
     });
 
     if (instance) {
-      this.#activeInstances.set(project, {
-        id: instance.id,
-        supervisor: instance.supervisorId,
-      });
-
       return { id: instance.id, supervisor: instance.supervisorId };
     }
 
@@ -333,11 +304,6 @@ export class Allocator {
             },
           });
 
-          this.#activeInstances.set(project, {
-            id: claimed.id,
-            supervisor: claimed.supervisorId,
-          });
-
           this.#logger.info("Instance allocated", {
             project,
             instance: claimed.id,
@@ -428,7 +394,7 @@ export class Allocator {
 }
 
 export namespace Allocator {
-  export const ACK_TIMEOUT = 3_000;
+  export const ACK_TIMEOUT = 3_000 * 5;
 
   export type AllocationResult = {
     id: string;

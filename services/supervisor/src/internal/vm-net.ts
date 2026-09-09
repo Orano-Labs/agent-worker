@@ -33,43 +33,7 @@ export class VMNet {
       if (match?.[1]) {
         return match[1];
       }
-    } catch {
-      // 继续尝试其他方法
-    }
-
-    try {
-      // 方法2：通过路由获取到 8.8.8.8 的网卡
-      const output = await this.#exec("ip route get 8.8.8.8");
-      const match = output.match(/dev\s+(\S+)/);
-
-      if (match?.[1]) {
-        return match[1];
-      }
-    } catch {
-      // 继续尝试其他方法
-    }
-
-    try {
-      // 方法3：列出所有 UP 状态的物理网卡，取第一个
-      const output = await this.#exec("ip -j link show | jq -r '.[] | select(.operstate == \"UP\") | .ifname' | head -1");
-
-      if (output.trim()) {
-        return output.trim();
-      }
-    } catch {
-      // 继续尝试其他方法
-    }
-
-    try {
-      // 方法4：查找非虚拟、非 loopback 的网卡
-      const output = await this.#exec("ls /sys/class/net/ | grep -v lo | head -1");
-
-      if (output.trim()) {
-        return output.trim();
-      }
-    } catch {
-      // 所有方法都失败
-    }
+    } catch {}
 
     throw new Error("Unable to find default WAN interface. Please check network configuration.");
   }
@@ -262,6 +226,8 @@ export class VMNet {
   }
 
   async random() {
+    let attempt = 0;
+
     return this.#lock.acquire("__global__", async () => {
       const existing = await this.#getExistingNamespaces();
 
@@ -269,7 +235,16 @@ export class VMNet {
         const current = this.namespace(s);
 
         if (!existing.includes(current.name)) {
-          return this.#install(current).then(() => current);
+          try {
+            return await this.#install(current).then(() => current);
+          } catch (error) {
+            if (attempt <= 10) {
+              attempt += 1;
+              continue;
+            }
+
+            throw error;
+          }
         }
       }
 

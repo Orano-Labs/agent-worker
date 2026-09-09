@@ -119,11 +119,11 @@ export class VMImage {
         this.#logger.info("Installing internal packages...");
 
         const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
-        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", "davfs2"];
+        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", "davfs2", "bubblewrap"];
         const NAMESERVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1", "114.114.114.114"];
 
         // Pi needed
-        DEPS.push("fd", "ripgrep")
+        DEPS.push("fd", "ripgrep");
 
         const runInTempContainer = `buildah run --net=host ${containerTemp} --`;
 
@@ -149,7 +149,8 @@ export class VMImage {
 
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`);
       await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`);
-      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${ptyd} /bin/ptyd`);
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${ptyd} /usr/local/bin/ptyd`);
+      await this.#exec(`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${this.#env.juicefs} /usr/local/bin/juicefs`);
 
       // await this.#exec(`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- which pi`).then(console.log);
 

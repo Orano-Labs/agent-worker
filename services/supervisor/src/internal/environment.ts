@@ -7,7 +7,6 @@ import { x } from "tar";
 
 import { Container } from "@/helpers/container";
 import { Logger } from "@/internal/logger";
-import { Terminator } from "@/internal/terminator";
 
 declare const VERSION: string;
 
@@ -37,8 +36,19 @@ export class Environment {
     return join(this.workdir, `bin/firecracker-${v}-${a}`);
   }
 
+  get juicefs() {
+    const v = Environment.FIRECRACKER_VERSION;
+    const a = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : "";
+
+    return join(this.workdir, `bin/juicefs-${v}-${a}`);
+  }
+
   get firecrackerVersion() {
     return Environment.FIRECRACKER_VERSION;
+  }
+
+  get juicefsVersion() {
+    return Environment.JFS_VERSION;
   }
 
   get jailer() {
@@ -110,6 +120,58 @@ export class Environment {
     }
   }
 
+  async #installJuicefs() {
+    const arch = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : "";
+
+    if (!arch) {
+      throw new Error(`Unsupported architecture: Node.js reports '${process.arch}' but JuiceFS requires x64 or arm64.`);
+    }
+
+    let exists = true;
+
+    try {
+      await stat(this.juicefs);
+    } catch {
+      exists = false;
+    }
+
+    if (exists) {
+      return this.#logger.info("JuiceFS binaries already exist. Skipping download.");
+    }
+
+    const url = Environment.JFS_RELEASE_DOWNLOAD_URL.replaceAll("<ARCH>", arch);
+    const dst = join(tmpdir(), `juicefs-download-${crypto.randomUUID()}`);
+
+    this.#logger.info(`Downloading JuiceFS ${Environment.JFS_VERSION} from ${url}...`);
+
+    const body = await fetch(url).then((response) => {
+      if (!response.ok) {
+        throw new Error(`Download failed (${url}): ${response.statusText}`);
+      }
+
+      if (!response.body) {
+        throw new Error(`Download failed (${url}): Response body is null`);
+      }
+
+      return response.body;
+    });
+
+    try {
+      this.#logger.info(`Extracting JuiceFS assets to temporary directory: ${dst}`);
+
+      await mkdir(dst, { recursive: true });
+      await pipeline(Readable.fromWeb(body), x({ cwd: dst }));
+
+      this.#logger.info(`Copying JuiceFS binaries to production bin directory...`);
+
+      await cp(join(dst, "juicefs"), join(this.workdir, "bin", basename(this.juicefs)));
+
+      this.#logger.info(`JuiceFS and Jailer binaries installed successfully.`);
+    } finally {
+      await rm(dst).catch(() => {});
+    }
+  }
+
   async init() {
     this.#logger.info(`Working directory base path: ${this.workdir}`);
 
@@ -139,6 +201,7 @@ export class Environment {
     this.#logger.info(`Verifying and installing core component dependencies...`);
 
     await this.#installFirecracker();
+    await this.#installJuicefs();
 
     this.#logger.info(`Environment initialization completed successfully.`);
   }
@@ -148,4 +211,8 @@ export namespace Environment {
   export const FIRECRACKER_REPO = "https://github.com/firecracker-microvm/firecracker";
   export const FIRECRACKER_VERSION = "v1.16.0";
   export const FIRECRACKER_RELEASE_DOWNLOAD_URL = `${FIRECRACKER_REPO}/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-<ARCH>.tgz`;
+
+  export const JFS_REPO = "https://d.juicefs.com/juicefs";
+  export const JFS_VERSION = "v1.4.1";
+  export const JFS_RELEASE_DOWNLOAD_URL = `${JFS_REPO}/releases/download/${JFS_VERSION}/juicefs-${JFS_VERSION.slice(1)}-linux-<ARCH>.tar.gz`;
 }

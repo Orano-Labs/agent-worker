@@ -66,7 +66,7 @@ export class VM {
       const stderr = createWriteStream(join(root, "firecracker.stderr"));
 
       const user = userInfo();
-      const args = [this.#env.jailer];
+      const args = [];
 
       args.push("--exec-file", this.#env.firecracker);
       args.push("--chroot-base-dir", join(this.#env.workdir, "jailer"));
@@ -91,21 +91,31 @@ export class VM {
       args.push("--");
       args.push("--api-sock", "/firecracker.sock");
 
-      ps = spawn("sudo", args, { stdio: ["ignore", "pipe", "pipe"] });
+      ps = spawn(this.#env.jailer, args, { stdio: ["ignore", "pipe", "pipe"] });
 
-      createReadLineInterface(ps.stderr).on("line", (line) => {
+      const handleLogLine = (line: string) => {
         if (process.env.NODE_ENV !== "production") {
           logger.debug(line);
         }
 
+        if (line.includes("reboot: System halted")) {
+          logger.info("Kernel halt signal detected. Cleaning up VMM process...");
+
+          setTimeout(() => {
+            if (ps && !ps.killed) {
+              ps.kill("SIGTERM");
+            }
+          }, 100);
+        }
+      };
+
+      createReadLineInterface(ps.stderr).on("line", (line) => {
+        handleLogLine(line);
         stderr.write(`${line}\n`);
       });
 
       createReadLineInterface(ps.stdout).on("line", (line) => {
-        if (process.env.NODE_ENV !== "production") {
-          logger.debug(line);
-        }
-
+        handleLogLine(line);
         stdout.write(`${line}\n`);
       });
 
@@ -206,7 +216,7 @@ export class VM {
 
       logger.info("MicroVM initialized and boot sequence started successfully.");
 
-      ps.on("close", (code, signal) => {
+      ps.on("exit", (code, signal) => {
         stderr.end();
         stdout.end();
 

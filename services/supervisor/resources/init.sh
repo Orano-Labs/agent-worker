@@ -24,7 +24,10 @@ fi
 log "Preparing temporary mount environment and mounting /dev/$SCRATCH_DEV..."
 
 # Create a minimal tmpfs bootstrap directory to prevent modifying the read-only rootfs
+mkdir -p /mnt
 mount -t tmpfs -o noatime,mode=0755,size=1M tmpfs /mnt
+
+log "Mounting scratch filesystem from $SCRATCH_DEV..."
 
 mkdir -p /mnt/scratch
 mount -t ext4 -o noatime /dev/"$SCRATCH_DEV" /mnt/scratch || fatal "Failed to mount scratch drive /dev/$SCRATCH_DEV!"
@@ -48,20 +51,64 @@ mount \
   -o noatime,lowerdir=${OVERLAY_LOWER},upperdir=${OVERLAY_UPPER},workdir=${OVERLAY_WORK} \
   -t overlay "overlayfs" ${OVERLAY_ROOT}
 
-# Create a placeholder directory inside the new root to house the old read-only rootfs
+# Create a mountpoint inside the OverlayFS view to temporarily hold the old rootfs
 mkdir -p "$OVERLAY_ROOT/rom"
+
+# Ensure root mount propagation is private; required by pivot_root to avoid EINVAL
+mount --make-rprivate / || fatal "Failed to set mount propagation to private!"
 
 log "Pivoting root file system..."
 
-# Pivot the root filesystem: OVERLAY_ROOT becomes the new '/', and old '/' moves to '/rom'
-pivot_root "$OVERLAY_ROOT" "$OVERLAY_ROOT/rom"
+# Pivot root: OVERLAY_ROOT becomes the new '/', and old '/' is moved to '/rom'
+pivot_root "$OVERLAY_ROOT" "$OVERLAY_ROOT/rom" || fatal "pivot_root failed!"
 
-log "Handing over control to the main entrypoint..."
+log "Detaching old root filesystem and cleaning up init artifacts..."
 
-# Purge redundant init files to free up memory and prevent container escape vectors
-rm -rf /mnt
-rm -rf /init
+# Lazy-unmount /rom to detach the old rootfs and bootstrap tmpfs mounts from the new mount namespace
+umount -l /rom
+
+# Remove the leftover /rom directory and mask the old /init executable via an OverlayFS whiteout
+rm -rf /rom
+rm -f  /init
+
+log "Mounting core virtual file systems..."
+
+mountpoint -q /dev  || mount -t devtmpfs devtmpfs /dev   || fatal "Failed to mount /dev"
+mountpoint -q /proc || mount -t proc     proc     /proc  || fatal "Failed to mount /proc"
+mountpoint -q /sys  || mount -t sysfs    sysfs    /sys   || fatal "Failed to mount /sys"
+
+mkdir -p /dev/pts /dev/shm /run
+
+mountpoint -q /dev/pts || mount -t devpts   devpts   /dev/pts -o mode=0620,ptmxmode=0666,gid=5   || fatal "Failed to mount /dev/pts"
+mountpoint -q /dev/shm || mount -t tmpfs    tmpfs    /dev/shm -o mode=1777,nosuid,nodev,size=64M || fatal "Failed to mount /dev/shm"
+mountpoint -q /run     || mount -t tmpfs    tmpfs    /run     -o mode=0755,nosuid,nodev,size=16M || fatal "Failed to mount /run"
+
+log "Mounting core file systems completed successfully."
+log "Handing over execution to entrypoint..."
 
 # Replace the current shell process image with the next-stage /entrypoint script.
 # This cleanly passes down all positional arguments ($@).
-exec /entrypoint "$@"
+# exec /sbin/tini -g -- /entrypoint "$@"
+/usr/local/bin/juicefs mount redis://:redis_xtd6tz@117.55.235.4:6379/3 /workspace --background --subdir "/projects/${AW_RUNNER_PROJECT}"  || fatal "Failed to mount /workspace"
+
+exec bwrap \
+  --die-with-parent \
+  --unshare-all \
+  --share-net \
+  --tmpfs / \
+  --tmpfs /run \
+  --dev /dev \
+  --proc /proc \
+  --ro-bind /bin /bin \
+  --ro-bind /sbin /sbin \
+  --ro-bind /usr /usr \
+  --ro-bind /etc /etc \
+  --ro-bind /lib /lib \
+  --ro-bind /sys /sys \
+  --ro-bind /var /var \
+  --bind /tmp /tmp \
+  --bind /workspace /workspace \
+  --ro-bind /entrypoint /entrypoint.sh \
+  --clearenv \
+  --setenv PATH "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  -- /sbin/tini -g -- /entrypoint.sh "$@"

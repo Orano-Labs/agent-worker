@@ -82,15 +82,15 @@ export class Orchestrator {
 
     const waitClosed = (async () => {
       const status = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-        vm!.process.once("close", (code, signal) => {
+        vm.process.once("close", (code, signal) => {
           resolve({ code, signal });
         });
-        vm!.process.once("error", () => {
+        vm.process.once("error", () => {
           resolve({ code: null, signal: null });
         });
         vm.process.once("exit", () => {
           resolve({ code: null, signal: null });
-        })
+        });
       });
 
       exited = true;
@@ -109,7 +109,7 @@ export class Orchestrator {
     const waitPort = (async () => {
       let attempt = 0;
 
-      while (attempt <= 3) {
+      while (attempt <= 30) {
         if (exited) {
           throw new Error("VM closed before becoming ready");
         }
@@ -137,7 +137,7 @@ export class Orchestrator {
             host: net.veth.guest.ip,
           });
 
-          if (attempt <= 3) {
+          if (attempt <= 30) {
             await new Promise<void>((resolve) => {
               setTimeout(resolve, 3000);
             });
@@ -158,9 +158,9 @@ export class Orchestrator {
     ready.catch(async (error) => {
       logger.errorFrom(error, "Instance failed to become ready, forcibly reclaiming resources");
 
-      if (vm!.process.exitCode === null) {
+      if (vm.process.exitCode === null) {
         try {
-          vm!.process.kill("SIGKILL");
+          vm.process.kill("SIGKILL");
         } catch (err) {
           logger.warn("Failed to kill runner child process during reclaim", { err });
         }

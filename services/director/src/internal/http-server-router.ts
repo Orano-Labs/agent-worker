@@ -231,52 +231,52 @@ export class HTTPServerRouter {
     const projectId = context.params.project;
     const path = context.params.rest;
 
-    // this.#logger.debug(`Client ${context.kind} received`, {
-    //   method: context.req.method,
-    //   projectId,
-    //   path,
-    // });
+    this.#logger.debug(`Client ${context.kind} received`, {
+      method: context.req.method,
+      projectId,
+      path,
+    });
 
-    // // Authenticate — only project owners may access their projects.
-    // let identity: Authenticator.Identity;
+    // Authenticate — only project owners may access their projects.
+    let identity: Authenticator.Identity;
 
-    // try {
-    //   identity = await this.#auth.authenticate(this.#toHeaders(context.req));
-    // } catch (error) {
-    //   this.#logger.warn(`Client ${context.kind} authentication failed`, {
-    //     projectId,
-    //     err: error,
-    //   });
+    try {
+      identity = await this.#auth.authenticate(this.#toHeaders(context.req));
+    } catch (error) {
+      this.#logger.warn(`Client ${context.kind} authentication failed`, {
+        projectId,
+        err: error,
+      });
 
-    //   return this.#reject(context, 401, "Authentication required");
-    // }
+      return this.#reject(context, 401, "Authentication required");
+    }
 
-    // if (identity.case !== "user") {
-    //   this.#logger.warn(`Client ${context.kind} rejected — identity is not a user`, {
-    //     projectId,
-    //     case: identity.case,
-    //   });
+    if (identity.case !== "user") {
+      this.#logger.warn(`Client ${context.kind} rejected — identity is not a user`, {
+        projectId,
+        case: identity.case,
+      });
 
-    //   return this.#reject(context, 403, "Only users can access projects");
-    // }
+      return this.#reject(context, 403, "Only users can access projects");
+    }
 
-    // // Verify the project exists and belongs to this user.
-    // const project = await this.#repository.client.project.findFirst({
-    //   where: {
-    //     id: projectId,
-    //     ownerId: identity.userId,
-    //     deleteTime: null,
-    //   },
-    // });
+    // Verify the project exists and belongs to this user.
+    const project = await this.#repository.client.project.findFirst({
+      where: {
+        id: projectId,
+        ownerId: identity.userId,
+        deleteTime: null,
+      },
+    });
 
-    // if (!project) {
-    //   this.#logger.warn("Project not found or not owned by user", {
-    //     projectId,
-    //     userId: this.#logger.mask(identity.userId),
-    //   });
+    if (!project) {
+      this.#logger.warn("Project not found or not owned by user", {
+        projectId,
+        userId: this.#logger.mask(identity.userId),
+      });
 
-    //   return this.#reject(context, 404, `Project "${projectId}" not found or not owned by you`);
-    // }
+      return this.#reject(context, 404, `Project "${projectId}" not found or not owned by you`);
+    }
 
     this.#doClient(context, projectId, `/${path}`);
   }

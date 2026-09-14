@@ -1,5 +1,3 @@
-import { Client, ProjectPB, UserPB } from "@aw/vm-director/sdk";
-import { createGrpcWebTransport } from "@connectrpc/connect-node";
 import { Container } from "@/helpers/container";
 import { Controller } from "@/internal/controller";
 import { Director } from "@/internal/director";
@@ -9,7 +7,7 @@ import { Logger } from "@/internal/logger";
 import { Orchestrator } from "@/internal/orchestrator";
 import { Terminator } from "@/internal/terminator";
 import { Tunnel } from "@/internal/tunnel";
-import { VM } from "@/internal/vm";
+import { VMManager } from "@/internal/vm";
 import { VMImage } from "@/internal/vm-image";
 import { VMKernel } from "@/internal/vm-kernel";
 import { VMNet } from "@/internal/vm-net";
@@ -25,7 +23,7 @@ Container.singleton(VMNet, () => new VMNet());
 Container.singleton(Orchestrator, () => new Orchestrator());
 Container.singleton(VMWorkspace, () => new VMWorkspace());
 Container.singleton(Director, () => new Director());
-Container.singleton(VM, () => new VM());
+Container.singleton(VMManager, () => new VMManager());
 Container.singleton(Tunnel, () => new Tunnel());
 Container.singleton(Terminator, () => new Terminator());
 
@@ -51,6 +49,54 @@ Container.singleton(Terminator, () => new Terminator());
   await director.init();
   await controller.init();
   await tunnel.init();
+
+  // const MANAGER_PVKEY = "302e020100300506032b657004220420404df1fafc1102a40a88e898c1f570b581137bf4fca7c51d67f2b01aa88d4d47";
+
+  // (async () => {
+  //   const transport = createGrpcWebTransport({
+  //     baseUrl: "http://127.0.0.1:3008/grpc",
+  //     httpVersion: "1.1",
+  //   });
+
+  //   // @ts-expect-error
+  //   const managerClient = new Client(transport, { type: "manager", privateKey: MANAGER_PVKEY }, false);
+
+  //   const userService = managerClient.createUserService();
+  //   const user = await userService.create(Client.createMessageValid(UserPB.UserServiceCreateRequestSchema, {}));
+
+  //   const userClient = new Client(
+  //     // @ts-expect-error
+  //     transport,
+  //     { type: "user", id: user.user.id, privateKey: Buffer.from(user.privateKey).toString("hex") },
+  //     false,
+  //   );
+
+  //   const projectService = userClient.createProjectService();
+  //   const project = await projectService.create(
+  //     Client.createMessageValid(ProjectPB.ProjectServiceCreateRequestSchema, {
+  //       name: "TESTXXXX",
+  //       resourceTier: ProjectPB.ProjectResourceTier.MINIMUM,
+  //     }),
+  //   );
+
+  //   const task = await o.run({
+  //     instanceId: Math.random().toString().slice(2),
+  //     config: {
+  //       metadata: {},
+  //       projectId: project.project.id,
+  //       machineTier: "minimal",
+  //       env: {},
+  //     }
+  //   });
+
+  //   await task.ready;
+  //   await task.closed;
+
+  // })().catch((error) => {
+  //   console.log(error);
+
+  //   return  terminator.terminate("SIGINT")
+  // });
 
   process.on("SIGINT", (signal) => terminator.terminate(signal)); // Ctrl+C
   process.on("SIGTERM", (signal) => terminator.terminate(signal)); // System or process manager

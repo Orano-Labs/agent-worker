@@ -288,7 +288,9 @@ export class Firecracker {
   async getFirecrackerVersion() {}
   async getMachineConfiguration() {}
   async getMemoryHotplug() {}
-  async getMmds() {}
+  async getMmds() {
+    return getMmds({ throwOnError: true, client: this.#client });
+  }
   async loadSnapshot() {}
   async patchBalloon() {}
   async patchBalloonStatsInterval() {}

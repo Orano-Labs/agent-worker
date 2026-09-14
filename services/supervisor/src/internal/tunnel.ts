@@ -1,20 +1,22 @@
+import { Container } from "@aw/container";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { TunnelClient } from "@aw/vm-director/tunnel";
-import { Container } from "@/helpers/container";
-import { Controller } from "@/internal/controller";
-import { Logger } from "@/internal/logger";
-import type { Orchestrator } from "@/internal/orchestrator";
-import { Terminator } from "./terminator";
+import type { Controller } from "@/internal/controller";
 
-export class Tunnel {
+export class Tunnel extends Container.ServiceConstructable {
   #client?: TunnelClient;
-  #logger: Logger;
   #controller: Controller;
-  #terminator: Terminator;
+  #environment: Environment;
+  #logger: Logger;
+  #abort?: AbortController;
 
-  constructor() {
-    this.#logger = Container.inject(Logger).prefix("Tunnel");
-    this.#controller = Container.inject(Controller);
-    this.#terminator = Container.inject(Terminator);
+  constructor(...deps: [Environment, Logger, Controller]) {
+    super();
+
+    this.#environment = deps[0];
+    this.#logger = deps[1].namespace("Tunnel");
+    this.#controller = deps[2];
   }
 
   get client() {
@@ -25,48 +27,46 @@ export class Tunnel {
     return this.#client;
   }
 
-  async init() {
+  protected override async initialize(signal: AbortSignal) {
+    signal.throwIfAborted();
+
     if (this.#client) {
       throw new Error("Tunnel is already initialized.");
     }
 
-    const supervisorId = process.env.AW_SUPERVISOR_ID;
-    const supervisorPrivateKey = process.env.AW_SUPERVISOR_PRIVATE_KEY;
-    const baseUrl = process.env.AW_SUPERVISOR_DIRECTOR_HOST_URL;
-
-    if (!supervisorId) {
-      throw new Error("AW_SUPERVISOR_ID is not set.");
-    }
-
-    if (!supervisorPrivateKey) {
-      throw new Error("AW_SUPERVISOR_PRIVATE_KEY is not set.");
-    }
-
-    if (!baseUrl) {
-      throw new Error("AW_SUPERVISOR_DIRECTOR_HOST_URL is not set.");
-    }
+    const supervisorId = this.#environment.get("ID", true);
+    const supervisorPrivateKey = this.#environment.get("PRIVATE_KEY", true);
+    const baseUrl = this.#environment.get("DIRECTOR_HOST_URL", true);
 
     const ctrl = new AbortController();
 
-    this.#client = new TunnelClient({
+    signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+
+    const client = new TunnelClient({
       identity: {
         type: "supervisor",
         id: supervisorId,
         privateKey: supervisorPrivateKey,
       },
-      maxConnections: 1,
+      maxConnections: Tunnel.MAX_CONNECTIONS,
       baseUrl,
       targetResolver: (headers) => this.#resolveTarget(headers),
       logger: this.#logger,
     });
 
-    this.#client.start(ctrl.signal);
+    client.start(ctrl.signal);
+
+    this.#client = client;
+    this.#abort = ctrl;
 
     this.#logger.info("Tunnel initialized and started", { baseUrl });
+  }
 
-    this.#terminator.register(async () => {
-      ctrl.abort();
-    });
+  protected override async dispose() {
+    this.#abort?.abort();
+
+    this.#abort = undefined;
+    this.#client = undefined;
   }
 
   async #resolveTarget(headers: Headers): Promise<URL> {
@@ -83,7 +83,7 @@ export class Tunnel {
     });
   }
 
-  async #waitForProcessing(instanceId: string): Promise<Orchestrator.Task> {
+  async #waitForProcessing(instanceId: string): Promise<Controller.RunningInstance> {
     const deadline = Date.now() + 3000;
 
     while (Date.now() < deadline) {

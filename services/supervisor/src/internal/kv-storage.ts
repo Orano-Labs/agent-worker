@@ -1,21 +1,22 @@
 import { join } from "node:path";
+import { Container } from "@aw/container";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { open } from "lmdb";
-
-import { Container } from "@/helpers/container";
-import { Environment } from "@/internal/environment";
-import { Logger } from "@/internal/logger";
 
 const DB_NAME = "kv";
 
-export class KVStorage {
-  #db!: ReturnType<typeof open<unknown, string>>;
+export class KVStorage extends Container.ServiceConstructable {
+  #db?: ReturnType<typeof open<unknown, string>>;
 
-  #env: Environment;
+  #environment: Environment;
   #logger: Logger;
 
-  constructor() {
-    this.#env = Container.inject(Environment);
-    this.#logger = Container.inject(Logger).prefix("KVStorage");
+  constructor(...deps: [Logger, Environment]) {
+    super();
+
+    this.#environment = deps[1];
+    this.#logger = deps[0].namespace("KVStorage");
   }
 
   get db() {
@@ -26,15 +27,15 @@ export class KVStorage {
     return this.#db;
   }
 
-  async init() {
-    const path = join(this.#env.workdir, DB_NAME);
+  protected override async initialize() {
+    this.#db = open({ path: join(this.#environment.root, DB_NAME), compression: true });
+  }
 
-    try {
-      this.#db = open({ path, compression: true });
-    } catch (error) {
-      this.#logger.errorFrom(error, "Failed to open kv storage database");
-
-      process.exit(1);
+  protected override async dispose(reason?: unknown) {
+    if (this.#db) {
+      await this.#db.close();
     }
+
+    this.#db = undefined;
   }
 }

@@ -1,27 +1,39 @@
+import { createConnection } from "node:net";
+import { join } from "node:path";
+import { Container } from "@aw/container";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { Client, ProjectPB, SupervisorPortalPB } from "@aw/vm-director/sdk";
-import { Container } from "@/helpers/container";
-import { Director } from "@/internal/director";
-import { KVStorage } from "@/internal/kv-storage";
-import { Logger } from "@/internal/logger";
-import { Orchestrator } from "@/internal/orchestrator";
-import { Terminator } from "./terminator";
+import type { Director } from "@/internal/director";
+import type { Ganesha } from "@/internal/ganesha";
+import type { KVStorage } from "@/internal/kv-storage";
+import type { VMManager } from "@/internal/vm-manager";
 
-export class Controller {
+export class Controller extends Container.ServiceConstructable {
   #logger: Logger;
-  #kv: KVStorage;
   #director: Director;
-  #orchestrator: Orchestrator;
-  #portal?: ReturnType<Client["createSupervisorPortalService"]>;
-  #processings: Map<string, Promise<Orchestrator.Task>>;
-  #terminator: Terminator;
+  #ganesha: Ganesha;
+  #kv: KVStorage;
+  #manager: VMManager;
+  #fsRoot: string;
 
-  constructor() {
-    this.#logger = Container.inject(Logger).prefix("Controller");
-    this.#kv = Container.inject(KVStorage);
-    this.#director = Container.inject(Director);
-    this.#orchestrator = Container.inject(Orchestrator);
+  #portal?: ReturnType<Client["createSupervisorPortalService"]>;
+  #processings: Map<string, Promise<Controller.RunningInstance>>;
+  #watching?: {
+    controller: AbortController;
+    stream: Promise<void>;
+  };
+
+  constructor(...deps: [Environment, Logger, KVStorage, Director, VMManager, Ganesha]) {
+    super();
+
+    this.#fsRoot = deps[0].get("FS_ROOT", join(deps[0].root, "fs"));
+    this.#logger = deps[1].namespace("Controller");
+    this.#kv = deps[2];
+    this.#director = deps[3];
+    this.#manager = deps[4];
+    this.#ganesha = deps[5];
     this.#processings = new Map();
-    this.#terminator = Container.inject(Terminator);
   }
 
   get #portalMust() {
@@ -36,32 +48,47 @@ export class Controller {
     return this.#processings.get(instanceId);
   }
 
-  async init() {
+  protected override async initialize(signal: AbortSignal) {
+    signal.throwIfAborted();
+
     this.#portal = this.#director.client.createSupervisorPortalService();
 
-    await this.#releaseAllRunningInstances();
+    await this.#releaseAllInstances();
 
     this.#logger.info("Controller initialized, starting supervisor portal watch stream");
 
     const ctrl = new AbortController();
-    const watching = this.#watch(ctrl.signal);
 
-    this.#terminator.register(async (signal) => {
-      ctrl.abort();
+    signal.addEventListener("abort", () => ctrl.abort(), { once: true });
 
-      await Promise.all([
-        ...[...this.#processings.values()].map(async (task) => {
-          return task
-            .then((t) => {
-              t.runner.process.kill(signal as NodeJS.Signals);
+    const stream = this.#watch(ctrl.signal);
 
-              return t.closed;
-            })
-            .catch(() => {});
-        }),
-        watching,
-      ]);
-    });
+    this.#watching = { controller: ctrl, stream };
+  }
+
+  protected override async dispose() {
+    const watch = this.#watching;
+
+    if (!watch) {
+      return;
+    }
+
+    this.#watching = undefined;
+
+    watch.controller.abort();
+
+    await Promise.all([
+      ...[...this.#processings.values()].map(async (run) => {
+        return run
+          .then((r) => {
+            r.controller.abort();
+
+            return r.process;
+          })
+          .catch(() => {});
+      }),
+      watch.stream,
+    ]);
   }
 
   async #watch(signal: AbortSignal) {
@@ -88,14 +115,40 @@ export class Controller {
 
           for (const load of loads) {
             if (!load.confirmed) {
-              await this.#acknowledge(load.instanceId);
+              this.#logger.info("Acknowledging unconfirmed instance", { instanceId: load.instanceId });
+
+              try {
+                await this.#portalMust.acknowledge(
+                  Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
+                    instanceId: load.instanceId,
+                    status: SupervisorPortalPB.AcknowledgeStatus.OK,
+                  }),
+                );
+              } catch (error) {
+                this.#logger.error(`Failed to acknowledge instance (${load.instanceId})`, { err: error });
+              }
             } else {
-              await this.#schedule(load);
+              let projectResourceTier: Controller.Instance["projectResourceTier"];
+
+              if (load.projectResourceTier === ProjectPB.ProjectResourceTier.STANDARD) {
+                projectResourceTier = "standard";
+              } else if (load.projectResourceTier === ProjectPB.ProjectResourceTier.PERFORMANCE) {
+                projectResourceTier = "performance";
+              } else {
+                projectResourceTier = "minimal";
+              }
+
+              await this.#schedule({
+                id: load.instanceId,
+                projectId: load.projectId,
+                projectResourceTier,
+                createTimestamp: new Date(Number(load.timestamp.seconds) * 1000 + load.timestamp.nanos / 1_000_000),
+              });
             }
           }
 
           for (const { key, value } of this.#kv.db.getRange({ start: Controller.INSTANCE_KEY_PREFIX })) {
-            const instance = value as Controller.RunningInstance;
+            const instance = value as Controller.Instance;
 
             if (serverIds.has(instance.id)) {
               continue;
@@ -115,78 +168,171 @@ export class Controller {
         this.#logger.warn("Watch stream closed, reconnecting", { delay: 2000 });
       } catch (error) {
         if (!signal.aborted) {
-          this.#logger.errorFrom(error, "Watch stream closed with error, reconnecting");
+          this.#logger.error("Watch stream closed with error, reconnecting", { err: error });
         }
       }
 
       if (!signal.aborted) {
-        await this.#sleep(2000);
+        await this.#sleep(2000, signal);
       }
     }
   }
 
-  async #schedule(load: SupervisorPortalPB.LoadValid) {
-    const instanceId = load.instanceId;
-    const key = this.#instanceStorageKey(instanceId);
+  async #sleep(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve) => {
+      if (signal?.aborted) {
+        return resolve();
+      }
+
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+    });
+  }
+
+  async #schedule(instance: Controller.Instance) {
+    const instanceId = instance.id;
+    const key = `${Controller.INSTANCE_KEY_PREFIX}${instanceId}`;
+    const logger = this.#logger.namespace(instance.id);
 
     if (this.#processings.has(instanceId) || this.#kv.db.get(key) !== undefined) {
       return;
     }
 
-    this.#logger.info("Scheduling instance", {
-      instanceId,
-      projectId: load.projectId,
-      resourceTier: load.projectResourceTier,
-    });
-
-    const instance = this.#loadToRunningInstance(load);
     await this.#kv.db.put(key, instance);
 
-    const processing = this.#orchestrator.run({
-      instanceId,
-      config: {
-        projectId: load.projectId,
-        machineTier: instance.projectResourceTier,
-        env: {},
-        metadata: {},
-      },
+    logger.info("Scheduling instance", {
+      projectId: instance.projectId,
+      resourceTier: instance.projectResourceTier,
     });
 
-    this.#processings.set(instanceId, processing);
+    const processing = this.#run(instance, logger);
 
-    void processing
-      .then((task) => this.#trackTask(instance, task))
+    processing
+      .then(async (run) => {
+        await run.process;
+
+        logger.info("Instance run finished", {
+          instanceId: instance.id,
+          projectId: instance.projectId,
+        });
+      })
       .catch(async (error) => {
-        this.#processings.delete(instanceId);
-
-        this.#logger.errorFrom(error, `Failed to create task for instance (${instanceId})`);
+        logger.error("Failed to create task for instance.", { err: error });
+      })
+      .finally(async () => {
+        this.#processings.delete(instance.id);
 
         // 创建任务失败时向 Portal 释放，而不是直接删除本地记录；
         // 本地 KV 记录会在后续 Watch 同步发现 Server 不再下发时由 diff 清理。
         try {
-          await this.#release(instanceId);
-          this.#logger.info("Instance released after task creation failure", { instanceId });
-        } catch (releaseError) {
-          this.#logger.errorFrom(releaseError, `Failed to release instance after task creation failure (${instanceId})`);
+          await this.#release(instance.id).then(() => {
+            logger.info("Instance released", { instanceId: instance.id });
+          });
+        } catch (error) {
+          logger.error(`Failed to release instance (${instance.id})`, { err: error });
         }
       });
+
+    this.#processings.set(instanceId, processing);
   }
 
-  async #acknowledge(id: string) {
-    this.#logger.info("Acknowledging unconfirmed instance", { instanceId: id });
+  async #run(instance: Controller.Instance, logger: Logger) {
+    return new Promise<Controller.RunningInstance>((resolve, reject) => {
+      const vm = this.#manager.create({
+        id: instance.id,
+        machineTier: instance.projectResourceTier,
+        metadata: {},
+      });
 
-    try {
-      await this.#portalMust.acknowledge(
-        Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceAcknowledgeRequestSchema, {
-          instanceId: id,
-          status: SupervisorPortalPB.AcknowledgeStatus.OK,
-        }),
-      );
+      const controller = new AbortController();
 
-      this.#logger.info("Instance acknowledged", { instanceId: id });
-    } catch (error) {
-      this.#logger.errorFrom(error, `Failed to acknowledge instance (${id})`);
-    }
+      const running = vm.run(controller.signal, async (_, resources) => {
+        const path = join(this.#fsRoot, "projects", instance.projectId);
+        const exportEntry = await this.#ganesha.export(path, [resources.net.veth.guest.ip]);
+
+        resources.process.finally(async () => {
+          await this.#ganesha.unexport(exportEntry.id).catch(() => {});
+        });
+
+        await resources.firecracker.putMmds({
+          latest: {
+            "workspace-nfs-path": exportEntry.pseudo,
+          },
+        });
+
+        resolve({
+          id: instance.id,
+          projectId: instance.projectId,
+          projectResourceTier: instance.projectResourceTier,
+          createTimestamp: instance.createTimestamp,
+          controller,
+          firecracker: resources.firecracker,
+          root: resources.root,
+          net: resources.net,
+          process: resources.process,
+          nfs: exportEntry,
+          ready: (async () => {
+            let attempt = 0;
+
+            while (attempt <= 30) {
+              if (resources.process.stage === "fulfilled" || resources.process.stage === "rejected") {
+                throw new Error("VM closed before becoming ready");
+              }
+
+              const host = resources.net.veth.guest.ip;
+
+              try {
+                attempt += 1;
+
+                return await new Promise<URL>((resolve, reject) => {
+                  const conn = createConnection({ host, port: 8000 });
+
+                  conn.on("connect", () => {
+                    conn.destroy();
+                    logger.info("Instance port 8000 is ready", { instanceId: instance.id, host });
+
+                    resolve(new URL(`http://${host}:8000`));
+                  });
+
+                  conn.on("error", (error) => {
+                    conn.destroy();
+                    reject(error);
+                  });
+                });
+              } catch (error) {
+                this.#logger.warn("Instance port 8000 is not ready yet, retrying...", {
+                  host,
+                  err: error,
+                });
+
+                if (attempt <= 30) {
+                  await this.#sleep(1000, controller.signal);
+                }
+              }
+            }
+
+            throw new Error(`Instance did not become ready on port 8000 after ${attempt} attempts.`);
+          })(),
+        });
+      });
+
+      running
+        .then(() => {
+          reject(new Error("VM exited before configuration completed."));
+        })
+        .catch((error) => {
+          reject(new Error("VM failed during configuration", { cause: error }));
+        });
+    });
   }
 
   async #release(instanceId: string) {
@@ -197,9 +343,9 @@ export class Controller {
     );
   }
 
-  async #releaseAllRunningInstances() {
+  async #releaseAllInstances() {
     for (const { key } of this.#kv.db.getRange({ start: Controller.INSTANCE_KEY_PREFIX })) {
-      const instanceId = this.#instanceIdFromStorageKey(key);
+      const instanceId = key.slice(Controller.INSTANCE_KEY_PREFIX.length);
 
       this.#logger.info("Releasing stale instance", { instanceId });
 
@@ -210,88 +356,24 @@ export class Controller {
       }
     }
   }
-
-  async #sleep(ms: number) {
-    return new Promise<void>((resolve) => setTimeout(resolve, ms));
-  }
-
-  async #trackTask(instance: Controller.RunningInstance, task: Orchestrator.Task) {
-    this.#logger.info("Instance run started", {
-      instanceId: instance.id,
-      projectId: instance.projectId,
-    });
-
-    try {
-      await task.closed;
-
-      this.#logger.info("Instance run finished", {
-        instanceId: instance.id,
-        projectId: instance.projectId,
-      });
-    } catch (error) {
-      this.#logger.errorFrom(error, `Instance run failed (${instance.id})`);
-    } finally {
-      this.#processings.delete(instance.id);
-
-      try {
-        await this.#release(instance.id);
-        this.#logger.info("Instance released", { instanceId: instance.id });
-      } catch (error) {
-        this.#logger.errorFrom(error, `Failed to release instance (${instance.id})`);
-      }
-    }
-  }
-
-  #loadToRunningInstance(load: SupervisorPortalPB.LoadValid) {
-    return {
-      id: load.instanceId,
-      projectId: load.projectId,
-      projectResourceTier: this.#mapResourceTier(load.projectResourceTier),
-      createTimestamp: new Date(Number(load.timestamp.seconds) * 1000 + load.timestamp.nanos / 1_000_000),
-    } satisfies Controller.RunningInstance as Controller.RunningInstance;
-  }
-
-  #mapResourceTier(tier: ProjectPB.ProjectResourceTier) {
-    switch (tier) {
-      case ProjectPB.ProjectResourceTier.MINIMUM:
-        return "minimal";
-      case ProjectPB.ProjectResourceTier.STANDARD:
-        return "standard";
-      case ProjectPB.ProjectResourceTier.PERFORMANCE:
-        return "performance";
-      default:
-        throw new Error(`Unsupported project resource tier: ${tier}`);
-    }
-  }
-
-  #instanceStorageKey(instanceId: string) {
-    return `${Controller.INSTANCE_KEY_PREFIX}${instanceId}`;
-  }
-
-  #instanceIdFromStorageKey(key: string) {
-    return key.slice(Controller.INSTANCE_KEY_PREFIX.length);
-  }
 }
 
 export namespace Controller {
   export const INSTANCE_KEY_PREFIX = "instance:";
 
-  export type RunningInstance = {
-    /**
-     * 实例 ID
-     */
+  export type Instance = {
     id: string;
-    /**
-     * 项目 ID
-     */
     projectId: string;
-    /**
-     * 项目资源档位
-     */
     projectResourceTier: "minimal" | "standard" | "performance";
-    /**
-     * 该实例的创建时间（在后端）
-     */
     createTimestamp: Date;
   };
+
+  export type RunningInstance = Readonly<
+    VMManager.VM.Resources &
+      Instance & {
+        controller: AbortController;
+        ready: Promise<URL>;
+        nfs: Ganesha.Export;
+      }
+  >;
 }

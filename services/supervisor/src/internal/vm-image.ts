@@ -98,7 +98,7 @@ export class VMImage extends Container.ServiceConstructable {
         this.#logger.info("Installing internal packages...");
 
         const MIRROR_MAIN = "https://mirrors.nju.edu.cn/alpine/latest-stable/main/";
-        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", "davfs2", "bubblewrap"];
+        const DEPS = ["tini", "nodejs", "npm", "curl", "fuse", "bubblewrap"];
 
         // Pi needed
         DEPS.push("fd", "ripgrep");
@@ -124,13 +124,10 @@ export class VMImage extends Container.ServiceConstructable {
       await $`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/init.sh")} /init`;
       await $`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${join(process.cwd(), "resources/entrypoint.sh")} /entrypoint`;
       await $`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${ptyd} /usr/local/bin/ptyd`;
-      await $`buildah copy ${RUNTIME_IMAGE_CONTAINER_NAME} ${this.#dependencies.juicefs} /usr/local/bin/juicefs`;
-
-      // await $`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- which pi`.then(console.log);
 
       await $`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /init`;
       await $`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /entrypoint`;
-      await $`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /bin/ptyd`;
+      await $`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- chmod +x /usr/local/bin/ptyd`;
       await $`buildah run --net=host ${RUNTIME_IMAGE_CONTAINER_NAME} -- mkdir -p /workspace`;
 
       this.#logger.info(`Mounting container rootfs to build Squashfs...`);

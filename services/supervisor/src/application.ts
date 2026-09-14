@@ -65,26 +65,7 @@ export class Application extends Container.ServiceConstructable {
   }
 
   protected override async initialize(_: AbortSignal) {
-    // const vm = this.#manager.create({ id: "xxx", machineTier: "minimal", metadata: {} });
-    // const controller = new AbortController();
-    // const running = vm
-    //   .run(controller.signal, async (_, resources) => {
-    //     const fs = await this.#ganesha.export("/home/angx/supervisor-dev/workspace", [resources.net.veth.guest.ip]);
-    //     resources.process.finally(async () => {
-    //       await this.#ganesha.unexport(fs.id).catch(() => {});
-    //     });
-    //     await resources.firecracker.putMmds({
-    //       latest: {
-    //         "workspace-nfs-path": fs.pseudo,
-    //       },
-    //     });
-    //     this.#vm = { ...resources, running, instance: vm, controller };
-    //   })
-    //   .catch((error) => {
-    //     // xxx;
-    //     //
-    //     console.log(error);
-    //   });
+    // fetch("http://117.55.235.4:3008/link/avo0z2l0htueeqk8clq57fn4/wx").then(console.log).catch(console.log)
   }
 
   static async run() {

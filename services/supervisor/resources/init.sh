@@ -14,6 +14,18 @@ fatal() {
   exit 1
 }
 
+mmds() {
+  local token
+
+  [ -z "$1" ] && fatal "mmds: missing resource path"
+
+  token=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+  [ -z "$token" ] && fatal "mmds: failed to get token"
+
+  curl -sf -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/$1"
+}
+
 # Define the scratch block device assigned to the VM
 SCRATCH_DEV=vdb
 
@@ -86,10 +98,13 @@ mountpoint -q /run     || mount -t tmpfs    tmpfs    /run     -o mode=0755,nosui
 log "Mounting core file systems completed successfully."
 log "Handing over execution to entrypoint..."
 
-# Replace the current shell process image with the next-stage /entrypoint script.
-# This cleanly passes down all positional arguments ($@).
-# exec /sbin/tini -g -- /entrypoint "$@"
-/usr/local/bin/juicefs mount redis://:redis_xtd6tz@117.55.235.4:6379/3 /workspace --background --subdir "/projects/${AW_RUNNER_PROJECT}"  || fatal "Failed to mount /workspace"
+NFS_PSEUDO=$(mmds latest/workspace-nfs-path) || fatal "failed to read latest/workspace-nfs-path"
+
+log "NFS_PSEUDO: $NFS_PSEUDO"
+
+mount -t nfs4 -o vers=4.1,port=26088,mountport=26088,sync,soft,retrans=3,noatime "10.123.0.1:$NFS_PSEUDO" /workspace || fatal "Failed to mount NFSv4 $NFS_PSEUDO on /workspace"
+
+log "Mounted NFSv4 $NFS_PSEUDO on /workspace"
 
 exec bwrap \
   --die-with-parent \

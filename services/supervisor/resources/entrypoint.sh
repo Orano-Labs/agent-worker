@@ -25,6 +25,8 @@ fatal() {
 power_off_now() {
   info "Triggering forced kernel poweroff..."
 
+  # sync || true
+
   # -f forces immediate poweroff/reboot bypassing sysvinit/systemd.
   # Essential for microVMs to prevent hanging on teardown.
   poweroff -f || reboot -f || exit 1
@@ -57,9 +59,6 @@ cleanup_and_poweroff() {
 # the VM gracefully forwards control to the cleanup handler instead of hanging indefinitely.
 trap cleanup_and_poweroff EXIT SIGTERM SIGINT ERR
 
-# Purge redundant init files to free up memory and prevent container escape vectors
-rm -rf /entrypoint
-
 info "Current System Metrics before starting target application:"
 
 if command -v free >/dev/null 2>&1; then
@@ -88,7 +87,6 @@ set +e
   --env PI_CODING_AGENT_DIR=/workspace/.pi/agent \
   --env PI_CODING_AGENT_SESSION_DIR=/workspace/.pi/agent/sessions \
   -- \
-  --continue
 
 # Safely latch the exit code into a global variable readable by the EXIT trap handler
 APPLICATION_EXIT_CODE=$?

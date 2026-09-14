@@ -368,9 +368,9 @@ export namespace Ganesha {
 
   export const CONFIG_TEMPLATE = `
     nfs_core_param {
-      # bind_addr: 127.0.0.1 for a single host-netns instance;
+      # bind_addr: 0.0.0.0 for a single host-netns instance;
       # 10.123.0.1 for a per-VM-netns instance (that address only exists inside VM netns).
-      bind_addr = 127.0.0.1;
+      bind_addr = 0.0.0.0;
       nfs_port = 26088;
 
       # NFSv4 only; no rpcbind/mountd/NLM/RQUOTA needed.

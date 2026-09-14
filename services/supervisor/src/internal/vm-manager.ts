@@ -397,7 +397,8 @@ export namespace VMManager {
         });
       } finally {
         await this.#net.release(ns).catch(() => {});
-        await rm(root, { recursive: true, force: true }).catch(() => {});
+        await rm(join(root, "kernel")).catch(() => {});
+        await rm(join(root, "scratch.ext4")).catch(() => {});
 
         signal.removeEventListener("abort", abort);
 

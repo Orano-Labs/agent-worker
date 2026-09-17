@@ -31,6 +31,8 @@ Director 提供两类 HTTP 端点：
 
 `Client` 接收 Connect `Transport` 与身份，自动为每一个 unary、客户端流、服务端流、双向流请求添加签名头。因此业务代码无需手工拼装 `x-request-signature`。
 
+Director 的 Connect 适配器开启了 Connect 和 gRPC-Web，没有开启原生 gRPC。Node 客户端可用 `createConnectTransport` 或 `createGrpcWebTransport`；`createGrpcTransport` 会连不上。当前 Supervisor 使用 gRPC-Web 和 HTTP/1.1。
+
 ```ts
 import { Client, ProjectPB } from "@aw/vm-director/sdk";
 import { createConnectTransport } from "@connectrpc/connect-node";
@@ -66,7 +68,7 @@ const page = await projects.list(
 | 用户 | `{ type: "user", id, privateKey }` | `ProjectService`、`TemplateService`、自己项目的 `FileSystemService` | 仅自己拥有项目的 `/link/:projectId/...` |
 | Supervisor | `{ type: "supervisor", id, privateKey }` | `SupervisorPortalService` | `/tunnel` Upgrade |
 
-生产环境中，`id` 必须是服务端已登记、未删除的 24 字符 ID。权限不匹配会收到 `PermissionDenied`；HTTP 项目访问会收到 `403`。
+生产环境中，`id` 必须是服务端已登记、未删除的 24 字符 ID。RPC 权限不匹配会收到 `PermissionDenied`。`/link` 缺少有效签名返回 `401`，身份不是 user 返回 `403`，项目不存在或不属于该用户返回 `404`。`/tunnel` 在 Supervisor 还没有有效 lease 时返回 `503`。
 
 ```ts
 const managerClient = new Client(transport, {
@@ -416,7 +418,7 @@ for (const node of tree.children) {
 }
 ```
 
-`depth: 0` 返回 `root` 的直接子节点，但不加载子目录内容。`TreeNodeDirectory.loaded` 表示 `children` 是否已加载。大小使用 `bigint`。当前服务端将普通文件的 MIME 类型统一返回为 `application/octet-stream`。
+`depth: 0` 返回 `root` 的直接子节点，但不加载子目录内容。`TreeNodeDirectory.loaded` 表示 `children` 是否已加载。每个节点带 `mtime`、`ctime` 和 `bigint` 类型的 `size`。当前服务端将普通文件的 MIME 类型统一返回为 `application/octet-stream`。
 
 #### 创建、读取、写入和删除
 
@@ -544,27 +546,35 @@ SDK 已导出 `createFileUploadService()` 和完整的分片上传协议。协�
 
 ### 3.7 Supervisor：实例分配门户（`SupervisorPortalService`）
 
-此服务仅能由 Supervisor 调用。`watch()` 是服务端流，返回 `AsyncIterable`；每个 Supervisor 同时只能存在一个活跃 watch。连接成功后服务端发送当前完整负载，之后发送负载变化或 keepalive。
+此服务仅能由 Supervisor 调用。进程每次启动都要生成一个 `processId`（1 到 64 个字符，例如 `randomUUID()`），并在该进程的整个生命周期内把它传给 `watch()` 和 `heartbeat()`。协议会拒绝空的 `processId`。
+
+`watch()` 是服务端流，返回 `AsyncIterable`。每个 Supervisor 同时只能有一个活跃 watch。同一 `processId` 再次调用会收到 `AlreadyExists`。若 `processId` 不同，服务端会关闭旧流并接管，用来处理 Supervisor 重启后遗留的假死 watch。连接成功后服务端发送当前完整负载，之后发送负载变化；队列为空时大约每 15 秒发送一次 keepalive。
+
+`heartbeat()` 创建或刷新该 Supervisor 的 lease，这是 `online` 为 true 的条件。lease 在约 10 秒没有心跳后过期。心跳间隔要明显短于 10 秒；当前 Supervisor 每 3 秒发一次。若新心跳携带了不同的 `processId`，服务端会销毁旧 lease 及其隧道连接，再创建新 lease。
 
 ```ts
+import { randomUUID } from "node:crypto";
 import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 
 const portal = supervisorClient.createSupervisorPortalService();
+const processId = randomUUID();
 ```
 
 | 方法 | 请求字段 | 返回/作用 |
 | --- | --- | --- |
-| `watch` | 空消息 | 服务端流，事件为 `keepalive` 或 `load` |
-| `acknowledge` | `instanceId`, `status` | 接受或拒绝实例分配 |
+| `watch` | `processId` | 服务端流，事件为 `keepalive` 或 `load` |
+| `acknowledge` | `instanceId`, `status` | 接受或拒绝实例分配。分配等待确认的时限约为 15 秒 |
 | `release` | `instanceId` | 通知实例已停止，释放调度容量 |
-| `heartbeat` | 空消息 | 刷新 Supervisor lease，维持 `online` |
+| `heartbeat` | `processId` | 创建或刷新 Supervisor lease，维持 `online` |
 
 ```ts
 const watchAbort = new AbortController();
 
 async function runWatch() {
   const stream = portal.watch(
-    Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {}),
+    Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {
+      processId,
+    }),
     { signal: watchAbort.signal },
   );
 
@@ -596,8 +606,12 @@ async function runWatch() {
 }
 
 const heartbeat = setInterval(() => {
-  void portal.heartbeat(Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {}));
-}, 10_000);
+  void portal.heartbeat(
+    Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceHeartbeatRequestSchema, {
+      processId,
+    }),
+  );
+}, 3_000);
 
 void runWatch();
 
@@ -612,11 +626,11 @@ clearInterval(heartbeat);
 watchAbort.abort();
 ```
 
-`Load` 含 `instanceId`、`projectId`、`projectResourceTier`、`confirmed` 和 `timestamp`。确认状态只能是 `AcknowledgeStatus.OK` 或 `REJECT`，不能是 `UNSPECIFIED`。网络中断后，应用应自行带退避重连 `watch()`。
+`Load` 含 `instanceId`、`projectId`、`projectResourceTier`、`confirmed` 和 `timestamp`。确认状态只能是 `AcknowledgeStatus.OK` 或 `REJECT`，不能是 `UNSPECIFIED`。对已结算的分配再次 `acknowledge` 会收到 `FailedPrecondition`。网络中断后，应用应自行带退避重连 `watch()`，并继续使用同一个 `processId`。
 
 ## 4. 已认证访问项目 HTTP、SSE 与 WebSocket
 
-用户可访问 `/link/:projectId/...`，Director 会校验该用户是否为项目 owner、为项目分配实例、去除签名 header，并加入可信的 `x-instance-id` header 后通过隧道转发。
+用户可访问 `/link/:projectId/...`。Director 校验签名和项目 owner，为项目分配实例，去掉签名 header，并加入可信的 `x-instance-id` header 后通过隧道转发。缺少有效签名返回 `401`。身份不是 user 返回 `403`。项目不存在或不属于该用户返回 `404`。
 
 `Client` 的公开 getter 名称当前为 `singer`（源码拼写如此）。它返回请求签名器，可为普通 HTTP/WS 握手写入签名 header：
 
@@ -653,7 +667,9 @@ ws.on("message", (data) => console.log(data.toString()));
 
 ## 5. Supervisor 反向隧道（`TunnelClient`）
 
-`TunnelClient` 取代了旧版本的固定 `project`、`token`、`target` 隧道配置。现在它以 Supervisor 身份连接 `${baseUrl}/tunnel`，并对**每个转发请求**调用 `targetResolver(headers)` 决定目标 URL。因此单个 Supervisor 可按 `x-instance-id` 将不同项目实例路由至不同本地服务。
+`TunnelClient` 取代了旧版本的固定 `project`、`token`、`target` 隧道配置。现在它以 Supervisor 身份连接 `${baseUrl}/tunnel`，并对每个转发请求调用 `targetResolver(headers)` 决定目标 URL。因此单个 Supervisor 可按 `x-instance-id` 将不同项目实例路由至不同本地服务。
+
+`/tunnel` 要求该 Supervisor 已经通过 `heartbeat()` 拿到 lease。没有 lease 时升级返回 `503`，SDK 会记录 warning 并在约 2 秒后重连。先发心跳，再调用 `tunnel.start()`。心跳停止后 lease 大约 10 秒过期，之后新的升级同样会收到 `503`。若心跳换成了新的 `processId`，服务端会拆掉旧隧道 socket；同一个 `TunnelClient` 会按约 2 秒间隔重连，不必再调用 `start()`。
 
 ```ts
 import { TunnelClient } from "@aw/vm-director/tunnel";
@@ -696,7 +712,7 @@ process.once("SIGTERM", () => controller.abort());
 | `TunnelClient.Options` | 含义 |
 | --- | --- |
 | `baseUrl: string` | Director HTTP 根 URL |
-| `identity` | 必须为可通过认证的 supervisor 身份；manager/user 会被 `/tunnel` 拒绝 |
+| `identity` | 必须为可通过认证的 supervisor 身份；manager/user 会被 `/tunnel` 拒绝。没有 lease 时升级返回 `503` |
 | `dev?: boolean` | 使用开发签名 header，仅限非生产 Director |
 | `targetResolver(headers)` | 每个被代理的请求/升级连接选取目标 URL |
 | `maxConnections: number` | 要长期维持的并行隧道连接数 |
@@ -727,11 +743,14 @@ try {
       case Code.NotFound:
         // ID 不存在、已删除，或项目并非当前用户所有。
         break;
+      case Code.AlreadyExists:
+        // 同一 processId 上已经有活跃的 watch 流。
+        break;
       case Code.FailedPrecondition:
-        // 例如读取目录、删除文件系统根目录，或删除在线 Supervisor。
+        // 例如读取目录、删除文件系统根目录、删除在线 Supervisor，或对已结算的分配再次 acknowledge。
         break;
       case Code.InvalidArgument:
-        // 例如 FileSystem.type 为 UNSPECIFIED。
+        // 例如 FileSystem.type 为 UNSPECIFIED，或 watch/heartbeat 缺少 processId。
         break;
       case Code.Unimplemented:
         // 当前版本尚未实现 move、copy 和 FileUploadService。
@@ -748,6 +767,8 @@ try {
 - 创建 user/supervisor 后立刻将私钥存入密钥管理服务；服务端之后不会再返回私钥。
 - 保持客户端和 Director 时钟同步。生产签名的有效时间窗为 5 分钟。
 - 用 `AbortController` 统一管理 RPC 超时、watch 生命周期和 tunnel 退出。
+- Supervisor 进程启动时生成一次 `processId`，并同时传给 `watch()` 和 `heartbeat()`。不要传空字符串。
+- 先 `heartbeat()` 再 `TunnelClient.start()`。lease 大约 10 秒没有心跳就会过期，`/tunnel` 随后返回 `503`。
 - 不要传 `UNSPECIFIED` 枚举值；资源档位、模板状态、确认状态均会被协议校验拒绝。
 - RPC 不会由 SDK 自动重试。对于创建、删除、确认等变更操作，请由上层按业务幂等性实现重试。
 

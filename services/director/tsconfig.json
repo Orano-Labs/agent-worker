@@ -8,7 +8,6 @@
     "drizzle.config.ts"
   ],
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     },

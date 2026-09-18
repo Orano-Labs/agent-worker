@@ -5,7 +5,6 @@ package api.v1;
 import "api/v1/project.proto";
 import "buf/validate/validate.proto";
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/wrappers.proto";
 
 enum AcknowledgeStatus {
   ACKNOWLEDGE_STATUS_UNSPECIFIED = 0;
@@ -13,7 +12,7 @@ enum AcknowledgeStatus {
   ACKNOWLEDGE_STATUS_REJECT = 2;
 }
 
-message Load {
+message Assignment {
   string instance_id = 1 [(buf.validate.field).string = {len: 24}];
   string project_id = 2 [(buf.validate.field).string = {len: 24}];
   api.v1.ProjectResourceTier project_resource_tier = 3 [(buf.validate.field).enum = {
@@ -25,19 +24,20 @@ message Load {
 }
 
 message SupervisorPortalServiceWatchRequest {
-  // 每次进程启动时生成的唯一标识,用于在重启后接管旧 Watch 流。
   string process_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
 }
+
 message SupervisorPortalServiceWatchResponse {
   oneof event {
     api.v1.EventKeepalive keepalive = 4;
-    EventLoadList load = 5;
+    api.v1.EventAssignmentList assignment_list = 5;
   }
 }
 
 message SupervisorPortalServiceReleaseRequest {
   string instance_id = 1 [(buf.validate.field).string = {len: 24}];
 }
+
 message SupervisorPortalServiceReleaseResponse {}
 
 message SupervisorPortalServiceAcknowledgeRequest {
@@ -47,23 +47,17 @@ message SupervisorPortalServiceAcknowledgeRequest {
     not_in: [0]
   }];
 }
+
 message SupervisorPortalServiceAcknowledgeResponse {}
 
-message EventLoadList {
-  repeated Load list = 1;
+message EventAssignmentList {
+  repeated Assignment list = 1;
 }
 
 message EventKeepalive {}
-
-message SupervisorPortalServiceHeartbeatRequest {
-  // 每次进程启动时生成的唯一标识,用于识别 Supervisor 是否发生过重启。
-  string process_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
-}
-message SupervisorPortalServiceHeartbeatResponse {}
 
 service SupervisorPortalService {
   rpc Watch(SupervisorPortalServiceWatchRequest) returns (stream SupervisorPortalServiceWatchResponse);
   rpc Release(SupervisorPortalServiceReleaseRequest) returns (SupervisorPortalServiceReleaseResponse);
   rpc Acknowledge(SupervisorPortalServiceAcknowledgeRequest) returns (SupervisorPortalServiceAcknowledgeResponse);
-  rpc Heartbeat(SupervisorPortalServiceHeartbeatRequest) returns (SupervisorPortalServiceHeartbeatResponse);
 }

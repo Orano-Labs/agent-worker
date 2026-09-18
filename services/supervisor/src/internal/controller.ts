@@ -106,7 +106,7 @@ export class Controller extends Container.ServiceConstructable {
         );
 
         for await (const response of stream) {
-          if (response.event.case !== "load") {
+          if (response.event.case !== "assignmentList") {
             continue;
           }
 

@@ -1,0 +1,12 @@
+version: v2
+clean: true
+inputs:
+  - directory: proto
+    paths:
+      - proto/extensions
+plugins:
+  - local: protoc-gen-es
+    out: src/generated/proto-extensions
+    opt:
+      - valid_types=protovalidate_required+legacy_required
+      - target=ts

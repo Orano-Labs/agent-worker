@@ -1,9 +1,19 @@
 version: v2
 clean: true
+inputs:
+  - directory: proto
+    paths:
+      - proto/api
 plugins:
   - local: protoc-gen-es
     out: src/generated/proto
-    include_imports: true
     opt:
-      - valid_types=protovalidate_required
+      - valid_types=protovalidate_required+legacy_required
+      - target=ts
+      - erasable_syntax=true
+      - map_imports=buf/validate/:@bufbuild/protovalidate/gen
+      - map_imports=extensions/:@/generated/proto-extensions
+  - local: ["tsx", "./scripts/protoc"]
+    out: src/generated/proto
+    opt:
       - target=ts

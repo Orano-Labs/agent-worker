@@ -1,4 +1,5 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: x */
+/** biome-ignore-all lint/suspicious/noExplicitAny: x */
 
 export class Container<T extends Container.Service> {
   #services: Map<Container.Injectable, Container.Entry>;
@@ -315,7 +316,9 @@ export namespace Container {
   };
 
   export class ServiceConstructable implements Service {
+    // biome-ignore lint/correctness/noUnusedFunctionParameters: x
     protected async initialize(signal: AbortSignal) {}
+    // biome-ignore lint/correctness/noUnusedFunctionParameters: x
     protected async dispose(reason?: unknown) {}
 
     get [SymbolInitialize]() {

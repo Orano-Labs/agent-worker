@@ -13,7 +13,3 @@ plugins:
       - erasable_syntax=true
       - map_imports=buf/validate/:@bufbuild/protovalidate/gen
       - map_imports=extensions/:@/generated/proto-extensions
-  - local: ["tsx", "./scripts/protoc"]
-    out: src/generated/proto
-    opt:
-      - target=ts

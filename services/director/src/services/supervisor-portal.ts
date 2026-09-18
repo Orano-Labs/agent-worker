@@ -3,16 +3,14 @@ import { ProjectResourceTier } from "@/generated/prisma/enums";
 import { ProjectResourceTier as ProjectResourceTierPB } from "@/generated/proto/api/v1/project_pb";
 import {
   AcknowledgeStatus,
+  AssignmentSchema,
+  EventAssignmentListSchema,
+  type EventAssignmentListValid,
   EventKeepaliveSchema,
   type EventKeepaliveValid,
-  EventLoadListSchema,
-  type EventLoadListValid,
-  LoadSchema,
   SupervisorPortalService,
   type SupervisorPortalServiceAcknowledgeRequestValid,
   SupervisorPortalServiceAcknowledgeResponseSchema,
-  type SupervisorPortalServiceHeartbeatRequestValid,
-  SupervisorPortalServiceHeartbeatResponseSchema,
   type SupervisorPortalServiceReleaseRequestValid,
   SupervisorPortalServiceReleaseResponseSchema,
   type SupervisorPortalServiceWatchRequestValid,
@@ -62,7 +60,10 @@ export class SupervisorPortalServiceImplementation {
       existing.close();
     }
 
-    const watcher = new SupervisorPortalServiceImplementation.Watcher(identity, processId, () => {
+    // 在 watch 中维护 Lease:连接建立时创建/复活,周期 keepalive 时 touch 续租。
+    const lease = this.#allocator.getOrCreateLease(identity, processId);
+
+    const watcher = new SupervisorPortalServiceImplementation.Watcher(identity, processId, lease, () => {
       this.#watchers.delete(identity);
 
       this.#logger.debug("Supervisor watch stream closed", { supervisorId: identity });
@@ -93,19 +94,6 @@ export class SupervisorPortalServiceImplementation {
     return Protobuf.createValid(SupervisorPortalServiceAcknowledgeResponseSchema, {});
   }
 
-  async #heartbeat(request: SupervisorPortalServiceHeartbeatRequestValid, context: HandlerContext) {
-    const identity = this.#server.getSupervisorIdentityContextMust(context);
-    const processId = request.processId;
-
-    // process_id 用于识别心跳是否来自同一个 Supervisor 进程;
-    // 不一致时 Allocator 会销毁旧 Lease 及其遗留的(可能假死的)Tunnel Socket。
-    const lease = this.#allocator.getOrCreateLease(identity, processId);
-
-    lease.touch();
-
-    return Protobuf.createValid(SupervisorPortalServiceHeartbeatResponseSchema, {});
-  }
-
   async #release(request: SupervisorPortalServiceReleaseRequestValid, context: HandlerContext) {
     const identity = this.#server.getSupervisorIdentityContextMust(context);
 
@@ -122,9 +110,6 @@ export class SupervisorPortalServiceImplementation {
       acknowledge: async (request, context) => {
         return this.#acknowledge(request as SupervisorPortalServiceAcknowledgeRequestValid, context);
       },
-      heartbeat: async (request, context) => {
-        return this.#heartbeat(request as SupervisorPortalServiceHeartbeatRequestValid, context);
-      },
       release: async (request, context) => {
         return this.#release(request as SupervisorPortalServiceReleaseRequestValid, context);
       },
@@ -140,7 +125,7 @@ export namespace SupervisorPortalServiceImplementation {
     response: SupervisorPortalServiceWatchResponseValid;
   };
 
-  type EnqueueEvent = { case: "keepalive"; value: EventKeepaliveValid } | { case: "load"; value: EventLoadListValid };
+  type EnqueueEvent = { case: "keepalive"; value: EventKeepaliveValid } | { case: "assignmentList"; value: EventAssignmentListValid };
 
   export class Watcher {
     #logger: Logger;
@@ -155,13 +140,15 @@ export namespace SupervisorPortalServiceImplementation {
     #keepaliveTimer: ReturnType<typeof setInterval>;
     #unsubscribe: () => void;
     #processId: string;
+    #lease: Allocator.Lease;
 
-    constructor(supervisor: string, processId: string, onClose: () => void) {
+    constructor(supervisor: string, processId: string, lease: Allocator.Lease, onClose: () => void) {
       this.#logger = Container.inject(Logger).scope("Watcher");
       this.#repository = Container.inject(Repository);
       this.#allocator = Container.inject(Allocator);
       this.#supervisor = supervisor;
       this.#processId = processId;
+      this.#lease = lease;
       this.#onClose = onClose;
 
       this.#unsubscribe = this.#allocator.onChange(supervisor, () => {
@@ -191,6 +178,9 @@ export namespace SupervisorPortalServiceImplementation {
       this.#closed = true;
       clearInterval(this.#keepaliveTimer);
       this.#unsubscribe();
+
+      // watch 流关闭后释放 Lease,避免残留假死的 Tunnel Socket。
+      this.#lease.expire();
 
       this.#queue.length = 0;
       this.#notify();
@@ -237,9 +227,9 @@ export namespace SupervisorPortalServiceImplementation {
           },
         });
 
-        const event = Protobuf.createValid(EventLoadListSchema, {
+        const event = Protobuf.createValid(EventAssignmentListSchema, {
           list: instances.map((inst) =>
-            Protobuf.createValid(LoadSchema, {
+            Protobuf.createValid(AssignmentSchema, {
               instanceId: inst.id,
               projectId: inst.project.id,
               projectResourceTier: this.#mapResourceTierFromRepository(inst.project.resourceTier),
@@ -249,7 +239,7 @@ export namespace SupervisorPortalServiceImplementation {
           ),
         });
 
-        this.#enqueue({ case: "load", value: event });
+        this.#enqueue({ case: "assignmentList", value: event });
       } catch (error) {
         this.#logger.error("Failed to publish load", { err: error, supervisor: this.#supervisor });
       }
@@ -279,6 +269,9 @@ export namespace SupervisorPortalServiceImplementation {
       if (this.#closed || this.#queue.length > 0) {
         return;
       }
+
+      // keepalive 同时续租 Lease,替代原 Heartbeat 的租约保活。
+      this.#lease.touch();
 
       const response = Protobuf.createValid(SupervisorPortalServiceWatchResponseSchema, {
         event: {

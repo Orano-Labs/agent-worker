@@ -1,4 +1,5 @@
 import type { ProjectResourceTier } from "@/generated/prisma/enums";
+import { default as AsyncLock } from "async-lock";
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
 import { Logger } from "@/internal/logger";
@@ -20,42 +21,24 @@ export class Allocator {
   #repository: Repository;
   #logger: Logger;
 
+  // 按 project 维度串行化 allocate/release,避免同一项目上的并发分配与释放相互竞争。
+  #lock: AsyncLock;
+
   #leases: Map<string, Allocator.Lease>;
-  #allocations: Map<string, Promise<Allocator.AllocationResult>>;
   #pending: Map<string, Allocator.Pending>;
-  #releasing: Map<string, Promise<void>>;
   #listeners: Map<string, Set<() => void>>;
 
   constructor() {
     this.#repository = Container.inject(Repository);
     this.#logger = Container.inject(Logger).scope("Allocator");
+    this.#lock = new AsyncLock();
     this.#leases = new Map();
-    this.#allocations = new Map();
     this.#pending = new Map();
-    this.#releasing = new Map();
     this.#listeners = new Map();
   }
 
   async allocate(project: string) {
-    // 如果正在进行 release，等待 release 完成
-    await this.#releasing.get(project)?.catch(() => {});
-
-    // 合并并发分配请求
-    let allocation = this.#allocations.get(project);
-
-    if (!allocation) {
-      allocation = (async () => {
-        try {
-          return await this.#allocate(project);
-        } finally {
-          this.#allocations.delete(project);
-        }
-      })();
-
-      this.#allocations.set(project, allocation);
-    }
-
-    return await allocation;
+    return this.#lock.acquire(project, () => this.#allocate(project));
   }
 
   async release(id: string, supervisor: string) {
@@ -77,47 +60,33 @@ export class Allocator {
 
     if (!instance) return;
 
-    const projectId = instance.projectId;
+    return this.#lock.acquire(instance.projectId, async () => {
+      await this.#repository.client.$transaction(async (tx) => {
+        const deleted = await tx.instance.deleteMany({
+          where: {
+            id,
+            supervisorId: supervisor,
+          },
+        });
 
-    let releasePromise = this.#releasing.get(projectId);
+        if (deleted.count > 0) {
+          const capacity = getTierWeight(instance.project.resourceTier);
 
-    if (!releasePromise) {
-      releasePromise = (async () => {
-        try {
-          await this.#repository.client.$transaction(async (tx) => {
-            const deleted = await tx.instance.deleteMany({
-              where: {
-                id,
-                supervisorId: supervisor,
+          await tx.supervisor.update({
+            where: { id: supervisor },
+            data: {
+              remainingCapacity: {
+                increment: capacity,
               },
-            });
-
-            if (deleted.count > 0) {
-              const capacity = getTierWeight(instance.project.resourceTier);
-
-              await tx.supervisor.update({
-                where: { id: supervisor },
-                data: {
-                  remainingCapacity: {
-                    increment: capacity,
-                  },
-                },
-              });
-
-              this.#logger.info("Instance released, capacity restored", { id, supervisor, capacity });
-            }
+            },
           });
 
-          this.#notify(supervisor);
-        } finally {
-          this.#releasing.delete(projectId);
+          this.#logger.info("Instance released, capacity restored", { id, supervisor, capacity });
         }
-      })();
+      });
 
-      this.#releasing.set(projectId, releasePromise);
-    }
-
-    await releasePromise;
+      this.#notify(supervisor);
+    });
   }
 
   getLease(supervisor: string) {

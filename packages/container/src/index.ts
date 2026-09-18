@@ -1,3 +1,5 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: x */
+
 export class Container<T extends Container.Service> {
   #services: Map<Container.Injectable, Container.Entry>;
   #entry: Container.Entry<T>;
@@ -140,6 +142,31 @@ export class Container<T extends Container.Service> {
 
         return instance;
       },
+
+      injectAny: <U extends Container.Service>(dependency: Container.Injectable<U>): U[] => {
+        if (!active) {
+          throw new Error("Injector is no longer active. injectAny() can only be called during factory execution.");
+        }
+
+        const instances: U[] = [];
+
+        for (const candidate of this.#services.values()) {
+          if (candidate.injectable === dependency) {
+            continue;
+          }
+
+          if (!(candidate.injectable.prototype instanceof dependency)) {
+            continue;
+          }
+
+          const instance = this.#resolve(candidate.injectable, nextStack);
+
+          dependencies.add(candidate);
+          instances.push(instance as U);
+        }
+
+        return instances;
+      },
     };
 
     try {
@@ -265,6 +292,7 @@ export namespace Container {
   export interface Injector {
     inject<T extends Service>(injectable: Injectable<T>): T | null;
     injectMust<T extends Service>(injectable: Injectable<T>): T;
+    injectAny<T extends Service>(injectable: Injectable<T>): T[];
   }
 
   export const SymbolDispose = Symbol("Container.ServiceDispose");

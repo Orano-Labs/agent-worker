@@ -1,9 +1,9 @@
+import { Container } from "@aw/container";
+import type { Logger } from "@aw/logging";
+import { default as AsyncLock } from "async-lock";
 import type { ProjectResourceTier } from "@/generated/prisma/enums";
-import { Container } from "@/helpers/container";
-import { Result } from "@/helpers/result";
-import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Tunnel } from "./tunnel";
+import type { Leases } from "@/internal/leases";
+import type { Repository } from "@/internal/repository";
 
 const getTierWeight = (tier: ProjectResourceTier) => {
   switch (tier) {
@@ -16,272 +16,108 @@ const getTierWeight = (tier: ProjectResourceTier) => {
   }
 };
 
-export class Allocator {
+export class Allocator extends Container.ServiceConstructable {
   #repository: Repository;
   #logger: Logger;
+  #leases: Leases;
+  #lock: AsyncLock;
 
-  #leases: Map<string, Allocator.Lease>;
-  #allocations: Map<string, Promise<Allocator.AllocationResult>>;
-  #pending: Map<string, Allocator.Pending>;
-  #releasing: Map<string, Promise<void>>;
-  #listeners: Map<string, Set<() => void>>;
+  #pendings: Map<string, { resolve: (result: Allocator.PendingResult) => boolean; project: string; supervisor: string }>;
 
-  constructor() {
-    this.#repository = Container.inject(Repository);
-    this.#logger = Container.inject(Logger).scope("Allocator");
-    this.#leases = new Map();
-    this.#allocations = new Map();
-    this.#pending = new Map();
-    this.#releasing = new Map();
-    this.#listeners = new Map();
+  constructor(...deps: [Logger, Repository, Leases]) {
+    super();
+
+    this.#repository = deps[1];
+    this.#logger = deps[0].namespace("Allocator");
+    this.#leases = deps[2];
+    this.#pendings = new Map();
+    this.#lock = new AsyncLock();
   }
 
-  async allocate(project: string) {
-    // 如果正在进行 release，等待 release 完成
-    await this.#releasing.get(project)?.catch(() => {});
-
-    // 合并并发分配请求
-    let allocation = this.#allocations.get(project);
-
-    if (!allocation) {
-      allocation = (async () => {
-        try {
-          return await this.#allocate(project);
-        } finally {
-          this.#allocations.delete(project);
-        }
-      })();
-
-      this.#allocations.set(project, allocation);
-    }
-
-    return await allocation;
-  }
-
-  async release(id: string, supervisor: string) {
-    const instance = await this.#repository.client.instance.findUnique({
-      where: {
-        id: id,
-        supervisorId: supervisor,
-        confirmed: true,
-      },
-      include: {
-        project: {
-          select: {
-            id: true,
-            resourceTier: true,
-          },
+  async allocate(projectId: string) {
+    return this.#lock.acquire(projectId, async () => {
+      const instance = await this.#repository.client.instance.findFirst({
+        where: {
+          projectId: projectId,
+          confirmed: true,
         },
-      },
-    });
+      });
 
-    if (!instance) return;
+      if (instance) {
+        return {
+          id: instance.id,
+          supervisor: instance.supervisorId,
+        };
+      }
 
-    const projectId = instance.projectId;
+      const project = await this.#repository.client.project.findUniqueOrThrow({
+        where: {
+          id: projectId,
+        },
+      });
 
-    let releasePromise = this.#releasing.get(projectId);
+      if (project.deleteTime !== null) {
+        throw new Allocator.AllocateError(Allocator.AllocateError.Code.Aborted, `Project "${projectId}" is marked as deleted.`);
+      }
 
-    if (!releasePromise) {
-      releasePromise = (async () => {
+      const exclude = new Set<string>();
+      const requiredCapacity = getTierWeight(project.resourceTier);
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const onlines = this.#leases.getAllLeases().filter((lease) => {
+          return lease.online && !exclude.has(lease.supervisor);
+        });
+
+        if (onlines.length === 0) {
+          throw new Allocator.AllocateError(Allocator.AllocateError.Code.NoSupervisor, "No online supervisor available.");
+        }
+
+        // biome-ignore format: x
+        const candidates = await this.#candidates(onlines.map((lease) => lease.supervisor), requiredCapacity);
+
+        if (candidates.length === 0) {
+          throw new Allocator.AllocateError(Allocator.AllocateError.Code.NoCapacity, "No supervisor with sufficient capacity.");
+        }
+
+        let claimed: null | { id: string; projectId: string; supervisorId: string } = null;
+
+        for (const candidate of candidates) {
+          claimed = await this.#claim(projectId, candidate.id, requiredCapacity);
+
+          if (claimed) {
+            break;
+          }
+        }
+
+        if (!claimed) {
+          break;
+        }
+
+        this.#leases.getLease(claimed.supervisorId)?.notifyAssignmentListChanged();
+
         try {
-          await this.#repository.client.$transaction(async (tx) => {
-            const deleted = await tx.instance.deleteMany({
-              where: {
-                id,
-                supervisorId: supervisor,
+          const result = await new Promise<Allocator.PendingResult>((resolve) => {
+            const timer = setTimeout(() => resolve("timeout"), Allocator.ACK_TIMEOUT);
+
+            let settled = false;
+
+            this.#pendings.set(claimed.id, {
+              supervisor: claimed.supervisorId,
+              project: claimed.projectId,
+              resolve: (result) => {
+                if (settled) {
+                  return false;
+                }
+
+                clearTimeout(timer);
+                resolve(result);
+                this.#pendings.delete(claimed.id);
+
+                settled = true;
+
+                return settled;
               },
             });
-
-            if (deleted.count > 0) {
-              const capacity = getTierWeight(instance.project.resourceTier);
-
-              await tx.supervisor.update({
-                where: { id: supervisor },
-                data: {
-                  remainingCapacity: {
-                    increment: capacity,
-                  },
-                },
-              });
-
-              this.#logger.info("Instance released, capacity restored", { id, supervisor, capacity });
-            }
-          });
-
-          this.#notify(supervisor);
-        } finally {
-          this.#releasing.delete(projectId);
-        }
-      })();
-
-      this.#releasing.set(projectId, releasePromise);
-    }
-
-    await releasePromise;
-  }
-
-  getLease(supervisor: string) {
-    return this.#leases.get(supervisor);
-  }
-
-  getOrCreateLease(supervisor: string, processId: string) {
-    let lease = this.#leases.get(supervisor);
-
-    // 心跳携带的 process_id 变了,说明该 Supervisor 进程已经重启:
-    // 旧 Lease 内的 Tunnel Socket 可能已假死(对端进程已不存在却未收到断开事件),
-    // 必须立即销毁并重建,避免请求被转发到这些假死 Socket 上。
-    if (lease && lease.processId !== processId) {
-      this.#logger.warn("Supervisor restarted, replacing stale lease and tunnel", {
-        supervisor,
-        oldProcessId: lease.processId,
-        newProcessId: processId,
-      });
-
-      lease.expire();
-      lease = undefined;
-    }
-
-    if (!lease) {
-      lease = new Allocator.Lease(supervisor, processId, () => {
-        this.#leases.delete(supervisor);
-      });
-
-      this.#leases.set(supervisor, lease);
-    }
-
-    return lease;
-  }
-
-  getPending(instance: string) {
-    return this.#pending.get(instance);
-  }
-
-  onChange(supervisor: string, listener: () => void) {
-    let listeners = this.#listeners.get(supervisor);
-
-    if (!listeners) {
-      listeners = new Set();
-      this.#listeners.set(supervisor, listeners);
-    }
-
-    listeners.add(listener);
-
-    return () => {
-      listeners.delete(listener);
-    };
-  }
-
-  #notify(supervisor: string) {
-    const listeners = this.#listeners.get(supervisor);
-
-    if (!listeners) {
-      return;
-    }
-
-    for (const listener of listeners) {
-      try {
-        listener();
-      } catch (error) {
-        this.#logger.error("Allocation change listener failed", { err: error, supervisor });
-      }
-    }
-  }
-
-  async #allocate(project: string) {
-    const instance = await this.#repository.client.instance.findFirst({
-      where: {
-        projectId: project,
-        confirmed: true,
-      },
-    });
-
-    if (instance) {
-      return { id: instance.id, supervisor: instance.supervisorId };
-    }
-
-    const projectData = await this.#repository.client.project.findUniqueOrThrow({
-      where: {
-        id: project,
-      },
-    });
-
-    const exclude = new Set<string>();
-    const requiredCapacity = getTierWeight(projectData.resourceTier);
-
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const onlineSupervisors = Array.from(this.#leases.keys()).filter((id) => !exclude.has(id));
-
-      if (onlineSupervisors.length === 0) {
-        throw new Allocator.AllocateError(Allocator.AllocateError.Code.NoSupervisor, "No online supervisor available.");
-      }
-
-      const candidates = await this.#repository.client.supervisor.findMany({
-        where: {
-          id: {
-            in: onlineSupervisors,
-          },
-          deleteTime: null,
-          remainingCapacity: {
-            gte: requiredCapacity,
-          },
-        },
-        select: {
-          id: true,
-        },
-      });
-
-      if (candidates.length === 0) {
-        throw new Allocator.AllocateError(Allocator.AllocateError.Code.NoCapacity, "No supervisor with sufficient capacity.");
-      }
-
-      const claimed = await (async () => {
-        for (const candidate of candidates) {
-          try {
-            return await this.#repository.client.$transaction(async (tx) => {
-              const res = await tx.supervisor.updateMany({
-                where: {
-                  id: candidate.id,
-                  remainingCapacity: {
-                    gte: requiredCapacity,
-                  },
-                },
-                data: {
-                  remainingCapacity: {
-                    decrement: requiredCapacity,
-                  },
-                },
-              });
-
-              if (res.count === 0) {
-                throw new Error("CAPACITY_EXHAUSTED");
-              }
-
-              return await tx.instance.create({
-                data: {
-                  projectId: project,
-                  supervisorId: candidate.id,
-                  confirmed: false,
-                },
-              });
-            });
-          } catch {}
-        }
-      })();
-
-      if (claimed) {
-        this.#notify(claimed.supervisorId);
-
-        try {
-          const pending = new Allocator.Pending(Allocator.ACK_TIMEOUT);
-
-          if (this.#pending.has(claimed.id)) {
-            throw new Error(`Instance "${claimed.id}" already has a pending acknowledgment`);
-          }
-
-          this.#pending.set(claimed.id, pending);
-
-          const result = await pending.promise.finally(() => {
-            this.#pending.delete(claimed.id);
           });
 
           if (result === "timeout") {
@@ -291,26 +127,36 @@ export class Allocator {
           }
 
           if (result === "reject") {
-            throw new Error(`Supervisor "${claimed.supervisorId}" rejected the allocation for project "${project}"`);
+            throw new Error(`Supervisor "${claimed.supervisorId}" rejected the allocation for project "${projectId}"`);
           }
 
-          await this.#repository.client.instance.update({
+          if (result === "aborted") {
+            throw new Allocator.AllocateError(Allocator.AllocateError.Code.Aborted, `Allocation for project "${projectId}" was aborted.`);
+          }
+
+          const updated = await this.#repository.client.instance.updateMany({
             where: {
               id: claimed.id,
               confirmed: false,
+              projectId,
             },
             data: {
               confirmed: true,
             },
           });
 
+          if (updated.count === 0) {
+            // biome-ignore format: x
+            throw new Allocator.AllocateError(Allocator.AllocateError.Code.Aborted, `Allocation for project "${projectId}" was aborted during confirmation.`);
+          }
+
           this.#logger.info("Instance allocated", {
-            project,
+            project: projectId,
             instance: claimed.id,
             supervisor: claimed.supervisorId,
           });
 
-          this.#notify(claimed.supervisorId);
+          this.#leases.getLease(claimed.supervisorId)?.notifyAssignmentListChanged();
 
           return {
             id: claimed.id,
@@ -319,169 +165,206 @@ export class Allocator {
         } catch (error) {
           exclude.add(claimed.supervisorId);
 
-          this.#logger.error(`Allocation failed for supervisor ${claimed.supervisorId}, retrying...`, {
-            err: error,
-          });
-
-          await this.#repository.client
-            .$transaction([
-              this.#repository.client.instance.deleteMany({
-                where: {
-                  id: claimed.id,
-                  confirmed: false,
-                },
-              }),
-              this.#repository.client.supervisor.update({
-                where: {
-                  id: claimed.supervisorId,
-                },
-                data: {
-                  remainingCapacity: {
-                    increment: requiredCapacity,
-                  },
-                },
-              }),
-            ])
-            .catch((rollbackErr) => {
-              this.#logger.error("Failed to rollback allocation capacity", { err: rollbackErr });
+          if (error instanceof Allocator.AllocateError && error.code === Allocator.AllocateError.Code.Aborted) {
+            this.#logger.warn(`Allocation aborted for project ${projectId} on supervisor ${claimed.supervisorId}`);
+          } else {
+            this.#logger.error(`Allocation failed for supervisor ${claimed.supervisorId}, retrying...`, {
+              err: error,
             });
+          }
+
+          try {
+            await this.#unclaim(claimed.id, projectId);
+          } catch (rollbackErr) {
+            this.#logger.error("Failed to rollback allocation capacity", { err: rollbackErr });
+          }
+
+          if (error instanceof Allocator.AllocateError && error.code === Allocator.AllocateError.Code.Aborted) {
+            throw error;
+          }
         }
       }
-    }
 
-    throw new Allocator.AllocateError(Allocator.AllocateError.Code.Exhausted, "All allocation attempts failed.");
+      throw new Allocator.AllocateError(Allocator.AllocateError.Code.Exhausted, "All allocation attempts failed.");
+    });
   }
 
-  async init() {
+  async release(projectId: string, instanceId: string) {
+    const pending = this.#pendings.get(instanceId);
+
+    if (pending && pending.project === projectId && pending.resolve("aborted")) {
+      return true;
+    }
+
+    return await this.#lock.acquire(projectId, async () => {
+      const result = await this.#unclaim(instanceId, projectId);
+
+      if (result) {
+        this.#logger.info("Instance released, capacity restored", {
+          id: instanceId,
+          supervisor: result.supervisor,
+        });
+
+        this.#leases.getLease(result.supervisor)?.notifyAssignmentListChanged();
+      }
+
+      return !!result;
+    });
+  }
+
+  async acknowledge(projectId: string, instanceId: string, ok: boolean) {
+    const pending = this.#pendings.get(instanceId);
+
+    if (pending && pending.project === projectId) {
+      return pending.resolve(ok ? "ok" : "reject");
+    }
+
+    return false;
+  }
+
+  async #candidates(supervisors: string[], requiredCapacity: number) {
+    return await this.#repository.client.supervisor.findMany({
+      where: {
+        id: {
+          in: supervisors,
+        },
+        deleteTime: null,
+        remainingCapacity: {
+          gte: requiredCapacity,
+        },
+      },
+      select: {
+        id: true,
+      },
+      orderBy: {
+        remainingCapacity: "desc",
+      },
+    });
+  }
+
+  async #claim(project: string, supervisor: string, requiredCapacity: number) {
+    const capacityExhaustedError = new Error("capacity exhausted");
+
     try {
-      await this.#repository.transaction(async (tx) => {
-        const unconfirmed = await tx.client.instance.findMany({
+      return await this.#repository.client.$transaction(async (tx) => {
+        const res = await tx.supervisor.updateMany({
           where: {
-            confirmed: false,
+            id: supervisor,
+            remainingCapacity: {
+              gte: requiredCapacity,
+            },
           },
-          include: {
-            project: true,
+          data: {
+            remainingCapacity: {
+              decrement: requiredCapacity,
+            },
           },
         });
 
-        for (const inst of unconfirmed) {
-          await tx.client.instance.delete({
-            where: {
-              id: inst.id,
-            },
-          });
-
-          await tx.client.supervisor.update({
-            where: {
-              id: inst.supervisorId,
-            },
-            data: {
-              remainingCapacity: {
-                increment: getTierWeight(inst.project.resourceTier),
-              },
-            },
-          });
+        if (res.count === 0) {
+          throw capacityExhaustedError;
         }
 
-        this.#logger.info("Cleaned up unconfirmed instances on init", { count: unconfirmed.length });
+        return await tx.instance.create({
+          data: {
+            projectId: project,
+            supervisorId: supervisor,
+            confirmed: false,
+          },
+        });
       });
     } catch (error) {
-      return Result.error(error);
-    }
+      if (error === capacityExhaustedError) {
+        return null;
+      }
 
-    return Result.ok();
+      throw error;
+    }
+  }
+
+  async #unclaim(id: string, project: string) {
+    return await this.#repository.client.$transaction(async (tx) => {
+      const instance = await tx.instance.findFirst({
+        where: {
+          id: id,
+          projectId: project,
+        },
+        include: {
+          project: {
+            select: {
+              resourceTier: true,
+            },
+          },
+        },
+      });
+
+      if (!instance) {
+        return null;
+      }
+
+      const deleted = await tx.instance.deleteMany({
+        where: {
+          id: id,
+        },
+      });
+
+      if (deleted.count === 0) {
+        return null;
+      }
+
+      await tx.supervisor.update({
+        where: {
+          id: instance.supervisorId,
+        },
+        data: {
+          remainingCapacity: {
+            increment: getTierWeight(instance.project.resourceTier),
+          },
+        },
+      });
+
+      return {
+        supervisor: instance.supervisorId,
+      };
+    });
+  }
+
+  protected override async initialize(signal: AbortSignal) {
+    const c = await this.#repository.transaction(async (tx) => {
+      const unconfirmed = await tx.client.instance.findMany({
+        where: {
+          confirmed: false,
+        },
+        include: {
+          project: true,
+        },
+      });
+
+      for (const inst of unconfirmed) {
+        if (signal.aborted) {
+          throw signal.reason;
+        }
+
+        await this.#unclaim(inst.id, inst.projectId);
+      }
+
+      return unconfirmed.length;
+    });
+
+    this.#logger.info("Cleaned up unconfirmed instances on init", { count: c });
   }
 }
 
 export namespace Allocator {
-  export const ACK_TIMEOUT = 3_000 * 5;
+  export const ACK_TIMEOUT = 1_000 * 3;
 
-  export type AllocationResult = {
+  export type Allocation = {
     id: string;
     supervisor: string;
+    supervisorLease?: Leases.Lease;
   };
 
-  export class Lease {
-    #timer: ReturnType<typeof setTimeout>;
-    #expired: () => void;
-    #tunnel: Tunnel;
-    #processId: string;
-
-    constructor(supervisor: string, processId: string, expired: () => void) {
-      this.#expired = expired;
-      this.#processId = processId;
-      this.#timer = setTimeout(() => this.expire(), 3000).unref();
-      this.#tunnel = new Tunnel(supervisor, 300);
-    }
-
-    get processId() {
-      return this.#processId;
-    }
-
-    touch() {
-      clearTimeout(this.#timer);
-
-      this.#timer = setTimeout(() => {
-        this.expire();
-      }, 10_000).unref();
-    }
-
-    expire() {
-      if (this.#timer) {
-        clearTimeout(this.#timer);
-      }
-
-      this.#expired();
-      this.#tunnel.destroy();
-    }
-
-    get tunnel() {
-      return this.#tunnel;
-    }
-  }
-
-  export class Pending {
-    #promise: Promise<Pending.Result>;
-    #promiseResolver: (result: Pending.Result) => void;
-
-    #resolved: boolean;
-
-    #timer: ReturnType<typeof setTimeout>;
-
-    constructor(timeout: number) {
-      this.#resolved = false;
-      this.#promiseResolver = () => {
-        throw new Error("Pending promise resolver is not initialized");
-      };
-
-      this.#promise = new Promise((resolve) => {
-        this.#promiseResolver = (result) => {
-          this.#resolved = true;
-
-          resolve(result);
-          clearTimeout(this.#timer);
-        };
-      });
-
-      this.#timer = setTimeout(() => this.#promiseResolver("timeout"), timeout);
-    }
-
-    get promise() {
-      return this.#promise;
-    }
-
-    acknowledge(ok: boolean) {
-      if (this.#resolved) {
-        throw new Error("Instance acknowledgment already settled (acknowledged or timed out)");
-      }
-
-      this.#promiseResolver(ok ? "ok" : "reject");
-    }
-  }
-
-  export namespace Pending {
-    export type Result = "ok" | "reject" | "timeout";
-  }
+  export type PendingResult = "ok" | "reject" | "timeout" | "aborted";
 
   export class AllocateError extends Error {
     #code: Allocator.AllocateError.Code;
@@ -505,6 +388,8 @@ export namespace Allocator {
       NoCapacity = "NO_CAPACITY",
       /** 多次尝试分配均失败（超时或 Supervisor 拒绝） */
       Exhausted = "EXHAUSTED",
+      /** 分配被中途终止/取消 */
+      Aborted = "ABORTED",
     }
   }
 }

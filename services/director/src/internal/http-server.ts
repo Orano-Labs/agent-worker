@@ -1,30 +1,143 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
+import type { Duplex } from "node:stream";
+import { Container } from "@aw/container";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
+import { addRoute, createRouter, findRoute, routesOverlap } from "rou3";
 
-import { Container } from "@/helpers/container";
-import { Result } from "@/helpers/result";
-import { Logger } from "@/internal/logger";
-import { Variables } from "@/internal/variables";
-
-const SHUTDOWN_GRACE_MS = 5_000;
-
-export class HTTPServer {
+export class HTTPServer extends Container.ServiceConstructable {
   #server: ReturnType<typeof createServer>;
-  #variables: Variables;
+  #environment: Environment;
   #logger: Logger;
   #sockets: Set<Socket>;
 
-  constructor() {
-    this.#server = createServer();
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("HTTPServer");
-    this.#sockets = new Set();
+  #requestRouter: ReturnType<typeof createRouter<HTTPServer.RequestRoute>>;
+  #upgradeRouter: ReturnType<typeof createRouter<HTTPServer.UpgradeRoute>>;
 
-    // Track open connections so shutdown can drain them.
+  #registered: {
+    kind: "request" | "upgrade";
+    method: HTTPServer.Method;
+    path: string;
+  }[];
+
+  constructor(...deps: [Environment, Logger]) {
+    super();
+
+    this.#server = createServer();
+    this.#environment = deps[0];
+    this.#logger = deps[1].namespace("HTTPServer");
+    this.#sockets = new Set();
+    this.#registered = [];
+
     this.#server.on("connection", (socket) => {
       this.#sockets.add(socket);
       socket.once("close", () => {
         this.#sockets.delete(socket);
+      });
+    });
+
+    this.#requestRouter = createRouter();
+    this.#upgradeRouter = createRouter();
+
+    this.#setupHandlers();
+  }
+
+  route(route: HTTPServer.Route) {
+    const router = route.kind === "request" ? this.#requestRouter : this.#upgradeRouter;
+    const methods = [] as HTTPServer.Method[];
+
+    if (route.method !== HTTPServer.Method.Any) {
+      methods.push(route.method);
+    } else {
+      methods.push(
+        HTTPServer.Method.Get,
+        HTTPServer.Method.Post,
+        HTTPServer.Method.Put,
+        HTTPServer.Method.Patch,
+        HTTPServer.Method.Delete,
+        HTTPServer.Method.Head,
+        HTTPServer.Method.Options,
+        HTTPServer.Method.Trace,
+        HTTPServer.Method.Connect,
+      );
+    }
+
+    for (const method of methods) {
+      for (const other of this.#registered) {
+        if (other.kind === route.kind && other.method === method && routesOverlap(other.path, route.path)) {
+          this.#logger.warn("Route conflict detected", {
+            method,
+            path: route.path,
+            conflictingPath: other.path,
+          });
+        }
+      }
+
+      addRoute(router, method, route.path, route);
+
+      this.#registered.push({ kind: route.kind, method, path: route.path });
+      this.#logger.info(`Registered route ${method.padStart(8, " ")}(${route.kind.toUpperCase()}) ${route.path}`);
+    }
+
+    return this;
+  }
+
+  #setupHandlers() {
+    this.#server.on("request", (req, res) => {
+      const method = req.method || "unknown";
+      const route = findRoute(this.#requestRouter, method.toUpperCase(), req.url ?? "", {
+        params: true,
+        normalize: true,
+      });
+
+      if (!route) {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Request route not found");
+
+        return this.#logger.warn("Request route not found", { url: req.url });
+      }
+
+      route.data.handler({
+        req,
+        res,
+        params: route.params || {},
+      });
+    });
+
+    this.#server.on("upgrade", (req, socket, head) => {
+      const method = req.method || "unknown";
+      const route = findRoute(this.#upgradeRouter, method.toUpperCase(), req.url ?? "", {
+        params: true,
+        normalize: true,
+      });
+
+      if (!route) {
+        const body = "Upgrade route not found";
+
+        try {
+          socket.write(
+            `HTTP/1.1 404 Not Found\r\n` +
+              `Content-Type: text/plain\r\n` +
+              `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+              `Connection: close\r\n` +
+              `\r\n` +
+              body,
+          );
+        } catch {
+          // Socket may already be closing.
+        }
+
+        socket.destroy();
+
+        return this.#logger.warn("Upgrade route not found", { url: req.url });
+      }
+
+      route.data.handler({
+        req,
+        socket,
+        head,
+        params: route.params || {},
       });
     });
   }
@@ -38,17 +151,10 @@ export class HTTPServer {
   }
 
   get url() {
-    return `http://127.0.0.1:${this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008)}`;
+    return `http://127.0.0.1:${this.#environment.getNumber("HTTP_PORT", 3008)}`;
   }
 
-  /**
-   * Gracefully shut down the HTTP server.
-   *
-   * 1. Stops accepting new connections via {@link server.close}.
-   * 2. Waits up to {@link SHUTDOWN_GRACE_MS} for in-flight requests to complete.
-   * 3. Force-destroys any remaining sockets.
-   */
-  async shutdown(): Promise<void> {
+  protected override async dispose() {
     this.#logger.info("Shutting down HTTP server...");
 
     // Stop accepting new connections.
@@ -70,7 +176,7 @@ export class HTTPServer {
         }
 
         resolve();
-      }, SHUTDOWN_GRACE_MS);
+      }, HTTPServer.SHUTDOWN_GRACE_MS);
     });
 
     await Promise.race([closed, timeout]);
@@ -78,8 +184,8 @@ export class HTTPServer {
     this.#logger.info("HTTP server shut down.");
   }
 
-  async init(): Promise<Result<void, Error>> {
-    const port = this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008);
+  protected override async initialize(_: AbortSignal) {
+    const port = this.#environment.getPort("HTTP_PORT", 3008);
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -112,9 +218,53 @@ export class HTTPServer {
         this.#server.on("error", reject);
       });
     } catch (error) {
-      return Result.error(new Error("Failed to start HTTP server.", { cause: error }));
+      throw new Error("Failed to start HTTP server.", { cause: error });
     }
-
-    return Result.ok();
   }
+}
+
+export namespace HTTPServer {
+  export enum Method {
+    Get = "GET",
+    Post = "POST",
+    Put = "PUT",
+    Patch = "PATCH",
+    Delete = "DELETE",
+    Head = "HEAD",
+    Options = "OPTIONS",
+    Trace = "TRACE",
+    Connect = "CONNECT",
+    Any = "*",
+  }
+
+  export type RequestRouteContext = {
+    readonly req: IncomingMessage;
+    readonly res: ServerResponse;
+    readonly params: Record<string, string>;
+  };
+
+  export type UpgradeRouteContext = {
+    readonly req: IncomingMessage;
+    readonly socket: Duplex;
+    readonly head: Buffer;
+    readonly params: Record<string, string>;
+  };
+
+  export type RequestRoute = {
+    kind: "request";
+    method: Method;
+    path: string;
+    handler: (context: RequestRouteContext) => void;
+  };
+
+  export type UpgradeRoute = {
+    kind: "upgrade";
+    method: Method;
+    path: string;
+    handler: (context: UpgradeRouteContext) => void;
+  };
+
+  export type Route = RequestRoute | UpgradeRoute;
+
+  export const SHUTDOWN_GRACE_MS = 5_000;
 }

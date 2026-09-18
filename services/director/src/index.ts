@@ -1,11 +1,6 @@
-import { Bootstrapper } from "@/bootstrapper";
-import { Container } from "@/helpers/container";
+import { Application } from "@/application";
 
-const main = async () => {
-  await Container.inject(Bootstrapper).boot();
-};
-
-main().catch((error) => {
+Application.run().catch((error) => {
   console.error(error);
   process.exit(1);
 });

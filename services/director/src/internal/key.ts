@@ -1,6 +1,7 @@
 import { createPrivateKey, createPublicKey, generateKeyPair, sign, verify } from "node:crypto";
+import { Container } from "@aw/container";
 
-export class Key {
+export class Key extends Container.ServiceConstructable {
   async generateED25519() {
     return await new Promise<[Buffer, Buffer]>((resolve, reject) => {
       const options = {

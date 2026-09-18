@@ -1,30 +1,30 @@
+import { Container } from "@aw/container";
+import { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
-import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
-import { Cache } from "@/internal/cache";
-import { Key } from "@/internal/key";
-import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Variables } from "@/internal/variables";
+import type { Cache } from "@/internal/cache";
+import type { Key } from "@/internal/key";
+import type { Repository } from "@/internal/repository";
 
 const TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
 const NONCE_TTL_SEC = 10 * 60;
 
-const PRODUCTION = process.env.NODE_ENV === "production";
-
-export class Authenticator {
+export class Authenticator extends Container.ServiceConstructable {
   #logger: Logger;
-  #variables: Variables;
+  #environment: Environment;
   #key: Key;
   #repository: Repository;
   #cache: Cache;
 
-  constructor() {
-    this.#logger = Container.inject(Logger).scope("Authenticator");
-    this.#variables = Container.inject(Variables);
-    this.#key = Container.inject(Key);
-    this.#repository = Container.inject(Repository);
-    this.#cache = Container.inject(Cache);
+  constructor(...deps: [Environment, Logger, Key, Repository, Cache]) {
+    super();
+
+    this.#logger = deps[1].namespace("Authenticator");
+    this.#environment = deps[0];
+    this.#key = deps[2];
+    this.#repository = deps[3];
+    this.#cache = deps[4];
   }
 
   /**
@@ -59,7 +59,7 @@ export class Authenticator {
       return [value, false] as const;
     }
 
-    if (!PRODUCTION) {
+    if (this.#environment.mode !== Environment.Mode.Production) {
       value = headers.get("x-request-signature-development");
 
       if (value !== null) {
@@ -169,7 +169,7 @@ export class Authenticator {
 
       if (result !== "OK") {
         this.#logger.warn("Nonce has already been used — possible replay attack.", {
-          nonceKey: this.#logger.mask(nonceKey),
+          nonceKey: nonceKey,
         });
 
         throw new Error("Nonce already used");
@@ -188,7 +188,7 @@ export class Authenticator {
   async #resolvePublicKey(identity: SignatureIdentityValid, nonceHex: string, unixSeconds: number) {
     switch (identity.identity.case) {
       case "manager": {
-        const pubKeyHex = this.#variables.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY");
+        const pubKeyHex = this.#environment.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY");
 
         if (!pubKeyHex) {
           throw new Error("Manager public key not configured");
@@ -210,7 +210,7 @@ export class Authenticator {
 
         if (!user) {
           this.#logger.warn("User not found for signature verification.", {
-            userId: this.#logger.mask(userId),
+            userId: userId,
           });
 
           throw new Error("User not found");
@@ -232,7 +232,7 @@ export class Authenticator {
 
         if (!supervisor) {
           this.#logger.warn("Supervisor not found for signature verification.", {
-            supervisorId: this.#logger.mask(supervisorId),
+            supervisorId: supervisorId,
           });
 
           throw new Error("Supervisor not found");

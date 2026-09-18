@@ -1,26 +1,22 @@
 import { type ClientRequestArgs, Agent as HTTPAgent, type IncomingMessage, request, type ServerResponse } from "node:http";
 import { Duplex } from "node:stream";
+import type { Logger } from "@aw/logging";
 import { default as pump } from "pump";
-import { Container } from "@/helpers/container";
-import { Logger } from "@/internal/logger";
+import type { Leases } from "@/internal/leases";
 
 export class Tunnel {
   #logger: Logger;
   #supervisor: string;
-  #connectedSockets: number;
-  #sockets: Duplex[];
-  #maxSockets: number;
+  #lease: Leases.Lease;
 
   #agent: Tunnel.Agent;
 
-  constructor(supervisor: string, maxSockets: number) {
-    this.#logger = Container.inject(Logger).scope(`Tunnel.Gateway(${supervisor})`);
+  constructor(logger: Logger, supervisor: string, lease: Leases.Lease) {
+    this.#logger = logger.namespace(`Tunnel.Gateway(${supervisor})`);
     this.#supervisor = supervisor;
-    this.#connectedSockets = 0;
-    this.#sockets = [];
-    this.#maxSockets = maxSockets;
+    this.#lease = lease;
 
-    this.#agent = new Tunnel.Agent(this);
+    this.#agent = new Tunnel.Agent(this, logger);
 
     this.#logger.debug("Tunnel created", {
       supervisor,
@@ -32,97 +28,27 @@ export class Tunnel {
   }
 
   get totalConnections() {
-    return this.#connectedSockets;
+    return this.#lease.totalSockets;
   }
 
   get idleConnections() {
-    return this.#sockets.length;
+    return this.#lease.idleSockets;
   }
 
   get activeConnections() {
-    return Math.max(0, this.#connectedSockets - this.#sockets.length);
+    return this.#lease.activeSockets;
   }
 
   connect(socket: Duplex) {
-    if (this.#connectedSockets >= this.#maxSockets) {
-      this.#logger.debug("Tunnel connection pool is full, rejecting new socket", {
-        connectedSockets: this.#connectedSockets,
-      });
-
-      return {
-        status: 503,
-        message: "Tunnel connection pool is full",
-      };
-    }
-
-    const onClose = () => {
-      this.#connectedSockets = Math.max(0, this.#connectedSockets - 1);
-
-      const idx = this.#sockets.indexOf(socket);
-
-      if (idx >= 0) {
-        this.#sockets.splice(idx, 1);
-      }
-
-      this.#logger.debug("Socket closed", {
-        connectedSockets: this.#connectedSockets,
-      });
-    };
-
-    socket.once("close", onClose);
-    socket.once("error", (err) => {
-      this.#logger.debug("Socket error, destroying", {
-        err,
-      });
-
-      socket.destroy();
-    });
-
-    if (this.#connectedSockets === 0) {
-      this.#logger.debug("Tunnel coming online with first socket");
-    }
-
-    this.#connectedSockets += 1;
-    this.#sockets.push(socket);
-
-    this.#logger.debug("Socket attached to tunnel", {
-      connectedSockets: this.#connectedSockets,
-    });
-
-    return null;
+    return this.#lease.addSocket(socket);
   }
 
   claimSocket() {
-    while (true) {
-      const socket = this.#sockets.shift();
-
-      if (!socket) {
-        return null;
-      }
-
-      // After pruning all should be alive, but check defensively.
-      if (!socket.destroyed && socket.writable && socket.readable) {
-        return socket;
-      }
-
-      this.#logger.debug("Claimed socket was dead on arrival, skipping", {
-        remaining: this.#connectedSockets,
-      });
-
-      socket.destroy();
-    }
+    return this.#lease.claimSocket();
   }
 
-  destroy() {
-    this.#logger.debug("Destroying tunnel", {
-      connectedSockets: this.#connectedSockets,
-    });
-
-    for (const socket of this.#sockets) {
-      if (!socket.destroyed) {
-        socket.destroy();
-      }
-    }
+  releaseSocket(socket: Duplex) {
+    this.#lease.releaseSocket(socket);
   }
 
   #reason(status: number): string {
@@ -248,12 +174,12 @@ export namespace Tunnel {
     #logger: Logger;
     #gateway: Tunnel;
 
-    constructor(gateway: Tunnel) {
+    constructor(gateway: Tunnel, logger: Logger) {
       super({
         keepAlive: false,
       });
 
-      this.#logger = Container.inject(Logger).scope("Agent");
+      this.#logger = logger.namespace("Agent");
       this.#gateway = gateway;
     }
 

@@ -1,5 +1,6 @@
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/client";
+import { GRPCHandler } from "@/api/grpc-handler";
 import {
   SupervisorSchema,
   SupervisorService,
@@ -14,21 +15,22 @@ import {
   type SupervisorServiceUpdateMetadataRequestValid,
   SupervisorServiceUpdateMetadataResponseSchema,
 } from "@/generated/proto/api/v1/supervisor_pb";
-import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
-import { Allocator } from "@/internal/allocator";
-import { Key } from "@/internal/key";
-import { Repository } from "@/internal/repository";
+import type { Allocator } from "@/internal/allocator";
+import type { Key } from "@/internal/key";
+import type { Repository } from "@/internal/repository";
 
-export class SupervisorServiceImplementation {
+export class SupervisorServiceImplementation extends GRPCHandler.ServiceImplementation {
   #repository: Repository;
   #key: Key;
   #allocator: Allocator;
 
-  constructor() {
-    this.#repository = Container.inject(Repository);
-    this.#allocator = Container.inject(Allocator);
-    this.#key = Container.inject(Key);
+  constructor(...deps: [Repository, Key, Allocator]) {
+    super();
+
+    this.#repository = deps[0];
+    this.#key = deps[1];
+    this.#allocator = deps[2];
   }
 
   async #create(request: SupervisorServiceCreateRequestValid, _: HandlerContext) {

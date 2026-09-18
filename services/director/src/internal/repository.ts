@@ -1,9 +1,8 @@
+import { Container } from "@aw/container";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import { PrismaClient } from "@/generated/prisma/client";
-import { Container } from "@/helpers/container";
-import { Result } from "@/helpers/result";
-import { Logger } from "@/internal/logger";
-import { Variables } from "@/internal/variables";
 
 const createClient = (url: string) => {
   const adapter = new PrismaMariaDb(url);
@@ -23,15 +22,17 @@ const createClient = (url: string) => {
   });
 };
 
-export class Repository {
+export class Repository extends Container.ServiceConstructable {
   #client?: ReturnType<typeof createClient>;
 
   #logger: Logger;
-  #variables: Variables;
+  #environment: Environment;
 
-  constructor() {
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("Repository");
+  constructor(...deps: [Environment, Logger]) {
+    super();
+
+    this.#environment = deps[0];
+    this.#logger = deps[1].namespace("Repository");
   }
 
   get client() {
@@ -60,26 +61,23 @@ export class Repository {
     };
 
     try {
-      // 执行事务
       const result = await this.client.$transaction(async (client) => fn({ client, hooks }), options);
 
-      // 事务成功，执行所有提交钩子
       for (const cb of hooksSubscribers.commit) {
         try {
           cb();
         } catch (error) {
-          this.#logger.errorFrom(error, "Error in commit hook");
+          this.#logger.error("Error in commit hook", { err: error });
         }
       }
 
       return result;
     } catch (e) {
-      // 事务失败，执行所有回滚钩子
       for (const cb of hooksSubscribers.rollback) {
         try {
           cb(e);
         } catch (error) {
-          this.#logger.errorFrom(error, "Error in rollback hook");
+          this.#logger.error("Error in rollback hook", { err: error });
         }
       }
 
@@ -87,23 +85,19 @@ export class Repository {
     }
   }
 
-  async init(): Promise<Result<void, Error>> {
-    const url = this.#variables.get("AW_DIRECTOR_MYSQL_URL");
-
-    if (!url) {
-      return Result.error(new Error("AW_DIRECTOR_MYSQL_URL is not set, cannot initialize repository."));
-    }
+  protected override async initialize(_: AbortSignal) {
+    const url = this.#environment.get("MYSQL_URL", true);
 
     try {
       this.#client = createClient(url);
     } catch (error) {
-      return Result.error(new Error("Failed to initialize repository client.", { cause: error }));
+      throw new Error("Failed to initialize repository client.", { cause: error });
     }
 
     try {
       await this.#client.$connect();
     } catch (error) {
-      return Result.error(new Error("Failed to connect to repository.", { cause: error }));
+      throw new Error("Failed to connect to repository.", { cause: error });
     }
 
     this.#client.$on("query", (event) => {
@@ -133,10 +127,8 @@ export class Repository {
         durationMs: Math.round(performance.now() - start),
       });
     } catch (err) {
-      return Result.error(new Error("Database unavailable during startup", { cause: err }));
+      throw new Error("Database unavailable during startup", { cause: err });
     }
-
-    return Result.ok();
   }
 }
 

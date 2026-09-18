@@ -1,5 +1,6 @@
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/client";
+import { GRPCHandler } from "@/api/grpc-handler";
 import {
   UserSchema,
   UserService,
@@ -18,18 +19,19 @@ import {
   type UserServiceUpdateMetadataRequestValid,
   UserServiceUpdateMetadataResponseSchema,
 } from "@/generated/proto/api/v1/user_pb";
-import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
-import { Key } from "@/internal/key";
-import { Repository } from "@/internal/repository";
+import type { Key } from "@/internal/key";
+import type { Repository } from "@/internal/repository";
 
-export class UserServiceImplementation {
+export class UserServiceImplementation extends GRPCHandler.ServiceImplementation {
   #repository: Repository;
   #key: Key;
 
-  constructor() {
-    this.#repository = Container.inject(Repository);
-    this.#key = Container.inject(Key);
+  constructor(...deps: [Repository, Key]) {
+    super();
+
+    this.#repository = deps[0];
+    this.#key = deps[1];
   }
 
   async #create(request: UserServiceCreateRequestValid, _: HandlerContext) {

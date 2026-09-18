@@ -1,8 +1,11 @@
 import { cp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { createId } from "@orama/cuid2";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/client";
+import { GRPCHandler } from "@/api/grpc-handler";
 import { TemplateStatus as DBTemplateStatus } from "@/generated/prisma/enums";
 import {
   TemplateSchema,
@@ -23,18 +26,15 @@ import {
   TemplateServiceUpdateStatusResponseSchema,
   TemplateStatus,
 } from "@/generated/proto/api/v1/template_pb";
-import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
-import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Variables } from "@/internal/variables";
+import type { Repository } from "@/internal/repository";
 
-const MAP_TEMPLATE_STATUS = {
+const MAP_TEMPLATE_STATUS: Record<number, DBTemplateStatus> = {
   [TemplateStatus.UNSPECIFIED]: DBTemplateStatus.Draft,
   [TemplateStatus.PUBLISHED]: DBTemplateStatus.Published,
   [TemplateStatus.DRAFT]: DBTemplateStatus.Draft,
   [TemplateStatus.ARCHIVED]: DBTemplateStatus.Archived,
-} satisfies Record<TemplateStatus, DBTemplateStatus>;
+};
 
 const MAP_TEMPLATE_STATUS_REVERSE = {
   [DBTemplateStatus.Published]: TemplateStatus.PUBLISHED,
@@ -42,19 +42,21 @@ const MAP_TEMPLATE_STATUS_REVERSE = {
   [DBTemplateStatus.Archived]: TemplateStatus.ARCHIVED,
 } satisfies Record<DBTemplateStatus, TemplateStatus>;
 
-export class TemplateServiceImplementation {
+export class TemplateServiceImplementation extends GRPCHandler.ServiceImplementation {
   #repository: Repository;
-  #variables: Variables;
+  #environment: Environment;
   #logger: Logger;
 
-  constructor() {
-    this.#repository = Container.inject(Repository);
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("TemplateService");
+  constructor(...deps: [Repository, Environment, Logger]) {
+    super();
+
+    this.#repository = deps[0];
+    this.#environment = deps[1];
+    this.#logger = deps[2].namespace("TemplateService");
   }
 
   async #create(request: TemplateServiceCreateRequestValid, _: HandlerContext) {
-    const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
+    const root = this.#environment.get("FS_ROOT");
 
     if (!root) {
       throw new ConnectError("File system root not configured.", Code.Unavailable);
@@ -249,7 +251,7 @@ export class TemplateServiceImplementation {
   }
 
   async #fork(request: TemplateServiceForkRequestValid, _: HandlerContext) {
-    const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
+    const root = this.#environment.get("FS_ROOT");
 
     if (!root) {
       throw new ConnectError("File system root not configured.", Code.Unavailable);

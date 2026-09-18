@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@bufbuild/protovalidate':
+    hash: 54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26
+    path: patches/@bufbuild__protovalidate.patch
+
 importers:
 
   .:
@@ -82,7 +87,7 @@ importers:
         version: 2.12.0
       '@bufbuild/protovalidate':
         specifier: ^1.2.0
-        version: 1.2.0(@bufbuild/protobuf@2.12.0)
+        version: 1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.12.0)
       '@connectrpc/connect':
         specifier: ^2.1.1
         version: 2.1.1(@bufbuild/protobuf@2.12.0)
@@ -94,7 +99,7 @@ importers:
         version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
       '@connectrpc/validate':
         specifier: ^0.2.0
-        version: 0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
+        version: 0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
       '@standard-schema/spec':
         specifier: ^1.1.0
         version: 1.1.0
@@ -155,21 +160,30 @@ importers:
 
   services/director:
     dependencies:
+      '@aw/container':
+        specifier: workspace:*
+        version: link:../../packages/container
+      '@aw/environment':
+        specifier: workspace:*
+        version: link:../../packages/environment
+      '@aw/logging':
+        specifier: workspace:*
+        version: link:../../packages/logging
       '@bufbuild/protobuf':
-        specifier: ^2.14.0
-        version: 2.14.1
+        specifier: ^2.15.0
+        version: 2.15.0
       '@bufbuild/protovalidate':
         specifier: ^1.2.0
-        version: 1.2.0(@bufbuild/protobuf@2.14.1)
+        version: 1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.15.0)
       '@connectrpc/connect':
         specifier: ^2.1.1
-        version: 2.1.1(@bufbuild/protobuf@2.14.1)
+        version: 2.1.1(@bufbuild/protobuf@2.15.0)
       '@connectrpc/connect-node':
         specifier: ^2.1.1
-        version: 2.1.1(@bufbuild/protobuf@2.14.1)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.14.1))
+        version: 2.1.1(@bufbuild/protobuf@2.15.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.15.0))
       '@connectrpc/validate':
         specifier: ^0.2.0
-        version: 0.2.0(@bufbuild/protobuf@2.14.1)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.14.1))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.14.1))
+        version: 0.2.0(@bufbuild/protobuf@2.15.0)(@bufbuild/protovalidate@1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.15.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.15.0))
       '@orama/cuid2':
         specifier: ^2.2.3
         version: 2.2.3
@@ -185,6 +199,9 @@ importers:
       archiver:
         specifier: ^8.0.0
         version: 8.0.0
+      async-lock:
+        specifier: ^1.4.1
+        version: 1.4.1
       catch-unknown:
         specifier: ^2.0.0
         version: 2.0.0
@@ -223,14 +240,20 @@ importers:
         version: 4.4.3
     devDependencies:
       '@bufbuild/protoc-gen-es':
-        specifier: ^2.14.0
-        version: 2.14.1(@bufbuild/protobuf@2.14.1)
+        specifier: ^2.15.0
+        version: 2.15.0(@bufbuild/protobuf@2.15.0)
       '@bufbuild/protoplugin':
-        specifier: ^2.14.0
-        version: 2.14.1
+        specifier: ^2.15.0
+        version: 2.15.0
       '@types/archiver':
         specifier: ^8.0.0
         version: 8.0.0
+      '@types/async-lock':
+        specifier: ^1.4.2
+        version: 1.4.2
+      change-case:
+        specifier: ^5.4.4
+        version: 5.4.4
       prisma:
         specifier: ^7.8.0
         version: 7.8.0(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(better-sqlite3@12.10.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.4.5)
@@ -260,10 +283,10 @@ importers:
         version: link:../../native/webdav
       '@connectrpc/connect':
         specifier: ^2.1.1
-        version: 2.1.1(@bufbuild/protobuf@2.14.1)
+        version: 2.1.1(@bufbuild/protobuf@2.15.0)
       '@connectrpc/connect-node':
         specifier: ^2.1.1
-        version: 2.1.1(@bufbuild/protobuf@2.14.1)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.14.1))
+        version: 2.1.1(@bufbuild/protobuf@2.15.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.15.0))
       async-lock:
         specifier: ^1.4.1
         version: 1.4.1
@@ -512,8 +535,8 @@ packages:
   '@bufbuild/protobuf@2.12.0':
     resolution: {integrity: sha512-B/XlCaFIP8LOwzo+bz5uFzATYokcwCKQcghqnlfwSmM5eX/qTkvDBnDPs+gXtX/RyjxJ4DRikECcPJbyALA8FA==}
 
-  '@bufbuild/protobuf@2.14.1':
-    resolution: {integrity: sha512-agRJn3+EJDUe8AvxTx/LnHA/GErvLE62pSaSk7+MwFOtOv8eWBu/qCq2qoZjBjVZ3C2aiFJCveuSs17KMkYGOw==}
+  '@bufbuild/protobuf@2.15.0':
+    resolution: {integrity: sha512-DAheWUkVr/SJTWCc+lg9dhY0eN4SaWlf4+bG1KzHeXbnqt0AfB/NX0Z+VunGlM1ki1B4zVvye27MpKh/svySUA==}
 
   '@bufbuild/protoc-gen-es@2.12.0':
     resolution: {integrity: sha512-d9htF6jEkSwPbp9d/vSmZOBF7eeG18AvTMKmVg4I23afnrQOxL2w3WOXa9TaufMCyu24QakEUb4vux8apI5e7A==}
@@ -525,12 +548,12 @@ packages:
       '@bufbuild/protobuf':
         optional: true
 
-  '@bufbuild/protoc-gen-es@2.14.1':
-    resolution: {integrity: sha512-agiGxvA1VAzWPdtOiktK39BNvGgHc1jHBCI1XYQtCQDSpt/5pZ7jTRGKv0fYzExbovDVu+yxJq4Srpv8zCIvUQ==}
+  '@bufbuild/protoc-gen-es@2.15.0':
+    resolution: {integrity: sha512-FRhNTAZEXW6arWx2JxgtpuazhmewYctXugu5SfXGpXpLLCInDT1005fSKDzEM/70Es2oIn07PM4RvpwvDvR/fg==}
     engines: {node: '>=22'}
     hasBin: true
     peerDependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.15.0
     peerDependenciesMeta:
       '@bufbuild/protobuf':
         optional: true
@@ -538,8 +561,8 @@ packages:
   '@bufbuild/protoplugin@2.12.0':
     resolution: {integrity: sha512-ORlDITp8AFUXzIhLRoMCG+ud+D3MPKWb5HQXBoskMMnjeyEjE1H1qLonVNPyOr8lkx3xSfYUo8a0dvOZJVAzow==}
 
-  '@bufbuild/protoplugin@2.14.1':
-    resolution: {integrity: sha512-oddqHkmUlBSo1TgswPW6hzrP/3nxMIdKUMcB6/NSY/oUkepDV7SealCZlE0ZxhLRIgmvDSuNWOb0HEKfsWPJww==}
+  '@bufbuild/protoplugin@2.15.0':
+    resolution: {integrity: sha512-vZhRoqB/jTHATqItRvJQf1zbxdrGRRhiusGty4+lKcfEFODG0PMXky2Ezv4WHHS6oSxq+5qShITuE7K1/82SuQ==}
 
   '@bufbuild/protovalidate@1.2.0':
     resolution: {integrity: sha512-tD08DwGrHIV88khLz1Kdz9DYUwEo1TsoepaIg7/B/zd//AymaTx67kvCS1jlkcG/+vgQaSOl6f0HCE3sL8vI7w==}
@@ -1990,6 +2013,9 @@ packages:
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
+
+  change-case@5.4.4:
+    resolution: {integrity: sha512-HRQyTk2/YPEkt9TnUPbOpr64Uw3KOicFWPVBb+xiHvd6eBx/qPr9xqfBFDT8P2vWsvvz4jbEkfDe71W3VyNu2w==}
 
   chart.js@4.5.1:
     resolution: {integrity: sha512-GIjfiT9dbmHRiYi6Nl2yFCq7kkwdkp1W/lp2J99rX0yo9tgJGn3lKQATztIjb5tVtevcBtIdICNWqlq5+E8/Pw==}
@@ -3972,23 +3998,23 @@ snapshots:
     dependencies:
       '@bufbuild/protobuf': 2.12.0
 
-  '@bufbuild/cel-spec@0.4.0(@bufbuild/protobuf@2.14.1)':
+  '@bufbuild/cel-spec@0.4.0(@bufbuild/protobuf@2.15.0)':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.15.0
 
   '@bufbuild/cel@0.4.0(@bufbuild/protobuf@2.12.0)':
     dependencies:
       '@bufbuild/cel-spec': 0.4.0(@bufbuild/protobuf@2.12.0)
       '@bufbuild/protobuf': 2.12.0
 
-  '@bufbuild/cel@0.4.0(@bufbuild/protobuf@2.14.1)':
+  '@bufbuild/cel@0.4.0(@bufbuild/protobuf@2.15.0)':
     dependencies:
-      '@bufbuild/cel-spec': 0.4.0(@bufbuild/protobuf@2.14.1)
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/cel-spec': 0.4.0(@bufbuild/protobuf@2.15.0)
+      '@bufbuild/protobuf': 2.15.0
 
   '@bufbuild/protobuf@2.12.0': {}
 
-  '@bufbuild/protobuf@2.14.1': {}
+  '@bufbuild/protobuf@2.15.0': {}
 
   '@bufbuild/protoc-gen-es@2.12.0(@bufbuild/protobuf@2.12.0)':
     dependencies:
@@ -3998,11 +4024,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@bufbuild/protoc-gen-es@2.14.1(@bufbuild/protobuf@2.14.1)':
+  '@bufbuild/protoc-gen-es@2.15.0(@bufbuild/protobuf@2.15.0)':
     dependencies:
-      '@bufbuild/protoplugin': 2.14.1
+      '@bufbuild/protoplugin': 2.15.0
     optionalDependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.15.0
     transitivePeerDependencies:
       - supports-color
 
@@ -4014,23 +4040,23 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@bufbuild/protoplugin@2.14.1':
+  '@bufbuild/protoplugin@2.15.0':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.15.0
       '@typescript/vfs': 1.6.4(typescript@5.4.5)
       typescript: 5.4.5
     transitivePeerDependencies:
       - supports-color
 
-  '@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0)':
+  '@bufbuild/protovalidate@1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.12.0)':
     dependencies:
       '@bufbuild/cel': 0.4.0(@bufbuild/protobuf@2.12.0)
       '@bufbuild/protobuf': 2.12.0
 
-  '@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.14.1)':
+  '@bufbuild/protovalidate@1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.15.0)':
     dependencies:
-      '@bufbuild/cel': 0.4.0(@bufbuild/protobuf@2.14.1)
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/cel': 0.4.0(@bufbuild/protobuf@2.15.0)
+      '@bufbuild/protobuf': 2.15.0
 
   '@connectrpc/connect-fastify@2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect-node@2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0)))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))(fastify@5.8.5)':
     dependencies:
@@ -4044,30 +4070,30 @@ snapshots:
       '@bufbuild/protobuf': 2.12.0
       '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.12.0)
 
-  '@connectrpc/connect-node@2.1.1(@bufbuild/protobuf@2.14.1)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.14.1))':
+  '@connectrpc/connect-node@2.1.1(@bufbuild/protobuf@2.15.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.15.0))':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
-      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.14.1)
+      '@bufbuild/protobuf': 2.15.0
+      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.15.0)
 
   '@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0)':
     dependencies:
       '@bufbuild/protobuf': 2.12.0
 
-  '@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.14.1)':
+  '@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.15.0)':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
+      '@bufbuild/protobuf': 2.15.0
 
-  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))':
+  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.12.0)(@bufbuild/protovalidate@1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.12.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))':
     dependencies:
       '@bufbuild/protobuf': 2.12.0
-      '@bufbuild/protovalidate': 1.2.0(@bufbuild/protobuf@2.12.0)
+      '@bufbuild/protovalidate': 1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.12.0)
       '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.12.0)
 
-  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.14.1)(@bufbuild/protovalidate@1.2.0(@bufbuild/protobuf@2.14.1))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.14.1))':
+  '@connectrpc/validate@0.2.0(@bufbuild/protobuf@2.15.0)(@bufbuild/protovalidate@1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.15.0))(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.15.0))':
     dependencies:
-      '@bufbuild/protobuf': 2.14.1
-      '@bufbuild/protovalidate': 1.2.0(@bufbuild/protobuf@2.14.1)
-      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.14.1)
+      '@bufbuild/protobuf': 2.15.0
+      '@bufbuild/protovalidate': 1.2.0(patch_hash=54a75b31e2b1a869983f3f2171f16e3e8340dc8e3d687d888acfcf56ecd48f26)(@bufbuild/protobuf@2.15.0)
+      '@connectrpc/connect': 2.1.1(@bufbuild/protobuf@2.15.0)
 
   '@drizzle-team/brocli@0.10.2': {}
 
@@ -5227,6 +5253,8 @@ snapshots:
   catch-unknown@2.0.0: {}
 
   chai@6.2.2: {}
+
+  change-case@5.4.4: {}
 
   chart.js@4.5.1:
     dependencies:

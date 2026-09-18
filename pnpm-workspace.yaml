@@ -35,3 +35,6 @@ onlyBuiltDependencies:
   - protobufjs
   - sharp
   - ssh2
+
+patchedDependencies:
+  '@bufbuild/protovalidate': patches/@bufbuild__protovalidate.patch

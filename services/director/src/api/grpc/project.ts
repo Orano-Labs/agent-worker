@@ -1,8 +1,11 @@
 import { cp, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { createId } from "@orama/cuid2";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/client";
+import { GRPCHandler } from "@/api/grpc-handler";
 import { ProjectResourceTier } from "@/generated/prisma/enums";
 import {
   ProjectResourceTier as ProjectResourceTierPB,
@@ -19,19 +22,16 @@ import {
   type ProjectServiceUpdateMetadataRequestValid,
   ProjectServiceUpdateMetadataResponseSchema,
 } from "@/generated/proto/api/v1/project_pb";
-import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
-import { GRPCServer } from "@/internal/grpc-server";
-import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Variables } from "@/internal/variables";
+import type { Allocator } from "@/internal/allocator";
+import type { Repository } from "@/internal/repository";
 
-export class ProjectServiceImplementation {
+export class ProjectServiceImplementation extends GRPCHandler.ServiceImplementation {
   #repository: Repository;
-  #server: GRPCServer;
 
-  #variables: Variables;
+  #environment: Environment;
   #logger: Logger;
+  #allocator: Allocator;
 
   #mapResourceTierToRepository(value: ProjectResourceTierPB) {
     switch (value) {
@@ -60,17 +60,19 @@ export class ProjectServiceImplementation {
     }
   }
 
-  constructor() {
-    this.#repository = Container.inject(Repository);
-    this.#server = Container.inject(GRPCServer);
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("ProjectService");
+  constructor(...deps: [Repository, Environment, Logger, Allocator]) {
+    super();
+
+    this.#repository = deps[0];
+    this.#environment = deps[1];
+    this.#logger = deps[2].namespace("ProjectService");
+    this.#allocator = deps[3];
   }
 
   async #create(request: ProjectServiceCreateRequestValid, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
+    const user = GRPCHandler.getUserIdentityContextMust(context);
 
-    const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
+    const root = this.#environment.get("FS_ROOT");
 
     if (!root) {
       throw new ConnectError("File system root not configured.", Code.Unavailable);
@@ -136,7 +138,7 @@ export class ProjectServiceImplementation {
   }
 
   async #updateMetadata(request: ProjectServiceUpdateMetadataRequestValid, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
+    const user = GRPCHandler.getUserIdentityContextMust(context);
 
     const project = await this.#repository.client.project
       .update({
@@ -170,7 +172,7 @@ export class ProjectServiceImplementation {
   }
 
   async #get(request: ProjectServiceGetRequestValid, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
+    const user = GRPCHandler.getUserIdentityContextMust(context);
 
     const project = await this.#repository.client.project
       .findUniqueOrThrow({
@@ -201,7 +203,7 @@ export class ProjectServiceImplementation {
   }
 
   async #list(request: ProjectServiceListRequestValid, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
+    const user = GRPCHandler.getUserIdentityContextMust(context);
 
     const take = request.pageSize;
     const skip = (request.page - 1) * take;
@@ -243,17 +245,7 @@ export class ProjectServiceImplementation {
   }
 
   async #delete(request: ProjectServiceDeleteRequestValid, context: HandlerContext) {
-    const user = this.#server.getUserIdentityContextMust(context);
-
-    const instance = await this.#repository.client.instance.findUnique({
-      where: {
-        projectId: request.id,
-      },
-    });
-
-    if (instance) {
-      throw new ConnectError("Project must be stopped before it can be deleted", Code.FailedPrecondition);
-    }
+    const user = GRPCHandler.getUserIdentityContextMust(context);
 
     const project = await this.#repository.client.project
       .update({
@@ -265,6 +257,9 @@ export class ProjectServiceImplementation {
         data: {
           deleteTime: new Date(),
         },
+        include: {
+          instance: true,
+        },
       })
       .catch((error) => {
         if (error instanceof PrismaClientKnownRequestError && error.code === "P2025") {
@@ -273,6 +268,10 @@ export class ProjectServiceImplementation {
 
         throw error;
       });
+
+    if (project.instance) {
+      await this.#allocator.distory(project.instance.id);
+    }
 
     return Protobuf.createValid(ProjectServiceDeleteResponseSchema, {
       project: Protobuf.createValid(ProjectSchema, {

@@ -1,15 +1,16 @@
+import { Container } from "@aw/container";
+import type { Environment } from "@aw/environment";
 import { Redis } from "ioredis";
-import { Container } from "@/helpers/container";
-import { Result } from "@/helpers/result";
-import { Variables } from "@/internal/variables";
 
-export class Cache {
+export class Cache extends Container.ServiceConstructable {
   #client?: Redis;
 
-  #variables: Variables;
+  #environment: Environment;
 
-  constructor() {
-    this.#variables = Container.inject(Variables);
+  constructor(...deps: [Environment]) {
+    super();
+
+    this.#environment = deps[0];
   }
 
   get client() {
@@ -20,12 +21,8 @@ export class Cache {
     return this.#client;
   }
 
-  async init() {
-    const url = this.#variables.get("AW_DIRECTOR_REDIS_URL");
-
-    if (!url) {
-      return Result.error(new Error("AW_DIRECTOR_REDIS_URL is not set, cannot initialize cache."));
-    }
+  protected override async initialize(_: AbortSignal) {
+    const url = this.#environment.get("REDIS_URL", true);
 
     try {
       const urlObject = new URL(url);
@@ -39,7 +36,7 @@ export class Cache {
       const db = Number.parseInt(urlObject.searchParams.get("db") || "", 10);
 
       if (schema !== "redis:") {
-        return Result.error(new Error(`Invalid schema for AW_DIRECTOR_REDIS_URL: ${schema}`));
+        throw new Error(`Invalid schema for AW_DIRECTOR_REDIS_URL: ${schema}`);
       }
 
       const client = new Redis({
@@ -60,9 +57,15 @@ export class Cache {
 
       this.#client = client;
 
-      return Result.ok();
+      return;
     } catch (error) {
-      return Result.error(new Error(`Failed to connect redis server.: ${url}`, { cause: error }));
+      throw new Error(`Failed to connect redis server.: ${url}`, { cause: error });
+    }
+  }
+
+  protected override async dispose(_?: unknown) {
+    if (this.#client) {
+      this.#client.disconnect(false);
     }
   }
 }

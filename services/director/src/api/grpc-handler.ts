@@ -1,19 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { Code, ConnectError, createContextKey, type HandlerContext, type Interceptor } from "@connectrpc/connect";
+import { Container } from "@aw/container";
+import type { Logger } from "@aw/logging";
+import { Code, ConnectError, type ConnectRouter, createContextKey, type HandlerContext, type Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createValidateInterceptor } from "@connectrpc/validate";
 import type { SignatureIdentityValid } from "@/generated/proto/api/v1/signature_pb";
-import { Container } from "@/helpers/container";
-import { Result } from "@/helpers/result";
-import { Authenticator } from "@/internal/authenticator";
-import { Logger } from "@/internal/logger";
-import { FileSystemServiceImplementation } from "@/services/file-system";
-import { FileUploadServiceImplementation } from "@/services/file-upload";
-import { ProjectServiceImplementation } from "@/services/project";
-import { SupervisorServiceImplementation } from "@/services/supervisor";
-import { SupervisorPortalServiceImplementation } from "@/services/supervisor-portal";
-import { TemplateServiceImplementation } from "@/services/template";
-import { UserServiceImplementation } from "@/services/user";
+import type { Authenticator } from "@/internal/authenticator";
+import { HTTPServer } from "@/internal/http-server";
 
 const REQUEST_ID_CONTEXT = createContextKey<string | null>(null);
 
@@ -39,23 +32,49 @@ const SERVICE_ACCESS: Readonly<Record<string, ReadonlyArray<SignatureIdentityVal
   "api.v1.FileSystemService": ["user", "manager"],
 };
 
-export class GRPCServer {
+export class GRPCHandler extends Container.ServiceConstructable {
   #logger: Logger;
   #authenticator: Authenticator;
-  #handler?: ReturnType<typeof connectNodeAdapter>;
+  #handler: ReturnType<typeof connectNodeAdapter>;
 
-  constructor() {
-    this.#logger = Container.inject(Logger).scope("GRPCServer");
-    this.#authenticator = Container.inject(Authenticator);
+  constructor(...deps: [Logger, Authenticator, GRPCHandler.ServiceImplementation[]]) {
+    super();
+
+    this.#logger = deps[0].namespace("GRPCHandler");
+    this.#authenticator = deps[1];
+
+    this.#handler = connectNodeAdapter({
+      grpcWeb: true,
+      connect: true,
+      grpc: false,
+      requestPathPrefix: "/grpc",
+      interceptors: [
+        this.#createRequestIdInterceptor(),
+        this.#createLoggingInterceptor(),
+        this.#createAuthenticatorInterceptor(),
+        this.#createAccessControlInterceptor(),
+        this.#createValidateInterceptor(),
+      ],
+      routes: (router) => {
+        for (const service of deps[2]) {
+          service.setup(router);
+        }
+      },
+    });
   }
 
-  get handler() {
-    if (!this.#handler) {
-      throw new Error("Grpc handler is not available");
-    }
-
-    return this.#handler;
-  }
+  // get routes() {
+  //   return [
+  //     {
+  //       kind: "request",
+  //       method: HTTPServer.Method.Any,
+  //       path: "grpc/**:rest",
+  //       handler: ({ req, res }) => {
+  //         this.#handler(req, res);
+  //       },
+  //     },
+  //   ] satisfies HTTPServer.Route[];
+  // }
 
   #createRequestId() {
     const buffer = Buffer.alloc(12);
@@ -97,7 +116,7 @@ export class GRPCServer {
     const interceptor: Interceptor = (next) => {
       return async (req) => {
         const reqId = req.contextValues.get(REQUEST_ID_CONTEXT) || "??";
-        const logger = this.#logger.with({ requestId: reqId });
+        const logger = this.#logger.binding({ requestId: reqId });
 
         let identity: Authenticator.Identity;
 
@@ -152,39 +171,12 @@ export class GRPCServer {
     return interceptor;
   }
 
-  async init(): Promise<Result<void, Error>> {
-    this.#handler = connectNodeAdapter({
-      grpcWeb: true,
-      connect: true,
-      grpc: false,
-      requestPathPrefix: "/grpc",
-      interceptors: [
-        this.#createRequestIdInterceptor(),
-        this.#createLoggingInterceptor(),
-        this.#createAuthenticatorInterceptor(),
-        this.#createAccessControlInterceptor(),
-        this.#createValidateInterceptor(),
-      ],
-      routes: (router) => {
-        Container.inject(UserServiceImplementation).setup(router);
-        Container.inject(SupervisorServiceImplementation).setup(router);
-        Container.inject(SupervisorPortalServiceImplementation).setup(router);
-        Container.inject(ProjectServiceImplementation).setup(router);
-        Container.inject(TemplateServiceImplementation).setup(router);
-        Container.inject(FileSystemServiceImplementation).setup(router);
-        Container.inject(FileUploadServiceImplementation).setup(router);
-      },
-    });
-
-    return Result.ok();
-  }
-
-  getIdentityCaseContext(context: HandlerContext) {
+  static getIdentityCaseContext(context: HandlerContext) {
     return context.values.get(IDENTITY_CASE_CONTEXT);
   }
 
-  getIdentityCaseContextMust(context: HandlerContext) {
-    const identityCase = this.getIdentityCaseContext(context);
+  static getIdentityCaseContextMust(context: HandlerContext) {
+    const identityCase = GRPCHandler.getIdentityCaseContext(context);
 
     if (!identityCase) {
       throw new Error("Missing identity case context.");
@@ -193,12 +185,12 @@ export class GRPCServer {
     return identityCase;
   }
 
-  getUserIdentityContext(context: HandlerContext) {
+  static getUserIdentityContext(context: HandlerContext) {
     return context.values.get(USER_IDENTITY_CONTEXT);
   }
 
-  getUserIdentityContextMust(context: HandlerContext) {
-    const identity = this.getUserIdentityContext(context);
+  static getUserIdentityContextMust(context: HandlerContext) {
+    const identity = GRPCHandler.getUserIdentityContext(context);
 
     if (!identity) {
       throw new Error("Missing user identity context.");
@@ -207,12 +199,12 @@ export class GRPCServer {
     return identity;
   }
 
-  getSupervisorIdentityContext(context: HandlerContext) {
+  static getSupervisorIdentityContext(context: HandlerContext) {
     return context.values.get(SUPERVISOR_IDENTITY_CONTEXT);
   }
 
-  getSupervisorIdentityContextMust(context: HandlerContext) {
-    const identity = this.getSupervisorIdentityContext(context);
+  static getSupervisorIdentityContextMust(context: HandlerContext) {
+    const identity = GRPCHandler.getSupervisorIdentityContext(context);
 
     if (!identity) {
       throw new Error("Missing supervisor identity context.");
@@ -221,17 +213,23 @@ export class GRPCServer {
     return identity;
   }
 
-  getRequestIdContext(context: HandlerContext) {
+  static getRequestIdContext(context: HandlerContext) {
     return context.values.get(REQUEST_ID_CONTEXT);
   }
 
-  getRequestIdContextMust(context: HandlerContext) {
-    const requestId = this.getRequestIdContext(context);
+  static getRequestIdContextMust(context: HandlerContext) {
+    const requestId = GRPCHandler.getRequestIdContext(context);
 
     if (!requestId) {
       throw new Error("Missing request ID context.");
     }
 
     return requestId;
+  }
+}
+
+export namespace GRPCHandler {
+  export abstract class ServiceImplementation extends Container.ServiceConstructable {
+    abstract setup(router: ConnectRouter): void;
   }
 }

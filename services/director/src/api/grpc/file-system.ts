@@ -1,17 +1,18 @@
 import { mkdir, readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, normalize } from "node:path";
+import type { Environment } from "@aw/environment";
+import type { Logger } from "@aw/logging";
 import { Code, ConnectError, type ConnectRouter, type HandlerContext } from "@connectrpc/connect";
 import { ZipArchive } from "archiver";
+import { GRPCHandler } from "@/api/grpc-handler";
 import {
   FileSystemService,
-  type FileSystemServiceCopyRequestValid,
   type FileSystemServiceCreateRequestValid,
   FileSystemServiceCreateResponseSchema,
   type FileSystemServiceDeleteRequestValid,
   FileSystemServiceDeleteResponseSchema,
   type FileSystemServiceDownloadRequestValid,
   FileSystemServiceDownloadResponseSchema,
-  type FileSystemServiceMoveRequestValid,
   type FileSystemServiceReadRequestValid,
   FileSystemServiceReadResponseSchema,
   type FileSystemServiceTreeRequestValid,
@@ -26,29 +27,25 @@ import {
   TreeNodeSymlinkSchema,
   type TreeNodeValid,
 } from "@/generated/proto/api/v1/file-system_pb";
-import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
-import { GRPCServer } from "@/internal/grpc-server";
-import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Variables } from "@/internal/variables";
+import type { Repository } from "@/internal/repository";
 
-export class FileSystemServiceImplementation {
+export class FileSystemServiceImplementation extends GRPCHandler.ServiceImplementation {
   #repository: Repository;
-  #server: GRPCServer;
 
-  #variables: Variables;
+  #environment: Environment;
   #logger: Logger;
 
-  constructor() {
-    this.#repository = Container.inject(Repository);
-    this.#server = Container.inject(GRPCServer);
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("FileSystemService");
+  constructor(...deps: [Repository, Environment, Logger]) {
+    super();
+
+    this.#repository = deps[0];
+    this.#environment = deps[1];
+    this.#logger = deps[2].namespace("FileSystemService");
   }
 
   get #root() {
-    const root = this.#variables.get("AW_DIRECTOR_FS_ROOT");
+    const root = this.#environment.get("FS_ROOT");
 
     if (!root) {
       throw new ConnectError("File system root not configured.", Code.Unavailable);
@@ -62,7 +59,7 @@ export class FileSystemServiceImplementation {
   }
 
   async #resolveFileSystemInfo(fs: FileSystemValid, context: HandlerContext) {
-    const identityType = this.#server.getIdentityCaseContextMust(context);
+    const identityType = GRPCHandler.getIdentityCaseContextMust(context);
 
     if (fs.type === FileSystemType.TEMPLATE && identityType !== "manager") {
       throw new ConnectError("Template file systems require a manager identity.", Code.PermissionDenied);
@@ -90,7 +87,7 @@ export class FileSystemServiceImplementation {
 
       return { type: "template", root: join(this.#root, "templates", template.id), ...template } as const;
     } else {
-      const user = this.#server.getUserIdentityContextMust(context);
+      const user = GRPCHandler.getUserIdentityContextMust(context);
       const project = await this.#repository.client.project.findFirst({
         where: {
           id: fs.id,

@@ -1,17 +1,17 @@
 import { Container } from "@aw/container";
 import { Environment } from "@aw/environment";
 import { Logger } from "@aw/logging";
+import { Controller } from "@/internal/controller";
 import { Dependencies } from "@/internal/dependencies";
+import { Director } from "@/internal/director";
+import { Ganesha } from "@/internal/ganesha";
+import { KVStorage } from "@/internal/kv-storage";
 import { Shell } from "@/internal/shell";
+import { Tunnel } from "@/internal/tunnel";
+import { VMFactory } from "@/internal/vm-factory";
+import { VMImage } from "@/internal/vm-image";
 import { VMKernel } from "@/internal/vm-kernel";
 import { VMNet } from "@/internal/vm-net";
-import { Controller } from "./internal/controller";
-import { Director } from "./internal/director";
-import { Ganesha } from "./internal/ganesha";
-import { KVStorage } from "./internal/kv-storage";
-import { Tunnel } from "./internal/tunnel";
-import { VMImage } from "./internal/vm-image";
-import { VMManager } from "./internal/vm-manager";
 
 const EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
   SIGHUP: 129,
@@ -22,14 +22,6 @@ const EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
 export class Application extends Container.ServiceConstructable {
   #logger: Logger;
   #environment: Environment;
-  // #manager: VMManager;
-  // #ganesha: Ganesha;
-
-  #vm?: VMManager.VM.Resources & {
-    running: Promise<void>;
-    controller: AbortController;
-    instance: VMManager.VM;
-  };
 
   constructor(injector: Container.Injector) {
     super();
@@ -40,9 +32,6 @@ export class Application extends Container.ServiceConstructable {
     for (const warn of this.#environment.warnings) {
       this.#logger.namespace("Environment.Warnings").warn(warn);
     }
-
-    // this.#manager = injector.injectMust(VMManager);
-    // this.#ganesha = injector.injectMust(Ganesha);
 
     injector.injectMust(Director);
     injector.injectMust(Tunnel);
@@ -56,17 +45,9 @@ export class Application extends Container.ServiceConstructable {
     } else {
       this.#logger.warn(`Shutting down: unexpected reason ${JSON.stringify(String(reason))}`);
     }
-
-    if (this.#vm) {
-      this.#vm.controller.abort(reason);
-
-      await this.#vm.running.catch(() => {});
-    }
   }
 
-  protected override async initialize(_: AbortSignal) {
-    // fetch("http://117.55.235.4:3008/link/avo0z2l0htueeqk8clq57fn4/wx").then(console.log).catch(console.log)
-  }
+  protected override async initialize(_: AbortSignal) {}
 
   static async run() {
     const controller = new AbortController();
@@ -90,15 +71,10 @@ export class Application extends Container.ServiceConstructable {
       return new VMKernel(injector.injectMust(Environment), injector.injectMust(Logger), injector.injectMust(Shell));
     });
     container.provide(VMImage, (injector) => {
-      return new VMImage(
-        injector.injectMust(Environment),
-        injector.injectMust(Dependencies),
-        injector.injectMust(Logger),
-        injector.injectMust(Shell),
-      );
+      return new VMImage(injector.injectMust(Environment), injector.injectMust(Logger), injector.injectMust(Shell));
     });
-    container.provide(VMManager, (injector) => {
-      return new VMManager(
+    container.provide(VMFactory, (injector) => {
+      return new VMFactory(
         injector.injectMust(Environment),
         injector.injectMust(Logger),
         injector.injectMust(VMImage),
@@ -122,7 +98,7 @@ export class Application extends Container.ServiceConstructable {
         injector.injectMust(Logger),
         injector.injectMust(KVStorage),
         injector.injectMust(Director),
-        injector.injectMust(VMManager),
+        injector.injectMust(VMFactory),
         injector.injectMust(Ganesha),
       );
     });

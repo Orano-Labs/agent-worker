@@ -7,14 +7,14 @@ import { Client, ProjectPB, SupervisorPortalPB } from "@aw/vm-director/sdk";
 import type { Director } from "@/internal/director";
 import type { Ganesha } from "@/internal/ganesha";
 import type { KVStorage } from "@/internal/kv-storage";
-import type { VMManager } from "@/internal/vm-manager";
+import type { VMFactory } from "@/internal/vm-factory";
 
 export class Controller extends Container.ServiceConstructable {
   #logger: Logger;
   #director: Director;
   #ganesha: Ganesha;
   #kv: KVStorage;
-  #manager: VMManager;
+  #manager: VMFactory;
   #fsRoot: string;
 
   #portal?: ReturnType<Client["createSupervisorPortalService"]>;
@@ -24,7 +24,7 @@ export class Controller extends Container.ServiceConstructable {
     stream: Promise<void>;
   };
 
-  constructor(...deps: [Environment, Logger, KVStorage, Director, VMManager, Ganesha]) {
+  constructor(...deps: [Environment, Logger, KVStorage, Director, VMFactory, Ganesha]) {
     super();
 
     this.#fsRoot = deps[0].get("FS_ROOT", join(deps[0].root, "fs"));
@@ -162,6 +162,18 @@ export class Controller extends Container.ServiceConstructable {
               .catch((error) => {
                 this.#logger.warn("Failed to remove instance not present in server sync", { instanceId: instance.id, error });
               });
+          }
+
+          for (const [key, value] of this.#processings.entries()) {
+            if (serverIds.has(key)) {
+              continue;
+            }
+
+            value
+              .then((instance) => {
+                instance.controller.abort();
+              })
+              .catch(() => {});
           }
         }
 
@@ -369,7 +381,7 @@ export namespace Controller {
   };
 
   export type RunningInstance = Readonly<
-    VMManager.VM.Resources &
+    VMFactory.VM.Resources &
       Instance & {
         controller: AbortController;
         ready: Promise<URL>;

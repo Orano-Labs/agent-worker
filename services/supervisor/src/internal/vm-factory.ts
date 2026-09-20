@@ -1,9 +1,6 @@
-import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
 import { chown, cp, mkdir, readFile, rm } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createReadLineInterface } from "node:readline";
 import { Container } from "@aw/container";
@@ -16,7 +13,7 @@ import type { VMImage } from "@/internal/vm-image";
 import type { VMKernel } from "@/internal/vm-kernel";
 import { VMNet } from "@/internal/vm-net";
 
-export class VMManager extends Container.ServiceConstructable {
+export class VMFactory extends Container.ServiceConstructable {
   #environment: Environment;
   #logger: Logger;
   #image: VMImage;
@@ -35,8 +32,8 @@ export class VMManager extends Container.ServiceConstructable {
     this.#dependencies = deps[5];
   }
 
-  create(options: Pick<VMManager.VM.Options, "id" | "machineTier" | "metadata">) {
-    return new VMManager.VM({
+  create(options: Pick<VMFactory.VM.Options, "id" | "machineTier" | "metadata">) {
+    return new VMFactory.VM({
       ...options,
 
       dependencies: this.#dependencies,
@@ -49,7 +46,7 @@ export class VMManager extends Container.ServiceConstructable {
   }
 }
 
-export namespace VMManager {
+export namespace VMFactory {
   export class VM {
     #mac: string;
     #environment: Environment;
@@ -322,7 +319,7 @@ export namespace VMManager {
       await fc.createSyncAction({ action_type: "InstanceStart" });
     }
 
-    async run(signal: AbortSignal, cb: (signal: AbortSignal, resources: VMManager.VM.Resources) => Promise<void>) {
+    async run(signal: AbortSignal, cb: (signal: AbortSignal, resources: VMFactory.VM.Resources) => Promise<void>) {
       signal.throwIfAborted();
 
       const ns = await this.#net.random();

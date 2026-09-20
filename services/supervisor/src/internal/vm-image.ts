@@ -12,7 +12,6 @@ const RUNTIME_IMAGE_CONTAINER_NAME = "aw-runtime-image";
 
 export class VMImage extends Container.ServiceConstructable {
   #environment: Environment;
-  #dependencies: Dependencies;
   #logger: Logger;
   #shell: Shell;
 
@@ -20,13 +19,12 @@ export class VMImage extends Container.ServiceConstructable {
     return join(this.#environment.root, "images", "runtime.squashfs");
   }
 
-  constructor(...deps: [Environment, Dependencies, Logger, Shell]) {
+  constructor(...deps: [Environment, Logger, Shell]) {
     super();
 
     this.#environment = deps[0];
-    this.#dependencies = deps[1];
-    this.#logger = deps[2].namespace("VMImage");
-    this.#shell = deps[3];
+    this.#logger = deps[1].namespace("VMImage");
+    this.#shell = deps[2];
   }
 
   protected override async initialize(signal: AbortSignal) {

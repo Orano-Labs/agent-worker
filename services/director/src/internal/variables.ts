@@ -85,7 +85,9 @@ export class Variables {
     const variables = {
       HTTP_PORT: this.get("AW_DIRECTOR_HTTP_PORT") || null,
       MYSQL_URL: this.get("AW_DIRECTOR_MYSQL_URL") || null,
+      REDIS_URL: this.get("AW_DIRECTOR_REDIS_URL") || null,
       MANAGER_PUBLIC_KEY: this.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY") || null,
+      FS_ROOT: this.get("AW_DIRECTOR_FS_ROOT") || null,
     };
 
     if (variables.MYSQL_URL) {
@@ -145,11 +147,11 @@ export namespace Variables {
     `${TRUSTED_PREFIX}HTTP_PORT`,
 
     `${TRUSTED_PREFIX}MYSQL_URL`,
+    `${TRUSTED_PREFIX}REDIS_URL`,
 
     `${TRUSTED_PREFIX}MANAGER_PUBLIC_KEY`,
     `${TRUSTED_PREFIX}MANAGER_PRIVATE_KEY`,
 
-    `${TRUSTED_PREFIX}REDIS_URL`,
     `${TRUSTED_PREFIX}FS_ROOT`,
   ] as const;
 }

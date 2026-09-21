@@ -37,8 +37,11 @@ VOLUME ["/aw-supervisor", "/aw-fs"]
 
 ENV NODE_ENV=production
 
-COPY --from=builder /app/pruned/supervisor .
+ENV AW_SUPERVISOR_DIRECTOR_HOST_URL="http://192.168.2.119:3008"
+ENV AW_SUPERVISOR_FS_ROOT="/aw-fs"
+ENV AW_SUPERVISOR_ID=""
+ENV AW_SUPERVISOR_PRIVATE_KEY=""
 
-# RUN pnpm prisma migrate deploy
+COPY --from=builder /app/pruned/supervisor .
 
 CMD ["node", "./dist/index.cjs"]

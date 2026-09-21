@@ -1,0 +1,45 @@
+FROM node:24.20.0-alpine AS base
+
+COPY --from=golang:1.27-alpine /usr/local/go /usr/local/go
+
+ENV PNPM_HOME="/pnpm"
+ENV GOROOT="/usr/local/go"
+
+ENV PATH="$PATH:$PNPM_HOME"
+ENV PATH="$PATH:$GOROOT/bin"
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+RUN apk add --no-cache git ca-certificates
+RUN corepack enable
+
+# builder
+
+FROM base AS builder
+
+WORKDIR /app
+
+COPY . .
+
+ENV CI=true
+
+RUN pnpm --version
+RUN pnpm install --frozen-lockfile --prod=false
+RUN pnpm --filter @aw/vm-director generate
+RUN pnpm --filter @aw/vm-supervisor exec turbo build
+RUN pnpm --filter @aw/vm-supervisor deploy /app/pruned/supervisor --prod --legacy
+
+# runner
+
+FROM node:24.20.0-alpine AS runner
+
+WORKDIR /app
+
+VOLUME ["/aw-supervisor", "/aw-fs"]
+
+ENV NODE_ENV=production
+
+COPY --from=builder /app/pruned/supervisor .
+
+# RUN pnpm prisma migrate deploy
+
+CMD ["node", "./dist/index.cjs"]

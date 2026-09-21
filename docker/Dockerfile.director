@@ -18,10 +18,16 @@ FROM node:24.20.0-alpine AS runner
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-
 COPY --from=builder /app/pruned/director .
 
-RUN pnpm prisma migrate deploy
+VOLUME ["/aw-fs"]
 
-CMD ["node", "./dist/index.cjs"]
+ENV NODE_ENV=production
+
+ENV AW_DIRECTOR_MYSQL_URL="mysql://root:@127.0.0.1:3306/aw-dev"
+ENV AW_DIRECTOR_REDIS_URL="redis://127.0.0.1:6379?db=1"
+ENV AW_DIRECTOR_FS_ROOT="/aw-fs"
+ENV AW_DIRECTOR_MANAGER_PUBLIC_KEY=""
+ENV AW_DIRECTOR_MANAGER_PRIVATE_KEY=""
+
+CMD ["npm", "run", "start"]

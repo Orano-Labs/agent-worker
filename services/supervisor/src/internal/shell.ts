@@ -42,10 +42,6 @@ export class Shell extends Container.ServiceConstructable {
       },
     });
   }
-
-  protected override async initialize(signal: AbortSignal) {
-    await $({ signal, log: () => {} })`sudo -n -v`;
-  }
 }
 
 export namespace Shell {

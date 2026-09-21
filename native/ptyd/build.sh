@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # build.sh — cross-compile ptyd as fully static, libc-independent binaries
 # for linux/amd64 and linux/arm64. The script takes no arguments; output goes

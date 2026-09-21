@@ -33,7 +33,6 @@ export class Application extends Container.ServiceConstructable {
       this.#logger.namespace("Environment.Warnings").warn(warn);
     }
 
-    injector.injectMust(Director);
     injector.injectMust(Tunnel);
   }
 

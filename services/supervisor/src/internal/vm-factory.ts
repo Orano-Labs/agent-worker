@@ -85,9 +85,9 @@ export namespace VMFactory {
 
     get #machineTierMapMemoryLimit() {
       return {
-        minimal: 1024,
-        standard: 2048,
-        performance: 4096,
+        minimal: 256,
+        standard: 512,
+        performance: 1024,
       }[this.#machineTier];
     }
 

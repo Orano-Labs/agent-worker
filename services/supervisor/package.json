@@ -26,7 +26,9 @@
     "generate:firecracker": "openapi-ts -f ./firecracker.openapi.config.ts"
   },
   "files": [
-    "dist/**/*"
+    "dist/**/*",
+    "resources/**/*",
+    "scripts/**/*"
   ],
   "packageManager": "pnpm@10.14.0",
   "dependencies": {

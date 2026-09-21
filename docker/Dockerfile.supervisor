@@ -31,6 +31,8 @@ RUN pnpm --filter @aw/vm-supervisor deploy /app/pruned/supervisor --prod --legac
 
 FROM node:24.20.0-alpine AS runner
 
+RUN apk update && apk add bash
+
 WORKDIR /app
 
 VOLUME ["/aw-supervisor", "/aw-fs"]

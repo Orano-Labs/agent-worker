@@ -9,7 +9,9 @@ WORKDIR /app
 
 COPY . .
 
-RUN pnpm install
+ENV CI=true
+
+RUN pnpm install --frozen-lockfile --prod=false
 RUN pnpm --filter @aw/vm-director generate
 RUN pnpm --filter @aw/vm-director exec turbo build
 RUN pnpm --filter @aw/vm-director deploy /app/pruned/director --prod --legacy

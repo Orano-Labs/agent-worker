@@ -22,7 +22,6 @@ COPY . .
 
 ENV CI=true
 
-RUN pnpm --version
 RUN pnpm install --frozen-lockfile --prod=false
 RUN pnpm --filter @aw/vm-director generate
 RUN pnpm --filter @aw/vm-supervisor exec turbo build

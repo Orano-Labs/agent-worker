@@ -1,4 +1,4 @@
-FROM node:22.18.0-alpine AS base
+FROM node:24.20.0-alpine AS builder
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
@@ -7,18 +7,14 @@ RUN corepack enable
 
 WORKDIR /app
 
-# builder
-
-FROM base AS builder
-
 COPY . .
 
 RUN pnpm install
-RUN pnpm --filter @aw/vm-director--prod generate
-RUN pnpm --filter @aw/vm-director--prod turbo build
-RUN pnpm --filter @aw/vm-director--prod deploy /app/pruned/director --prod --legacy
+RUN pnpm --filter @aw/vm-director generate
+RUN pnpm --filter @aw/vm-director exec turbo build
+RUN pnpm --filter @aw/vm-director deploy /app/pruned/director --prod --legacy
 
-FROM node:22.18.0-alpine AS runner
+FROM node:24.20.0-alpine AS runner
 
 WORKDIR /app
 

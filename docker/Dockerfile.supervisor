@@ -31,7 +31,29 @@ RUN pnpm --filter @aw/vm-supervisor deploy /app/pruned/supervisor --prod --legac
 
 FROM node:24.20.0-alpine AS runner
 
-RUN apk update && apk add bash
+RUN apk add --no-cache \
+    bash \
+    buildah \
+    qemu-img \
+    e2fsprogs \
+    alpine-sdk \
+    bc \
+    bison \
+    flex \
+    openssl-dev \
+    elfutils-dev \
+    pahole \
+    perl \
+    python3 \
+    cpio \
+    kmod \
+    ncurses-dev \
+    git \
+    rsync \
+    ccache \
+    xz \
+    zstd \
+    lz4
 
 WORKDIR /app
 

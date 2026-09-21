@@ -21,7 +21,7 @@
     "tsx": "^4.23.13"
   },
   "scripts": {
-    "postinstall": "lefthook install",
+    "postinstall": "if [ \"$CI\" != \"true\" ]; then lefthook install; fi",
     "format": "biome format --write .",
     "lint": "biome check --write .",
     "build": "pnpm -r --if-present run build",

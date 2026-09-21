@@ -29,6 +29,10 @@ export class Application extends Container.ServiceConstructable {
     this.#logger = injector.injectMust(Logger).namespace("Application");
     this.#environment = injector.injectMust(Environment);
 
+    for (const message of this.#environment.messages) {
+      this.#logger.namespace("Environment.Messages").info(message);
+    }
+
     for (const warn of this.#environment.warnings) {
       this.#logger.namespace("Environment.Warnings").warn(warn);
     }

@@ -14,6 +14,7 @@ export class Environment extends Container.ServiceConstructable {
   #prefix: string;
   #fiels: boolean;
 
+  #messages: string[];
   #warnings: string[];
 
   constructor(options?: Partial<Environment.Options>) {
@@ -23,6 +24,7 @@ export class Environment extends Container.ServiceConstructable {
     this.#mode = Environment.Mode.Development;
     this.#prefix = options?.prefix ?? "";
     this.#fiels = options?.files ?? true;
+    this.#messages = [];
     this.#warnings = [];
 
     if (this.#prefix) {
@@ -35,10 +37,9 @@ export class Environment extends Container.ServiceConstructable {
         const content = readFileSync(file, "utf-8");
 
         Object.assign(process.env, parseEnv(content));
+        this.#messages.push(`Loaded ".env" file at "${file}".`);
       } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-          this.#warnings.push(`No ".env" file found at "${join(this.#root, ".env")}".`);
-        } else {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
           this.#warnings.push(`Failed to load ".env" file: ${error instanceof Error ? error.message : String(error)}.`);
         }
       }
@@ -56,11 +57,12 @@ export class Environment extends Container.ServiceConstructable {
         const file = join(this.#root, name);
 
         try {
-          Object.assign(process.env, parseEnv(readFileSync(file, "utf-8")));
+          const content = readFileSync(file, "utf-8");
+
+          Object.assign(process.env, parseEnv(content));
+          this.#messages.push(`Loaded "${name}" file at "${file}".`);
         } catch (error) {
-          if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-            this.#warnings.push(`No "${name}" file found at "${join(this.#root, name)}".`);
-          } else {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
             this.#warnings.push(`Failed to load "${name}" file: ${error instanceof Error ? error.message : String(error)}.`);
           }
         }
@@ -74,6 +76,10 @@ export class Environment extends Container.ServiceConstructable {
 
   get mode() {
     return this.#mode;
+  }
+
+  get messages() {
+    return this.#messages;
   }
 
   get warnings() {

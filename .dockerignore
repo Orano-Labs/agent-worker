@@ -1,0 +1,15 @@
+.DS_Store
+.cache
+
+dist/
+node_modules/
+
+*.log
+*.local
+*.tsbuildinfo
+
+.env
+.idea
+.turbo
+
+./docker/

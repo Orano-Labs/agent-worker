@@ -4,6 +4,10 @@ set -e
 DEFAULT_TARGET="${HOME}/.aw-supervisor/kernel/vmlinux"
 TARGET_PATH="${1:-$DEFAULT_TARGET}"
 
+if [[ "$TARGET_PATH" != /* ]]; then
+    TARGET_PATH="$(pwd)/$TARGET_PATH"
+fi
+
 ARCH=$(uname -m)
 
 if [ "$ARCH" == "x86_64" ]; then

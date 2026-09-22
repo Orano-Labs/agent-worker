@@ -1,4 +1,4 @@
-import { mkdir, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, rm, stat } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Container } from "@aw/container";
@@ -42,6 +42,21 @@ export class VMKernel extends Container.ServiceConstructable {
 
     if (exists) {
       return this.#logger.info("Kernel exists. Skipping build.");
+    }
+
+    const bundled = join(process.cwd(), "ci/vmlinux");
+
+    try {
+      await stat(bundled);
+      await copyFile(bundled, this.path);
+
+      return this.#logger.info(`Bundled kernel found at ${bundled}. Copied to ${this.path}.`);
+    } catch (e) {
+      if (e instanceof Error && "code" in e && e.code !== "ENOENT") {
+        throw new Error(`Failed to check bundled kernel: ${bundled}`, {
+          cause: e,
+        });
+      }
     }
 
     const config = VMKernel.KERNEL_CONFIG_NAMES[process.arch];

@@ -71,10 +71,6 @@ export class Director extends Container.ServiceConstructable {
     this.#client = client;
     this.#host = baseUrl;
     this.#identity = Object.freeze(identity);
-
-    this.#logger.info("Director initialized and connected to supervisor portal", { baseUrl });
-
-    signal.throwIfAborted();
   }
 
   protected override async dispose() {}

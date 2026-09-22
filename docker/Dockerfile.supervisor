@@ -1,4 +1,32 @@
-FROM node:24.20.0-alpine AS base
+FROM ubuntu:26.04 AS kernel-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+COPY ./services/supervisor/scripts .
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        git \
+        curl \
+        ca-certificates \
+        build-essential \
+        libelf-dev \
+        diffutils \
+        bc \
+        flex \
+        bison \
+        linux-libc-dev \
+        libssl-dev \
+        perl \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ./build-kernel.sh ./vmlinux
+
+FROM node:24.20.0-alpine AS app-builder
 
 COPY --from=golang:1.27-alpine /usr/local/go /usr/local/go
 
@@ -8,13 +36,9 @@ ENV GOROOT="/usr/local/go"
 ENV PATH="$PATH:$PNPM_HOME"
 ENV PATH="$PATH:$GOROOT/bin"
 
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
-RUN apk add --no-cache git ca-certificates
 RUN corepack enable
 
-# builder
-
-FROM base AS builder
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
@@ -22,38 +46,46 @@ COPY . .
 
 ENV CI=true
 
+RUN pnpm config set registry https://registry.npmmirror.com
+RUN pnpm config set store-dir /pnpm/store
+
 RUN pnpm install --frozen-lockfile --prod=false
+
 RUN pnpm --filter @aw/vm-director generate
 RUN pnpm --filter @aw/vm-supervisor exec turbo build
 RUN pnpm --filter @aw/vm-supervisor deploy /app/pruned/supervisor --prod --legacy
 
 # runner
 
-FROM node:24.20.0-alpine AS runner
+FROM ubuntu:26.04 AS runner
 
-RUN apk add --no-cache \
-    bash \
-    buildah \
-    qemu-img \
-    e2fsprogs \
-    alpine-sdk \
-    bc \
-    bison \
-    flex \
-    openssl-dev \
-    elfutils-dev \
-    pahole \
-    perl \
-    python3 \
-    cpio \
-    kmod \
-    ncurses-dev \
-    git \
-    rsync \
-    ccache \
-    xz \
-    zstd \
-    lz4
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y --no-install-recommends \
+        nodejs \
+        buildah \
+        crun \
+        qemu-utils \
+        e2fsprogs \
+        squashfs-tools \
+        netavark \
+        iproute2 \
+        nftables \
+        procps \
+        nfs-ganesha \
+        nfs-ganesha-vfs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/containers \
+    && printf '%s\n' \
+        '[storage]' \
+        'driver = "vfs"' \
+        > /etc/containers/storage.conf
 
 WORKDIR /app
 
@@ -63,9 +95,12 @@ ENV NODE_ENV=production
 
 ENV AW_SUPERVISOR_DIRECTOR_HOST_URL="http://127.0.0.1:3008"
 ENV AW_SUPERVISOR_FS_ROOT="/aw-fs"
-ENV AW_SUPERVISOR_ID=""
-ENV AW_SUPERVISOR_PRIVATE_KEY=""
+ENV AW_SUPERVISOR_ID="unknown"
+ENV AW_SUPERVISOR_PRIVATE_KEY="unknown"
 
-COPY --from=builder /app/pruned/supervisor .
+COPY --from=app-builder /app/pruned/supervisor .
+COPY --from=kernel-builder /app/vmlinux ./ci/vmlinux
 
 CMD ["node", "./dist/index.cjs"]
+
+# sudo docker run --rm -it --network host --privileged --entrypoint sh aw-supervisor:latest

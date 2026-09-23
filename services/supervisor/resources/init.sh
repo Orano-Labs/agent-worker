@@ -106,6 +106,17 @@ mount -t nfs4 -o vers=4.1,port=26088,mountport=26088,sync,soft,retrans=3,noatime
 
 log "Mounted NFSv4 $NFS_PSEUDO on /workspace"
 
+cat > /tmp/aw-resolv.conf <<'EOF'
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+options timeout:2 attempts:3
+EOF
+
+log "DNS configured:"
+cat /tmp/aw-resolv.conf
+
 exec bwrap \
   --die-with-parent \
   --unshare-all \
@@ -121,6 +132,7 @@ exec bwrap \
   --ro-bind /lib /lib \
   --ro-bind /sys /sys \
   --ro-bind /var /var \
+  --ro-bind /tmp/aw-resolv.conf /etc/resolv.conf \
   --bind /tmp /tmp \
   --bind /workspace /workspace \
   --ro-bind /entrypoint /entrypoint.sh \

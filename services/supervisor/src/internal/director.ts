@@ -1,7 +1,7 @@
 import { Container } from "@aw/container";
 import type { Environment } from "@aw/environment";
 import type { Logger } from "@aw/logging";
-import { Client } from "@aw/vm-director/sdk";
+import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 import { createGrpcWebTransport } from "@connectrpc/connect-node";
 
 export class Director extends Container.ServiceConstructable {
@@ -67,6 +67,32 @@ export class Director extends Container.ServiceConstructable {
 
     // @ts-expect-error connect-node (CJS) vs @aw/vm-director/sdk (ESM) transport type mismatch
     const client = new Client(transport, identity);
+    const portal = client.createSupervisorPortalService();
+
+    const streamController = new AbortController();
+    const stream = portal.watch(
+      Client.createMessageValid(SupervisorPortalPB.SupervisorPortalServiceWatchRequestSchema, {
+        processId: this.processId,
+      }),
+      {
+        signal: streamController.signal,
+      },
+    );
+
+    const abort = streamController.abort.bind(streamController);
+
+    signal.addEventListener("abort", abort);
+
+    try {
+      for await (const _ of stream) {
+        break;
+      }
+    } finally {
+      abort();
+      signal.removeEventListener("abort", abort);
+    }
+
+    this.#logger.info("Director initialized and connected to supervisor portal", { baseUrl });
 
     this.#client = client;
     this.#host = baseUrl;

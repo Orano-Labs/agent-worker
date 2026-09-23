@@ -325,8 +325,8 @@ export class FileSystemServiceImplementation {
       throw new ConnectError("Path is not a file.", Code.FailedPrecondition);
     }
 
-    if (resolved.size > 1024 * 1024) {
-      throw new ConnectError("File exceeds the maximum readable size of 1 MiB.", Code.FailedPrecondition);
+    if (resolved.size > 1024 * 1024 * 10) {
+      throw new ConnectError("File exceeds the maximum readable size of 10 MiB.", Code.FailedPrecondition);
     }
 
     return Protobuf.createValid(FileSystemServiceReadResponseSchema, {

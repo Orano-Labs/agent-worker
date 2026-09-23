@@ -1,5 +1,5 @@
-import type { ProjectResourceTier } from "@/generated/prisma/enums";
 import { default as AsyncLock } from "async-lock";
+import type { ProjectResourceTier } from "@/generated/prisma/enums";
 import { Container } from "@/helpers/container";
 import { Result } from "@/helpers/result";
 import { Logger } from "@/internal/logger";
@@ -364,6 +364,7 @@ export class Allocator {
 
 export namespace Allocator {
   export const ACK_TIMEOUT = 3_000 * 5;
+  export const LEASE_TIMEOUT = 10_000;
 
   export type AllocationResult = {
     id: string;
@@ -379,7 +380,7 @@ export namespace Allocator {
     constructor(supervisor: string, processId: string, expired: () => void) {
       this.#expired = expired;
       this.#processId = processId;
-      this.#timer = setTimeout(() => this.expire(), 3000).unref();
+      this.#timer = setTimeout(() => this.expire(), LEASE_TIMEOUT).unref();
       this.#tunnel = new Tunnel(supervisor, 300);
     }
 
@@ -388,11 +389,11 @@ export namespace Allocator {
     }
 
     touch() {
-      clearTimeout(this.#timer);
+      if (this.#timer) {
+        clearTimeout(this.#timer);
+      }
 
-      this.#timer = setTimeout(() => {
-        this.expire();
-      }, 10_000).unref();
+      this.#timer = setTimeout(() => this.expire(), LEASE_TIMEOUT).unref();
     }
 
     expire() {

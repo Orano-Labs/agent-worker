@@ -62,11 +62,16 @@ export class SupervisorPortalServiceImplementation {
 
     // 在 watch 中维护 Lease:连接建立时创建/复活,周期 keepalive 时 touch 续租。
     const lease = this.#allocator.getOrCreateLease(identity, processId);
+    const keepalive = setInterval(() => {
+      lease.touch();
+    }, 1000);
 
     const watcher = new SupervisorPortalServiceImplementation.Watcher(identity, processId, lease, () => {
       this.#watchers.delete(identity);
 
       this.#logger.debug("Supervisor watch stream closed", { supervisorId: identity });
+
+      clearInterval(keepalive);
     });
 
     this.#watchers.set(identity, watcher);
@@ -269,9 +274,6 @@ export namespace SupervisorPortalServiceImplementation {
       if (this.#closed || this.#queue.length > 0) {
         return;
       }
-
-      // keepalive 同时续租 Lease,替代原 Heartbeat 的租约保活。
-      this.#lease.touch();
 
       const response = Protobuf.createValid(SupervisorPortalServiceWatchResponseSchema, {
         event: {

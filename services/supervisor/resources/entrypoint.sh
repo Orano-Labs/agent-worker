@@ -68,7 +68,7 @@ set +e
 
 # --idle-timeout=30s reaps a terminal only after 30 seconds of inactivity.
 # /sbin/tini -gs -- \
-/usr/local/bin/ptyd --port 8000 --idle-timeout 10s --command /usr/local/bin/pi \
+/usr/local/bin/ptyd --port 8000 --idle-timeout 10s --command /usr/local/bin/pi --dir /workspace \
   --env PI_CODING_AGENT_DIR=/workspace/.pi/agent \
   --env PI_CODING_AGENT_SESSION_DIR=/workspace/.pi/agent/sessions \
   -- \

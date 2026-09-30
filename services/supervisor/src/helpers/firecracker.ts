@@ -276,38 +276,93 @@ export class Firecracker {
     return createSyncAction({ throwOnError: true, client: this.#client, body });
   }
 
-  async describeBalloonConfig() {}
-  async describeBalloonHinting() {}
-  async describeBalloonStats() {}
-  async describeInstance() {}
+  async describeBalloonConfig() {
+    return describeBalloonConfig({ throwOnError: true, client: this.#client });
+  }
+
+  async describeBalloonHinting() {
+    return describeBalloonHinting({ throwOnError: true, client: this.#client });
+  }
+
+  async describeBalloonStats() {
+    return describeBalloonStats({ throwOnError: true, client: this.#client });
+  }
+
+  async describeInstance() {
+    return describeInstance({ throwOnError: true, client: this.#client });
+  }
 
   async getExportVmConfig() {
     return getExportVmConfig({ throwOnError: true, client: this.#client });
   }
 
-  async getFirecrackerVersion() {}
-  async getMachineConfiguration() {}
-  async getMemoryHotplug() {}
+  async getFirecrackerVersion() {
+    return getFirecrackerVersion({ throwOnError: true, client: this.#client });
+  }
+
+  async getMachineConfiguration() {
+    return getMachineConfiguration({ throwOnError: true, client: this.#client });
+  }
+
+  async getMemoryHotplug() {
+    return getMemoryHotplug({ throwOnError: true, client: this.#client });
+  }
+
   async getMmds() {
     return getMmds({ throwOnError: true, client: this.#client });
   }
-  async loadSnapshot() {}
-  async patchBalloon() {}
-  async patchBalloonStatsInterval() {}
+
+  async loadSnapshot(body: Firecracker.SnapshotLoadParams) {
+    return loadSnapshot({ throwOnError: true, client: this.#client, body });
+  }
+
+  async patchBalloon(body: Firecracker.BalloonUpdate) {
+    return patchBalloon({ throwOnError: true, client: this.#client, body });
+  }
+
+  async patchBalloonStatsInterval(body: Firecracker.BalloonStatsUpdate) {
+    return patchBalloonStatsInterval({ throwOnError: true, client: this.#client, body });
+  }
+
   async patchGuestDriveById(id: string, body: Firecracker.PartialDrive) {
     return patchGuestDriveById({ throwOnError: true, client: this.#client, body, path: { drive_id: id } });
   }
 
-  async patchGuestNetworkInterfaceById() {}
+  async patchGuestNetworkInterfaceById(id: string, body: Firecracker.PartialNetworkInterface) {
+    return patchGuestNetworkInterfaceById({ throwOnError: true, client: this.#client, body, path: { iface_id: id } });
+  }
 
-  async patchGuestPmemById() {}
-  async patchMachineConfiguration() {}
-  async patchMemoryHotplug() {}
-  async patchMmds() {}
-  async patchVm() {}
-  async putBalloon() {}
-  async putCpuConfiguration() {}
-  async putEntropyDevice() {}
+  async patchGuestPmemById(id: string, body: Firecracker.PartialPmem) {
+    return patchGuestPmemById({ throwOnError: true, client: this.#client, body, path: { id } });
+  }
+
+  async patchMachineConfiguration(body: Firecracker.MachineConfiguration) {
+    return patchMachineConfiguration({ throwOnError: true, client: this.#client, body });
+  }
+
+  async patchMemoryHotplug(body: Firecracker.MemoryHotplugSizeUpdate) {
+    return patchMemoryHotplug({ throwOnError: true, client: this.#client, body });
+  }
+
+  async patchMmds(body: Firecracker.MmdsContentsObject) {
+    return patchMmds({ throwOnError: true, client: this.#client, body });
+  }
+
+  async patchVm(body: Firecracker.Vm) {
+    return patchVm({ throwOnError: true, client: this.#client, body });
+  }
+
+  async putBalloon(body: Firecracker.Balloon) {
+    return putBalloon({ throwOnError: true, client: this.#client, body });
+  }
+
+  async putCpuConfiguration(body: Firecracker.CpuConfig) {
+    return putCpuConfiguration({ throwOnError: true, client: this.#client, body });
+  }
+
+  async putEntropyDevice(body: Firecracker.EntropyDevice) {
+    return putEntropyDevice({ throwOnError: true, client: this.#client, body });
+  }
 
   async putGuestBootSource(body: Firecracker.BootSource) {
     return putGuestBootSource({ throwOnError: true, client: this.#client, body });
@@ -321,7 +376,9 @@ export class Firecracker {
     return putGuestNetworkInterfaceById({ throwOnError: true, client: this.#client, body, path: { iface_id: id } });
   }
 
-  async putGuestPmemById() {}
+  async putGuestPmemById(id: string, body: Firecracker.Pmem) {
+    return putGuestPmemById({ throwOnError: true, client: this.#client, body, path: { id } });
+  }
 
   async putGuestVsock(body: FirecrackerVsock) {
     return putGuestVsock({ throwOnError: true, client: this.#client, body });
@@ -335,8 +392,13 @@ export class Firecracker {
     return putMachineConfiguration({ throwOnError: true, client: this.#client, body });
   }
 
-  async putMemoryHotplug() {}
-  async putMetrics() {}
+  async putMemoryHotplug(body: Firecracker.MemoryHotplugConfig) {
+    return putMemoryHotplug({ throwOnError: true, client: this.#client, body });
+  }
+
+  async putMetrics(body: Firecracker.Metrics) {
+    return putMetrics({ throwOnError: true, client: this.#client, body });
+  }
 
   async putMmds(body: Firecracker.MmdsContentsObject) {
     return putMmds({ throwOnError: true, client: this.#client, body });
@@ -350,8 +412,13 @@ export class Firecracker {
     return putSerialDevice({ throwOnError: true, client: this.#client, body });
   }
 
-  async startBalloonHinting() {}
-  async stopBalloonHinting() {}
+  async startBalloonHinting(body?: Firecracker.BalloonStartCmd) {
+    return startBalloonHinting({ throwOnError: true, client: this.#client, body });
+  }
+
+  async stopBalloonHinting() {
+    return stopBalloonHinting({ throwOnError: true, client: this.#client });
+  }
 }
 
 export namespace Firecracker {

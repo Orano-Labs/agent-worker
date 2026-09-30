@@ -23,7 +23,7 @@
     "generate": "drizzle-kit generate",
     "dev": "tsx watch src/main.ts",
     "start": "node ./dist/index.cjs",
-    "generate:firecracker": "openapi-ts -f ./firecracker.openapi.config.ts"
+    "generate:firecracker-api": "openapi-ts -f ./firecracker.openapi.config.ts"
   },
   "files": [
     "dist/**/*",

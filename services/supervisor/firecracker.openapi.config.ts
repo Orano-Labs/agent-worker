@@ -20,7 +20,7 @@ export default defineConfig(async () => {
 
   return {
     input: `https://raw.githubusercontent.com/firecracker-microvm/firecracker/refs/tags/${tag}/src/firecracker/swagger/firecracker.yaml`,
-    output: "src/helpers/firecracker",
+    output: "src/gen/firecracker-openapi",
     plugins: ["@hey-api/client-fetch"],
   } as const;
 });

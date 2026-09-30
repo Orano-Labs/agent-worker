@@ -1,5 +1,6 @@
+import { connect } from "node:net";
 import { Agent } from "undici";
-import { createClient, createConfig } from "./firecracker/client";
+import { createClient, createConfig } from "@/gen/firecracker-openapi/client";
 import {
   createSnapshot,
   createSyncAction,
@@ -39,7 +40,7 @@ import {
   putSerialDevice,
   startBalloonHinting,
   stopBalloonHinting,
-} from "./firecracker/sdk.gen";
+} from "../gen/firecracker-openapi/sdk.gen";
 import type {
   ArmRegisterModifier as FirecrackerArmRegisterModifier,
   Balloon as FirecrackerBalloon,
@@ -247,13 +248,15 @@ import type {
   Vm as FirecrackerVm,
   Vsock as FirecrackerVsock,
   VsockOverride as FirecrackerVsockOverride,
-} from "./firecracker/types.gen";
+} from "../gen/firecracker-openapi/types.gen";
 
 export class Firecracker {
+  #socket: string;
   #agent: Agent;
   #client: ReturnType<typeof createClient>;
 
   constructor(socket: string) {
+    this.#socket = socket;
     this.#agent = new Agent({ socketPath: socket });
     this.#client = createClient(
       createConfig({
@@ -418,6 +421,50 @@ export class Firecracker {
 
   async stopBalloonHinting() {
     return stopBalloonHinting({ throwOnError: true, client: this.#client });
+  }
+
+  async waitForSocket(signal: AbortSignal) {
+    while (!signal.aborted) {
+      const ok = await new Promise((resolve) => {
+        const socket = connect(this.#socket);
+
+        const cleanup = (result: boolean) => {
+          signal.removeEventListener("abort", onAbort);
+          socket.destroy();
+          resolve(result);
+        };
+
+        const onAbort = () => cleanup(false);
+
+        socket.once("connect", () => cleanup(true));
+        socket.once("error", () => cleanup(false));
+
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+
+      if (ok) {
+        return;
+      }
+
+      await this.#sleep(100, signal);
+    }
+
+    throw signal.reason;
+  }
+
+  async #sleep(delay: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve) => {
+      const handle = () => {
+        resolve();
+
+        timer.close();
+        signal?.removeEventListener("abort", handle);
+      };
+
+      const timer = setTimeout(handle, delay);
+
+      signal?.addEventListener("abort", handle);
+    });
   }
 }
 

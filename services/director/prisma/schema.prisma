@@ -10,21 +10,23 @@ generator client {
 
 // User
 model User {
-  id         String    @id @default(cuid(2)) @db.VarChar(24)
+  id          String       @id @default(cuid(2)) @db.VarChar(24)
   // 用于认证的公钥
-  publicKey  Bytes     @unique @map("public_key") @db.VarBinary(128)
+  publicKey   Bytes        @unique @map("public_key") @db.VarBinary(128)
   // 元数据（由服务调用方设置）
-  metadata   Bytes?    @db.VarBinary(2048)
+  metadata    Bytes?       @db.VarBinary(2048)
   // 创建时间
-  createTime DateTime  @default(now()) @map("create_time") @db.Timestamp(3)
+  createTime  DateTime     @default(now()) @map("create_time") @db.Timestamp(3)
   // 更新时间
-  updateTime DateTime  @default(now()) @updatedAt @map("update_time") @db.Timestamp(3)
+  updateTime  DateTime     @default(now()) @updatedAt @map("update_time") @db.Timestamp(3)
   // 删除时间
-  deleteTime DateTime? @map("delete_time") @db.Timestamp(3)
+  deleteTime  DateTime?    @map("delete_time") @db.Timestamp(3)
   // 是否已被禁用
-  disabled   Boolean   @default(false)
+  disabled    Boolean      @default(false)
   // 该用户所拥有的项目
-  projects   Project[]
+  projects    Project[]
+  // 用户自己的 Supervisor 机器
+  supervisors Supervisor[]
 
   @@map("user")
 }
@@ -48,6 +50,12 @@ model Supervisor {
   remainingCapacity Int        @default(8) @map("remaining_capacity")
   // 承接的实例
   instances         Instance[]
+  // 所有者
+  owner             User?      @relation(fields: [ownerId], references: [id])
+  // 所有者 ID
+  ownerId           String?    @map("owner_id") @db.VarChar(24)
+  // 固定到该 Supervisor 的项目
+  projects          Project[]
 
   @@map("supervisor")
 }
@@ -117,6 +125,12 @@ model Project {
   templateId   String?             @map("template_id") @db.VarChar(24)
   // 实例（存在 ⟺ 该项目期望运行；与项目创建/删除动作同事务维护）
   instance     Instance?
+  // 固定承载该项目的 SupervisorID
+  supervisorId String?             @map("supervisor_id") @db.VarChar(24)
+  // 固定承载该项目的 Supervisor
+  supervisor   Supervisor?         @relation(fields: [supervisorId], references: [id])
+  // 在宿主机上的工作目录
+  workspace    String              @default("/") @db.VarChar(1024)
 
   @@map("project")
 }

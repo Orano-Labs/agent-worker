@@ -1,30 +1,8 @@
-FROM ubuntu:26.04 AS kernel-builder
+FROM ubuntu:26.04 AS firecracker-ci-artifacts-downloader
 
-ENV DEBIAN_FRONTEND=noninteractive
+COPY ./services/supervisor/scripts/download-firecracker-ci.sh /download-firecracker-ci.sh
 
-WORKDIR /app
-
-COPY ./services/supervisor/scripts .
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bash \
-        git \
-        curl \
-        ca-certificates \
-        build-essential \
-        libelf-dev \
-        diffutils \
-        bc \
-        flex \
-        bison \
-        linux-libc-dev \
-        libssl-dev \
-        perl \
-        python3 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN ./build-kernel.sh ./vmlinux
+RUN /download-firecracker-ci.sh /app/firecracker-artifacts
 
 FROM node:24.20.0-alpine AS app-builder
 
@@ -79,6 +57,7 @@ RUN apt-get update \
         procps \
         nfs-ganesha \
         nfs-ganesha-vfs \
+        e2tools \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /etc/containers \
@@ -91,15 +70,16 @@ WORKDIR /app
 
 VOLUME ["/aw-supervisor", "/aw-fs"]
 
+COPY --from=app-builder /app/pruned/supervisor .
+COPY --from=firecracker-ci-artifacts-downloader /app/firecracker-artifacts ./firecracker-artifacts
+
 ENV NODE_ENV=production
 
 ENV AW_SUPERVISOR_DIRECTOR_HOST_URL="http://127.0.0.1:3008"
 ENV AW_SUPERVISOR_FS_ROOT="/aw-fs"
 ENV AW_SUPERVISOR_ID="unknown"
 ENV AW_SUPERVISOR_PRIVATE_KEY="unknown"
-
-COPY --from=app-builder /app/pruned/supervisor .
-COPY --from=kernel-builder /app/vmlinux ./ci/vmlinux
+ENV AW_SUPERVISOR_FIRECRACKER_ARTIFACTS="/app/firecracker-artifacts"
 
 CMD ["node", "./dist/index.cjs"]
 

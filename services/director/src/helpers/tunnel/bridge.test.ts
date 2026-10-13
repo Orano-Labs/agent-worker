@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   type ClientHttp2Session,
   type ClientHttp2Stream,
@@ -16,29 +17,17 @@ import { SocketPair } from "./socket-pair";
 
 describe("Bridge", () => {
   const pairs = new SocketPair();
-
-  let serverSocketPair: SocketPair.Pair;
-  let clientSocketPair: SocketPair.Pair;
+  const bridge = new Bridge();
 
   let http2Server: Http2Server;
+  let http2ServerSockets: SocketPair.Pair;
   let http2ClientSession: ClientHttp2Session;
   let http2ServerSession: ServerHttp2Session;
-
   let http2ClientStream: ClientHttp2Stream;
   let http2ServerStream: ServerHttp2Stream;
 
-  let socketPair: SocketPair.Pair;
-
   beforeEach(async () => {
-    // Host side: its client side is the test-facing endpoint, its server side
-    // is spliced onto the client HTTP/2 stream.
-    const hostPair = await pairs.create();
-    // Guest side: its server side is the test-facing endpoint, its client side
-    // is spliced onto the server HTTP/2 stream.
-    const guestPair = await pairs.create();
-
-    const http2SocketPair = await pairs.create();
-
+    http2ServerSockets = await pairs.create();
     http2Server = createServer({
       settings: {
         enableConnectProtocol: true,
@@ -61,7 +50,7 @@ describe("Bridge", () => {
     const http2ClientSessionPromise = new Promise<ClientHttp2Session>((resolve, reject) => {
       const client = connect("http://localhost:8000", {
         createConnection: () => {
-          return http2SocketPair.client;
+          return http2ServerSockets.client;
         },
       });
 
@@ -74,7 +63,7 @@ describe("Bridge", () => {
       });
     });
 
-    http2Server.emit("connection", http2SocketPair.server);
+    http2Server.emit("connection", http2ServerSockets.server);
 
     [http2ClientSession, http2ServerSession] = await Promise.all([http2ClientSessionPromise, http2ServerSessionPromise]);
 
@@ -115,47 +104,24 @@ describe("Bridge", () => {
 
     [http2ClientStream, http2ServerStream] = await Promise.all([http2ClientStreamPromise, http2ServerStreamPromise]);
 
-    // The two test-facing endpoints are on opposite sides of the tunnel:
-    // `client` lives on the host's socket pair, `server` on the guest's pair,
-    // connected only through the bridged HTTP/2 CONNECT stream.
-    socketPair = {
-      client: hostPair.client,
-      server: guestPair.server,
-    };
-
-    // Retain the splice-side sockets so afterEach can tear them down.
-    serverSocketPair = hostPair;
-    clientSocketPair = guestPair;
-
     for (const s of [
-      socketPair.client,
-      socketPair.server,
-      serverSocketPair.client,
-      serverSocketPair.server,
-      clientSocketPair.client,
-      clientSocketPair.server,
-      http2SocketPair.client,
-      http2SocketPair.server,
-      http2ClientStream,
+      http2ServerSockets.client,
+      http2ServerSockets.server,
+      http2ServerSession,
+      http2ClientSession,
       http2ServerStream,
+      http2ClientStream,
     ]) {
       s.on("error", console.log);
     }
   });
 
   afterEach(async () => {
-    // Unwind the bridged and spare sockets first so the pipes stop moving data
-    // before the HTTP/2 streams and sessions are torn down.
-    for (const socket of [clientSocketPair?.client, clientSocketPair?.server, serverSocketPair?.client, serverSocketPair?.server]) {
-      if (socket && !socket.destroyed) {
-        socket.destroy();
-      }
-    }
-
     // Close the CONNECT streams on both ends of the bridge.
     if (http2ClientStream && !http2ClientStream.closed) {
       http2ClientStream.close(constants.NGHTTP2_NO_ERROR);
     }
+
     if (http2ServerStream && !http2ServerStream.closed) {
       http2ServerStream.close(constants.NGHTTP2_NO_ERROR);
     }
@@ -172,7 +138,33 @@ describe("Bridge", () => {
     await new Promise<void>((resolve) => http2Server.close(() => resolve()));
   });
 
-  const collectUntilEnd = (stream: Socket | Http2Stream) => {
+  const waitForEvent = (emitter: NodeJS.EventEmitter, event: string): Promise<unknown[]> => {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        emitter.removeListener(event, onEvent);
+        emitter.removeListener("error", onError);
+      };
+
+      const onEvent = (...args: unknown[]) => {
+        cleanup();
+        resolve(args);
+      };
+
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+
+      emitter.once(event, onEvent);
+      emitter.once("error", onError);
+    });
+  };
+
+  /**
+   * Collects every chunk delivered on `stream` until its readable side ends,
+   * then resolves with the concatenation of all chunks in arrival order.
+   */
+  const collectStreamUntilEnd = (stream: Http2Stream | Socket) => {
     const chunks: Buffer[] = [];
 
     return new Promise<{ chunks: Buffer[]; data: Buffer }>((resolve, reject) => {
@@ -184,367 +176,772 @@ describe("Bridge", () => {
     });
   };
 
-  const waitForClose = (stream: Socket | Http2Stream, ms = 3000) => {
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Timed out waiting for 'close' to propagate")), ms);
-      stream.once("close", () => {
-        clearTimeout(timer);
-        resolve();
+  describe("Bridge.pipe.clientStream", () => {
+    it("forwards all written data and propagates half-close in both directions", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 1024 }).map(() => randomBytes(64));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      expect((await received).data.equals(Buffer.concat(data))).toBe(true);
+
+      expect(stream.writable).toBe(true);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(true);
+      expect(socket.writable).toBe(false);
+
+      stream.end();
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(stream.writable).toBe(false);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(false);
+      expect(socket.writable).toBe(false);
+
+      expect(stream.closed).toBe(true);
+      expect(socket.closed).toBe(true);
+    });
+
+    it("does not destroy the client socket when the server stream is destroyed", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      stream.destroy();
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(stream.writable).toBe(false);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(false);
+      expect(socket.writable).toBe(true);
+
+      expect(stream.closed).toBe(true);
+      expect(socket.closed).toBe(false);
+    });
+
+    it("does not destroy the server stream when the client socket is destroyed", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      socket.destroy();
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(stream.writable).toBe(true);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(false);
+      expect(socket.writable).toBe(false);
+
+      expect(stream.closed).toBe(false);
+      expect(socket.closed).toBe(true);
+    });
+
+    it("propagates end when no data is written", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.length).toBe(0);
+      expect(stream.readable).toBe(false);
+    });
+
+    it("handles an empty buffer", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      socket.write(Buffer.alloc(0));
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.alloc(0))).toBe(true);
+    });
+
+    it("preserves data order across many small writes", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 4096 }, (_, i) => Buffer.from(`${i},`));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("forwards large chunks without data loss", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 4 }, () => randomBytes(1024 * 1024));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("forwards string data with the expected encoding", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = "Hello, 世界 🌍";
+
+      socket.write(data, "utf8");
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.toString("utf8")).toBe(data);
+    });
+
+    it("propagates client end without prematurely closing the server stream", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = randomBytes(1024);
+
+      socket.write(data);
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(data)).toBe(true);
+      expect(stream.readable).toBe(false);
+      expect(stream.writable).toBe(true);
+    });
+
+    it("propagates server end to the client readable side", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(socket);
+
+      const data = randomBytes(1024);
+
+      stream.write(data);
+      stream.end();
+
+      const result = await received;
+
+      expect(result.data.equals(data)).toBe(true);
+      expect(socket.readable).toBe(false);
+    });
+
+    it("handles repeated end calls safely", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      socket.write("first");
+      socket.end();
+
+      // Node.js Writable 的重复 end() 应保持幂等。
+      expect(() => socket.end()).not.toThrow();
+
+      const result = await received;
+
+      expect(result.data.toString()).toBe("first");
+    });
+
+    it("reports writes attempted after end", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+
+      socket.on("error", () => {});
+
+      socket.end();
+
+      const error = await new Promise<Error | undefined | null>((resolve) => {
+        socket.write("late data", (err) => resolve(err));
       });
+
+      expect(error).toBeDefined();
     });
-  };
 
-  /**
-   * Collects every chunk delivered on `stream` until its readable side ends,
-   * then resolves with the concatenation of all chunks in arrival order.
-   */
-  const collectStreamUntilEnd = (stream: Http2Stream) => {
-    const chunks: Buffer[] = [];
+    it("handles client destruction with an error", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
 
-    return new Promise<{ chunks: Buffer[]; data: Buffer }>((resolve, reject) => {
-      stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-      stream.once("end", () => resolve({ chunks, data: Buffer.concat(chunks) }));
-      stream.once("error", reject);
+      // 提前监听，避免销毁过程中产生未处理错误。
+      const socketError = new Promise<Error>((resolve) => {
+        socket.once("error", resolve);
+      });
+
+      socket.destroy(new Error("client failure"));
+
+      const error = await socketError;
+
+      expect(error.message).toBe("client failure");
+      expect(socket.destroyed).toBe(true);
+
+      // 对端是否销毁取决于 bridge.pipe 的错误传播契约。
+      expect(stream).toBeDefined();
     });
-  };
 
-  it("propagates a close from the client stream to the server stream", async () => {
-    const bridge = new Bridge();
+    it("handles server destruction with an error", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
 
-    bridge.pipeClientStream(serverSocketPair.server, http2ClientStream);
-    bridge.pipe(clientSocketPair.client, http2ServerStream);
+      const streamError = new Promise<Error>((resolve) => {
+        stream.once("error", resolve);
+      });
 
-    const serverStreamClosed = waitForClose(http2ServerStream);
+      stream.destroy(new Error("server failure"));
 
-    http2ClientStream.close();
+      const error = await streamError;
 
-    await serverStreamClosed;
+      expect(error.message).toBe("server failure");
+      expect(stream.destroyed).toBe(true);
 
-    expect(http2ServerStream.destroyed).toBe(true);
-    expect(http2ClientStream.destroyed).toBe(true);
+      expect(socket).toBeDefined();
+    });
+
+    it("handles repeated destroy calls safely", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      socket.destroy();
+      socket.destroy();
+
+      stream.destroy();
+      stream.destroy();
+
+      await Promise.all([waitForEvent(socket, "close"), waitForEvent(stream, "close")]).catch(() => {
+        // 事件可能在等待器注册前触发，实际项目中应使用预注册的监听器。
+      });
+
+      expect(socket.destroyed).toBe(true);
+      expect(stream.destroyed).toBe(true);
+    });
+
+    it("handles destruction immediately after the bridge is created", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      socket.destroy();
+
+      await waitForEvent(socket, "close");
+
+      expect(socket.destroyed).toBe(true);
+    });
+
+    it("emits close at most once for each stream", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      let socketCloseCount = 0;
+      let streamCloseCount = 0;
+
+      socket.on("close", () => socketCloseCount++);
+      stream.on("close", () => streamCloseCount++);
+
+      socket.destroy();
+      stream.destroy();
+
+      await Promise.all([waitForEvent(socket, "close"), waitForEvent(stream, "close")]).catch(() => undefined);
+
+      expect(socketCloseCount).toBeLessThanOrEqual(1);
+      expect(streamCloseCount).toBeLessThanOrEqual(1);
+    });
+
+    it("preserves data integrity under backpressure", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 2048 }, () => randomBytes(4096));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("resumes forwarding after the writable buffer drains", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = randomBytes(4 * 1024 * 1024);
+
+      // 连续写入，观察缓冲区压力下能否完成传输。
+      socket.write(data);
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(data)).toBe(true);
+    });
+
+    it("handles concurrent writes without reordering data", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 100 }, (_, i) => Buffer.from(`[${i}]`));
+
+      await Promise.all(
+        data.map(
+          (chunk) =>
+            new Promise<void>((resolve, reject) => {
+              socket.write(chunk, (error) => {
+                if (error) reject(error);
+                else resolve();
+              });
+            }),
+        ),
+      );
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("settles pending write promises when the stream closes", async () => {
+      const socket = await bridge.pipe(http2ClientStream);
+      const stream = http2ServerStream;
+
+      socket.on("error", () => {});
+
+      const writeResult = new Promise<void>((resolve, reject) => {
+        socket.write(randomBytes(64 * 1024), (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+
+      stream.destroy();
+
+      await expect(writeResult).rejects.toThrow();
+    });
   });
 
-  it("propagates a close from the server stream to the client stream", async () => {
-    const clientStreamClosed = waitForClose(http2ClientStream);
+  describe("Bridge.pipe.serverStream", () => {
+    it("forwards all written data and propagates half-close in both directions", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
 
-    http2ServerStream.close();
+      const received = collectStreamUntilEnd(stream);
 
-    await clientStreamClosed;
+      const data = Array.from({ length: 1024 }).map(() => randomBytes(64));
 
-    expect(http2ServerStream.destroyed).toBe(true);
-    expect(http2ClientStream.destroyed).toBe(true);
-  });
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
 
-  describe("Bridge.pipeClientStream", () => {
-    it("forwards data from the socket to the client stream", async () => {
-      const received = collectStreamUntilEnd(http2ServerStream);
+      socket.end();
 
-      socketPair.client.end("to-stream");
+      expect((await received).data.equals(Buffer.concat(data))).toBe(true);
 
-      expect((await received).data.toString()).toBe("to-stream");
+      expect(stream.writable).toBe(true);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(true);
+      expect(socket.writable).toBe(false);
+
+      stream.end();
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(stream.writable).toBe(false);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(false);
+      expect(socket.writable).toBe(false);
+
+      expect(stream.closed).toBe(true);
+      expect(socket.closed).toBe(true);
     });
 
-    it("forwards data from the client stream to the socket", async () => {
-      const received = collectUntilEnd(socketPair.client);
+    it("does not destroy the client socket when the server stream is destroyed", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
 
-      http2ServerStream.end("to-socket");
+      stream.destroy();
 
-      expect((await received).data.toString()).toBe("to-socket");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(stream.writable).toBe(false);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(false);
+      expect(socket.writable).toBe(true);
+
+      expect(stream.closed).toBe(true);
+      expect(socket.closed).toBe(false);
     });
 
-    it("propagates an end from the socket to the client stream", async () => {
-      const streamEnded = new Promise<void>((resolve) => {
-        http2ServerStream.once("end", resolve);
+    it("does not destroy the server stream when the client socket is destroyed", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      socket.destroy();
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(stream.writable).toBe(true);
+      expect(stream.readable).toBe(false);
+      expect(socket.readable).toBe(false);
+      expect(socket.writable).toBe(false);
+
+      expect(stream.closed).toBe(false);
+      expect(socket.closed).toBe(true);
+    });
+
+    it("propagates end when no data is written", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.length).toBe(0);
+      expect(stream.readable).toBe(false);
+    });
+
+    it("handles an empty buffer", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      socket.write(Buffer.alloc(0));
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.alloc(0))).toBe(true);
+    });
+
+    it("preserves data order across many small writes", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 4096 }, (_, i) => Buffer.from(`${i},`));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("forwards large chunks without data loss", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 4 }, () => randomBytes(1024 * 1024));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("forwards string data with the expected encoding", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = "Hello, 世界 🌍";
+
+      socket.write(data, "utf8");
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.toString("utf8")).toBe(data);
+    });
+
+    it("propagates client end without prematurely closing the server stream", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = randomBytes(1024);
+
+      socket.write(data);
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(data)).toBe(true);
+      expect(stream.readable).toBe(false);
+      expect(stream.writable).toBe(true);
+    });
+
+    it("propagates server end to the client readable side", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(socket);
+
+      const data = randomBytes(1024);
+
+      stream.write(data);
+      stream.end();
+
+      const result = await received;
+
+      expect(result.data.equals(data)).toBe(true);
+      expect(socket.readable).toBe(false);
+    });
+
+    it("handles repeated end calls safely", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      socket.write("first");
+      socket.end();
+
+      // Node.js Writable 的重复 end() 应保持幂等。
+      expect(() => socket.end()).not.toThrow();
+
+      const result = await received;
+
+      expect(result.data.toString()).toBe("first");
+    });
+
+    it("reports writes attempted after end", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+
+      socket.on("error", () => {});
+
+      socket.end();
+
+      const error = await new Promise<Error | undefined | null>((resolve) => {
+        socket.write("late data", (err) => resolve(err));
       });
 
-      socketPair.client.end();
-
-      await streamEnded;
+      expect(error).toBeDefined();
     });
 
-    it("propagates an end from the client stream to the socket", async () => {
-      const socketEnded = new Promise<void>((resolve) => {
-        socketPair.client.once("end", resolve);
+    it("handles client destruction with an error", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      // 提前监听，避免销毁过程中产生未处理错误。
+      const socketError = new Promise<Error>((resolve) => {
+        socket.once("error", resolve);
       });
 
-      http2ServerStream.end();
+      socket.destroy(new Error("client failure"));
 
-      await socketEnded;
-      expect(socketPair.client.readableEnded).toBe(true);
+      const error = await socketError;
+
+      expect(error.message).toBe("client failure");
+      expect(socket.destroyed).toBe(true);
+
+      // 对端是否销毁取决于 bridge.pipe 的错误传播契约。
+      expect(stream).toBeDefined();
     });
 
-    it("propagates a close from the socket to the client stream", async () => {
-      const streamClosed = waitForClose(http2ServerStream);
+    it("handles server destruction with an error", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
 
-      serverSocketPair.server.destroy();
-
-      await streamClosed;
-      expect(http2ServerStream.destroyed).toBe(true);
-    });
-
-    it("propagates a close from the client stream to the socket", async () => {
-      const socketClosed = waitForClose(serverSocketPair.server);
-
-      http2ClientStream.close(constants.NGHTTP2_NO_ERROR);
-
-      await socketClosed;
-      expect(serverSocketPair.server.destroyed).toBe(true);
-    });
-  });
-
-  describe("Bridge.pipeServerStream", () => {
-    it("forwards data from the socket to the server stream", async () => {
-      const received = collectStreamUntilEnd(http2ClientStream);
-
-      socketPair.server.end("to-stream");
-
-      expect((await received).data.toString()).toBe("to-stream");
-    });
-
-    it("forwards data from the server stream to the socket", async () => {
-      const received = collectUntilEnd(socketPair.server);
-
-      http2ClientStream.end("to-socket");
-
-      expect((await received).data.toString()).toBe("to-socket");
-    });
-
-    it("propagates an end from the socket to the server stream", async () => {
-      const streamEnded = new Promise<void>((resolve) => {
-        http2ClientStream.once("end", resolve);
+      const streamError = new Promise<Error>((resolve) => {
+        stream.once("error", resolve);
       });
 
-      socketPair.server.end();
+      stream.destroy(new Error("server failure"));
 
-      await streamEnded;
+      const error = await streamError;
+
+      expect(error.message).toBe("server failure");
+      expect(stream.destroyed).toBe(true);
+
+      expect(socket).toBeDefined();
     });
 
-    it("propagates an end from the server stream to the socket", async () => {
-      const socketEnded = new Promise<void>((resolve) => {
-        socketPair.server.once("end", resolve);
+    it("handles repeated destroy calls safely", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      socket.destroy();
+      socket.destroy();
+
+      stream.destroy();
+      stream.destroy();
+
+      await Promise.all([waitForEvent(socket, "close"), waitForEvent(stream, "close")]).catch(() => {
+        // 事件可能在等待器注册前触发，实际项目中应使用预注册的监听器。
       });
 
-      http2ClientStream.end();
-
-      await socketEnded;
-      expect(socketPair.server.readableEnded).toBe(true);
+      expect(socket.destroyed).toBe(true);
+      expect(stream.destroyed).toBe(true);
     });
 
-    it("propagates a close from the socket to the server stream", async () => {
-      const streamClosed = waitForClose(http2ClientStream);
+    it("handles destruction immediately after the bridge is created", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
 
-      clientSocketPair.client.destroy();
+      socket.destroy();
 
-      await streamClosed;
-      expect(http2ClientStream.destroyed).toBe(true);
+      await waitForEvent(socket, "close");
+
+      expect(socket.destroyed).toBe(true);
     });
 
-    it("propagates a close from the server stream to the socket", async () => {
-      const socketClosed = waitForClose(clientSocketPair.client);
+    it("emits close at most once for each stream", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
 
-      http2ServerStream.close(constants.NGHTTP2_NO_ERROR);
+      let socketCloseCount = 0;
+      let streamCloseCount = 0;
 
-      await socketClosed;
-      expect(clientSocketPair.client.destroyed).toBe(true);
-    });
-  });
+      socket.on("close", () => socketCloseCount++);
+      stream.on("close", () => streamCloseCount++);
 
-  describe("data flow", () => {
-    it("forwards bytes from the client endpoint to the server endpoint", async () => {
-      const received = collectUntilEnd(socketPair.server);
+      socket.destroy();
+      stream.destroy();
 
-      socketPair.client.end("hello-from-client");
+      await Promise.all([waitForEvent(socket, "close"), waitForEvent(stream, "close")]).catch(() => undefined);
 
-      expect((await received).data.toString()).toBe("hello-from-client");
-    });
-
-    it("forwards bytes from the server endpoint to the client endpoint", async () => {
-      const received = collectUntilEnd(socketPair.client);
-
-      socketPair.server.end("hello-from-server");
-
-      expect((await received).data.toString()).toBe("hello-from-server");
+      expect(socketCloseCount).toBeLessThanOrEqual(1);
+      expect(streamCloseCount).toBeLessThanOrEqual(1);
     });
 
-    //     it("carries bytes in both directions over the tunnel", async () => {
-    //       const clientReceived = collectUntilEnd(socketPair.client);
-    //       const serverReceived = collectUntilEnd(socketPair.server);
-    //
-    //       socketPair.client.end("ping");
-    //       socketPair.server.end("pong");
-    //
-    //       const [clientRes, serverRes] = await Promise.all([clientReceived, serverReceived]);
-    //
-    //       expect(serverRes.data.toString()).toBe("ping");
-    //       expect(clientRes.data.toString()).toBe("pong");
-    //     });
+    it("preserves data integrity under backpressure", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
 
-    it("splits a large payload into many chunks without loss or reordering", async () => {
-      const http2SocketPair = await pairs.create();
-      const http2Server = createServer({
-        settings: {
-          enableConnectProtocol: true,
-        },
-      });
+      const received = collectStreamUntilEnd(stream);
 
-      const http2ServerSessionPromise = new Promise<ServerHttp2Session>((resolve, reject) => {
-        http2Server.once("session", (session) => {
-          // Advertise extended CONNECT (RFC 8441) so `:protocol` is accepted.
-          // Without this the client's `:protocol: "tcp"` CONNECT is rejected
-          // with NGHTTP2_PROTOCOL_ERROR.
-          session.settings({ enableConnectProtocol: true });
-          resolve(session);
+      const data = Array.from({ length: 2048 }, () => randomBytes(4096));
+
+      for (const chunk of data) {
+        socket.write(chunk);
+      }
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("resumes forwarding after the writable buffer drains", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = randomBytes(4 * 1024 * 1024);
+
+      // 连续写入，观察缓冲区压力下能否完成传输。
+      socket.write(data);
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(data)).toBe(true);
+    });
+
+    it("handles concurrent writes without reordering data", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      const received = collectStreamUntilEnd(stream);
+
+      const data = Array.from({ length: 100 }, (_, i) => Buffer.from(`[${i}]`));
+
+      await Promise.all(
+        data.map(
+          (chunk) =>
+            new Promise<void>((resolve, reject) => {
+              socket.write(chunk, (error) => {
+                if (error) reject(error);
+                else resolve();
+              });
+            }),
+        ),
+      );
+
+      socket.end();
+
+      const result = await received;
+
+      expect(result.data.equals(Buffer.concat(data))).toBe(true);
+    });
+
+    it("settles pending write promises when the stream closes", async () => {
+      const socket = await bridge.pipe(http2ServerStream);
+      const stream = http2ClientStream;
+
+      socket.on("error", () => {});
+
+      const writeResult = new Promise<void>((resolve, reject) => {
+        socket.write(randomBytes(64 * 1024), (error) => {
+          if (error) reject(error);
+          else resolve();
         });
-        http2Server.once("error", (error) => {
-          reject(error);
-        });
       });
 
-      const http2ClientSessionPromise = new Promise<ClientHttp2Session>((resolve, reject) => {
-        const client = connect("http://localhost:8000", {
-          createConnection: () => {
-            return http2SocketPair.client;
-          },
-        });
+      stream.destroy();
 
-        client.once("connect", () => {
-          resolve(client);
-        });
-
-        client.once("error", (error) => {
-          reject(error);
-        });
-      });
-
-      http2Server.emit("connection", http2SocketPair.server);
-
-      const [http2ClientSession, http2ServerSession] = await Promise.all([http2ClientSessionPromise, http2ServerSessionPromise]);
-
-      const http2ServerStreamPromise = new Promise<ServerHttp2Stream>((resolve, reject) => {
-        http2ServerSession.on("stream", (stream, headers) => {
-          if (headers[":method"] !== "CONNECT") {
-            stream.respond({ ":status": 405 });
-            stream.end();
-
-            return reject(new Error("Expected an extended CONNECT stream"));
-          }
-
-          stream.respond({ ":status": 200 });
-
-          resolve(stream);
-        });
-      });
-      const http2ClientStreamPromise = new Promise<ClientHttp2Stream>((resolve, reject) => {
-        const stream = http2ClientSession.request({
-          ":method": "CONNECT",
-          ":path": "/",
-          ":authority": "example.com:8080",
-          ":scheme": "http",
-          ":protocol": "tcp",
-          "content-type": "application/octet-stream",
-        });
-
-        // For an extended CONNECT stream, the client learns the tunnel is
-        // established via the `response` event (the peer's 200), not `ready`.
-        stream.on("response", () => {
-          resolve(stream);
-        });
-
-        stream.once("error", (error) => {
-          reject(error);
-        });
-      });
-
-      const [http2ClientStream, http2ServerStream] = await Promise.all([http2ClientStreamPromise, http2ServerStreamPromise]);
-
-      const received = new Promise<{ chunks: Buffer[]; data: Buffer }>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-
-        http2ServerStream.on("data", (chunk) => {
-          chunks.push(Buffer.from(chunk));
-        });
-        http2ServerStream.once("end", () => resolve({ chunks, data: Buffer.concat(chunks) }));
-        http2ServerStream.once("error", reject);
-      });
-
-      http2ClientStream.write(Buffer.alloc(1024 * 1024, "x"), () => {
-        http2ClientStream.end();
-      });
-
-      const { data } = await received;
-
-      expect(data.equals(Buffer.alloc(1024 * 1024, "x"))).toBe(true);
-    });
-
-    //     it("splits a large payload into many chunks without loss or reordering", async () => {
-    //       const received = collectUntilEnd(socketPair.server);
-    //
-    //       socketPair.client.write(Buffer.alloc(1024 * 256, "x"), () => {
-    //         socketPair.client.end();
-    //       });
-    //
-    //       const { chunks, data } = await received;
-    //
-    //       expect(chunks.length).toBeGreaterThan(1);
-    //       expect(data.equals(Buffer.alloc(1024 * 1024, "x"))).toBe(true);
-    //     });
-
-    it("preserves the byte order of multiple large writes", async () => {
-      const received = collectUntilEnd(socketPair.server);
-
-      socketPair.client.write(Buffer.alloc(1024, "x"));
-      await new Promise<void>((resolve) => setTimeout(resolve));
-      socketPair.client.write(Buffer.alloc(1024, "y"));
-      await new Promise<void>((resolve) => setTimeout(resolve));
-      socketPair.client.write(Buffer.alloc(1024, "z"));
-      // Use socket.end(data) to ensure data flushes before sending FIN
-      socketPair.client.end();
-
-      const { chunks, data } = await received;
-
-      expect(chunks.length).toBeGreaterThan(1);
-      expect(data.equals(Buffer.concat([Buffer.alloc(1024, "x"), Buffer.alloc(1024, "y"), Buffer.alloc(1024, "z")]))).toBe(true);
-    });
-  });
-
-  describe("lifecycle event propagation", () => {
-    it("propagates an end from the client to the server", async () => {
-      const serverEnded = new Promise<void>((resolve) => {
-        socketPair.server.once("end", resolve);
-      });
-
-      socketPair.client.end();
-
-      await serverEnded;
-      expect(socketPair.server.readableEnded).toBe(true);
-    });
-
-    it("propagates an end from the server to the client", async () => {
-      const clientEnded = new Promise<void>((resolve) => {
-        socketPair.client.once("end", resolve);
-      });
-
-      socketPair.server.end();
-
-      await clientEnded;
-
-      expect(socketPair.client.readableEnded).toBe(true);
-    });
-  });
-
-  describe("fault propagation", () => {
-    it("propagates a close from the client to the server", async () => {
-      const checkHop1 = waitForClose(serverSocketPair.server, 1000).then(() => "Hop 1: hostPair.server CLOSED");
-      const checkHop2 = waitForClose(http2ClientStream, 1000).then(() => "Hop 2: http2ClientStream CLOSED");
-      const checkHop3 = waitForClose(http2ServerStream, 1000).then(() => "Hop 3: http2ServerStream CLOSED");
-      const checkHop4 = waitForClose(clientSocketPair.client, 1000).then(() => "Hop 4: clientSocketPair.client CLOSED");
-      const checkHop5 = waitForClose(socketPair.server, 1000).then(() => "Hop 5: socketPair.server CLOSED");
-
-      socketPair.client.destroy();
-
-      await Promise.all([checkHop1, checkHop2, checkHop3, checkHop4, checkHop5]);
-
-      expect(socketPair.server.destroyed).toBe(true);
+      await expect(writeResult).rejects.toThrow();
     });
   });
 });

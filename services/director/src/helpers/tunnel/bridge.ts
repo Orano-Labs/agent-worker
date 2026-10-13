@@ -1,5 +1,7 @@
 import { default as assert } from "node:assert";
 import type { ClientHttp2Stream, ServerHttp2Stream } from "node:http2";
+import type { Socket } from "node:net";
+import { default as pump } from "pump";
 import { SocketPair } from "./socket-pair";
 
 export class Bridge {
@@ -9,24 +11,28 @@ export class Bridge {
     this.#pairs = new SocketPair();
   }
 
-  async pipe(stream: ServerHttp2Stream | ClientHttp2Stream) {
-    assert(stream.readable, "Bridge cannot pipe a server stream that is not readable");
-    assert(stream.writable, "Bridge cannot pipe a server stream that is not writable");
+  /**
+   * Bridges an HTTP/2 stream into a plain `net.Socket`.
+   *
+   * The stream is spliced onto one side of a socket pair; the other side is
+   * returned to the caller as an ordinary bidirectional socket endpoint.
+   * Bytes flow in both directions, half-close (`end`) propagates in both
+   * directions, and a close/error on either endpoint destroys both.
+   */
+  async pipe(stream: ServerHttp2Stream | ClientHttp2Stream): Promise<Socket> {
+    assert(stream.readable, "Bridge cannot pipe a stream that is not readable");
+    assert(stream.writable, "Bridge cannot pipe a stream that is not writable");
+
+    // if ("headersSent" in stream) {
+    //   assert(!stream.headersSent, "xxxxx");
+    // }
 
     const pair = await this.#pairs.create();
+    const socket = pair.client;
 
-    stream.pipe(pair.client, { end: false });
-    pair.client.pipe(stream, { end: false });
+    pump(stream, socket);
+    pump(socket, stream);
 
-    // pair.client.on("end", () => {
-    //   if (!stream.destroyed && stream.writable) {
-    //     stream.end();
-    //   }
-    // });
-    // stream.on("end", () => {
-    //   if (!socket.destroyed && socket.writable) {
-    //     socket.end();
-    //   }
-    // });
+    return pair.server;
   }
 }

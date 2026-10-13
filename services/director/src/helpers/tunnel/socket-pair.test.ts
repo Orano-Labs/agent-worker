@@ -138,4 +138,107 @@ describe("SocketPair", () => {
       await pairs.close();
     }
   });
+
+  it("propagates destruction from client to server", async () => {
+    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+
+    try {
+      const { client, server } = await pairs.create();
+
+      const serverClosed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timed out waiting for server to close")), 1000);
+        server.once("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+
+      client.destroy();
+      await serverClosed;
+
+      expect(server.destroyed).toBe(true);
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("propagates destruction from server to client", async () => {
+    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+
+    try {
+      const { client, server } = await pairs.create();
+
+      const clientClosed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timed out waiting for client to close")), 1000);
+        client.once("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+
+      server.destroy();
+      await clientClosed;
+
+      expect(client.destroyed).toBe(true);
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("propagates an error with destruction across the socket pair", async () => {
+    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+
+    try {
+      const { client, server } = await pairs.create();
+
+      client.on("error", () => {}); // Suppress client unhandled error
+      server.on("error", () => {}); // Suppress server unhandled error
+
+      const serverClosed = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timed out waiting for server to close on error")), 1000);
+        server.once("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+
+      client.destroy(new Error("client-forced-failure"));
+      await serverClosed;
+
+      expect(server.destroyed).toBe(true);
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("does not cross-contaminate destruction between concurrent independent pairs", async () => {
+    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+
+    try {
+      const pairA = await pairs.create();
+      const pairB = await pairs.create();
+
+      // Destroy pair A completely
+      pairA.client.destroy();
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Pair B should remain completely unaffected and active
+      expect(pairB.client.destroyed).toBe(false);
+      expect(pairB.server.destroyed).toBe(false);
+
+      pairB.client.destroy();
+      pairB.server.destroy();
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("x", async () => {
+    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pair = await pairs.create();
+
+    pair.server.end("ping");
+    pair.client.end("pong");
+  });
 });

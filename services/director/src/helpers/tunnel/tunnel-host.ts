@@ -83,7 +83,7 @@ export class TunnelHost {
     return new Promise<Socket>((resolve, reject) => {
       const job: TunnelHost.ConnectQueueJob = {
         authority: options.authority ?? "",
-        protocol: options.protocol ?? "tcp",
+        protocol: options.protocol ?? "http",
         timer: setTimeout(() => {
           const index = this.#queue.indexOf(job);
 

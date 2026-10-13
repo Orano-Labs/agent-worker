@@ -17,7 +17,7 @@ export class SocketPair {
   constructor(options: SocketPair.Options = {}) {
     this.#socketPath = options.socketPath ?? join(tmpdir(), `socket-pair-${crypto.randomUUID()}.sock`);
 
-    this.#server = createServer({ allowHalfOpen: true }, (socket) => {
+    this.#server = createServer({}, (socket) => {
       this.#accept(socket);
     });
 
@@ -44,7 +44,7 @@ export class SocketPair {
 
     // Write the identifier first so the server can associate this connection
     // with its waiter regardless of accept ordering.
-    const client = connect(this.#socketPath);
+    const client = connect({ path: this.#socketPath });
 
     // If the client side fails or closes before the server side has been
     // accepted, reject the pending waiter so `create()` throws instead of
@@ -56,6 +56,9 @@ export class SocketPair {
         this.#waiters.delete(id);
         waiter.reject(error);
       }
+
+      client.off("error", onClientError);
+      client.off("close", onClientClose);
     };
     const onClientClose = () => {
       const waiter = this.#waiters.get(id);
@@ -64,6 +67,9 @@ export class SocketPair {
         this.#waiters.delete(id);
         waiter.reject(new Error("SocketPair client closed before the server side was accepted"));
       }
+
+      client.off("error", onClientError);
+      client.off("close", onClientClose);
     };
 
     client.once("error", onClientError);
@@ -73,10 +79,27 @@ export class SocketPair {
 
     const peer = await server;
 
-    // The peer has been accepted and matched; the client-side guards are no
-    // longer needed.
-    client.off("error", onClientError);
-    client.off("close", onClientClose);
+    if (!client.writable || !peer.writable || !client.readable || !peer.readable) {
+      if (!client.destroyed) client.destroy();
+      if (!peer.destroyed) peer.destroy();
+
+      throw new Error("SocketPair connection is not fully open, readable, and writable on both ends");
+    }
+
+    const destroyBoth = (result: Error | boolean) => {
+      if (!client.destroyed) client.destroy(result instanceof Error ? result : undefined);
+      if (!peer.destroyed) peer.destroy(result instanceof Error ? result : undefined);
+
+      client.off("close", destroyBoth);
+      client.off("error", destroyBoth);
+      peer.off("close", destroyBoth);
+      peer.off("error", destroyBoth);
+    };
+
+    client.once("close", destroyBoth);
+    client.once("error", destroyBoth);
+    peer.once("close", destroyBoth);
+    peer.once("error", destroyBoth);
 
     return { client, server: peer } satisfies SocketPair.Pair as SocketPair.Pair;
   }

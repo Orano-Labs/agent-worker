@@ -233,12 +233,4 @@ describe("SocketPair", () => {
       await pairs.close();
     }
   });
-
-  it("x", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
-    const pair = await pairs.create();
-
-    pair.server.end("ping");
-    pair.client.end("pong");
-  });
 });

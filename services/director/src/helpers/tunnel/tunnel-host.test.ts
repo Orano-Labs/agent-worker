@@ -1,4 +1,12 @@
-import { type ClientHttp2Session, connect, constants, createServer, type Http2SessionEventMap, type Http2Stream } from "node:http2";
+import {
+  type ClientHttp2Session,
+  connect,
+  constants,
+  createServer,
+  type Http2SessionEventMap,
+  type Http2Stream,
+  type ServerHttp2Stream,
+} from "node:http2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SocketPair } from "./socket-pair";
 import { TunnelHost } from "./tunnel-host";
@@ -308,142 +316,142 @@ describe("TunnelHost.Session", () => {
   });
 });
 
-// describe("TunnelHost", () => {
-//   let http2Server: ReturnType<typeof createServer>;
-//   let pairs: SocketPair;
-//   let host: TunnelHost;
-//   let serverStreams: Set<ServerHttp2Stream>;
-//   let serverStreamHeaders: Map<ServerHttp2Stream, Record<string, string | string[] | undefined>>;
-//
-//   beforeEach(async () => {
-//     serverStreams = new Set();
-//     serverStreamHeaders = new Map();
-//
-//     // The guest side: a cleartext HTTP/2 server that accepts the extended
-//     // CONNECT streams the tunnel carries per TCP connection.
-//     http2Server = createServer();
-//
-//     http2Server.on("stream", (stream, headers) => {
-//       const http2Stream = stream as ServerHttp2Stream;
-//       serverStreams.add(http2Stream);
-//       serverStreamHeaders.set(http2Stream, headers);
-//
-//       // Accept the extended CONNECT stream so the host's `#prepareStream`
-//       // finishes bridging the socket pair.
-//       http2Stream.respond({ ":status": 200 });
-//     });
-//
-//     // Advertise extended CONNECT (RFC 8441) so `:protocol` is accepted.
-//     http2Server.on("session", (session) => {
-//       session.settings({ enableConnectProtocol: true });
-//     });
-//
-//     http2Server.on("sessionError", () => {});
-//
-//     // Wire the guest's HTTP/2 server and the host together through a single
-//     // socket pair: the pair's server side becomes the HTTP/2 server's h2c
-//     // transport, and the host upgrades the pair's client side into a session.
-//     pairs = new SocketPair({ socketPath: join(tmpdir(), `tunnel-host-test-${process.pid}.sock`) });
-//     const pair = await pairs.create();
-//
-//     http2Server.emit("connection", pair.server);
-//
-//     host = new TunnelHost({ socketPath: join(tmpdir(), `tunnel-host-pairs-${process.pid}.sock`) });
-//
-//     await host.upgrade(pair.client);
-//   });
-//
-//   afterEach(async () => {
-//     // Tear down any open streams first so the host's session close below has
-//     // no active streams to wait on.
-//     for (const stream of serverStreams) {
-//       if (!stream.destroyed) {
-//         stream.destroy();
-//       }
-//     }
-//
-//     await host.close();
-//     await pairs.close();
-//     await new Promise<void>((resolve) => http2Server.close(() => resolve()));
-//   });
-//
-//   it("upgrades the socket-pair side into a session that carries extended CONNECT streams", async () => {
-//     const client = await host.connect({ authority: "example.com:8080" });
-//
-//     // The guest must have received exactly one extended CONNECT stream.
-//     expect(serverStreams.size).toBe(1);
-//
-//     const stream = [...serverStreams][0];
-//     const headers = serverStreamHeaders.get(stream);
-//     expect(headers?.[":method"]).toBe("CONNECT");
-//     expect(headers?.[":protocol"]).toBe("tcp");
-//     expect(headers?.[":authority"]).toBe("example.com:8080");
-//
-//     // `#prepareStream` only resolves after the guest's response headers arrive,
-//     // so by the time `connect()` returns the stream has already sent them.
-//     expect(stream.headersSent).toBeTruthy();
-//
-//     client.destroy();
-//   });
-//
-//   it("bridges bytes bidirectionally between the local socket and the Http2Stream", async () => {
-//     const client = await host.connect({ authority: "example.com:8080" });
-//     const stream = [...serverStreams][0];
-//
-//     const fromClient: Buffer[] = [];
-//     const clientData = new Promise<void>((resolve) => {
-//       stream.on("data", (chunk) => {
-//         fromClient.push(Buffer.from(chunk));
-//         resolve();
-//       });
-//     });
-//
-//     const fromGuest: Buffer[] = [];
-//     const guestData = new Promise<void>((resolve) => {
-//       client.on("data", (chunk) => {
-//         fromGuest.push(Buffer.from(chunk));
-//         resolve();
-//       });
-//     });
-//
-//     client.write("ping-from-host");
-//     await clientData;
-//     expect(Buffer.concat(fromClient).toString()).toContain("ping-from-host");
-//
-//     stream.write("pong-from-guest");
-//     await guestData;
-//     expect(Buffer.concat(fromGuest).toString()).toContain("pong-from-guest");
-//
-//     client.destroy();
-//   });
-//
-//   it("closes the local socket when the Http2Stream is closed by the guest", async () => {
-//     const client = await host.connect({ authority: "example.com:8080" });
-//     const stream = [...serverStreams][0];
-//
-//     const closed = new Promise<void>((resolve) => client.once("close", resolve));
-//
-//     // The guest tears down the stream; the paired socket must follow suit.
-//     stream.close(constants.NGHTTP2_NO_ERROR);
-//
-//     await closed;
-//
-//     expect(client.destroyed).toBe(true);
-//   });
-//
-//   it("ends the Http2Stream when the local socket is ended", async () => {
-//     const client = await host.connect({ authority: "example.com:8080" });
-//     const stream = [...serverStreams][0];
-//
-//     const streamEnded = new Promise<void>((resolve) => stream.once("end", resolve));
-//
-//     // Ending the local socket signals an end of write on the bridged pair,
-//     // which propagates an END_STREAM to the guest.
-//     client.end();
-//
-//     await streamEnded;
-//
-//     expect(stream.readableEnded).toBe(true);
-//     expect(stream.writableEnded).toBe(false);
-//   });
-// });
+describe("TunnelHost", () => {
+  let http2Server: ReturnType<typeof createServer>;
+  let pairs: SocketPair;
+  let host: TunnelHost;
+  let serverStreams: Set<ServerHttp2Stream>;
+  let serverStreamHeaders: Map<ServerHttp2Stream, Record<string, string | string[] | undefined>>;
+
+  beforeEach(async () => {
+    serverStreams = new Set();
+    serverStreamHeaders = new Map();
+
+    // The guest side: a cleartext HTTP/2 server that accepts the extended
+    // CONNECT streams the tunnel carries per TCP connection.
+    http2Server = createServer();
+
+    http2Server.on("stream", (stream, headers) => {
+      const http2Stream = stream as ServerHttp2Stream;
+      serverStreams.add(http2Stream);
+      serverStreamHeaders.set(http2Stream, headers);
+
+      // Accept the extended CONNECT stream so the host's `#prepareStream`
+      // finishes bridging the socket pair.
+      http2Stream.respond({ ":status": 200 });
+    });
+
+    // Advertise extended CONNECT (RFC 8441) so `:protocol` is accepted.
+    http2Server.on("session", (session) => {
+      session.settings({ enableConnectProtocol: true });
+    });
+
+    http2Server.on("sessionError", () => {});
+
+    // Wire the guest's HTTP/2 server and the host together through a single
+    // socket pair: the pair's server side becomes the HTTP/2 server's h2c
+    // transport, and the host upgrades the pair's client side into a session.
+    pairs = new SocketPair({});
+    const pair = await pairs.create();
+
+    http2Server.emit("connection", pair.server);
+
+    host = new TunnelHost({});
+
+    await host.upgrade(pair.client);
+  });
+
+  afterEach(async () => {
+    // Tear down any open streams first so the host's session close below has
+    // no active streams to wait on.
+    for (const stream of serverStreams) {
+      if (!stream.destroyed) {
+        stream.destroy();
+      }
+    }
+
+    await host.close();
+    await pairs.close();
+    await new Promise<void>((resolve) => http2Server.close(() => resolve()));
+  });
+
+  it("upgrades the socket-pair side into a session that carries extended CONNECT streams", async () => {
+    const client = await host.connect({ authority: "example.com:8080" });
+
+    // The guest must have received exactly one extended CONNECT stream.
+    expect(serverStreams.size).toBe(1);
+
+    const stream = [...serverStreams][0];
+    const headers = serverStreamHeaders.get(stream);
+    expect(headers?.[":method"]).toBe("CONNECT");
+    expect(headers?.[":protocol"]).toBe("tcp");
+    expect(headers?.[":authority"]).toBe("example.com:8080");
+
+    // `#prepareStream` only resolves after the guest's response headers arrive,
+    // so by the time `connect()` returns the stream has already sent them.
+    expect(stream.headersSent).toBeTruthy();
+
+    client.destroy();
+  });
+
+  it("bridges bytes bidirectionally between the local socket and the Http2Stream", async () => {
+    const client = await host.connect({ authority: "example.com:8080" });
+    const stream = [...serverStreams][0];
+
+    const fromClient: Buffer[] = [];
+    const clientData = new Promise<void>((resolve) => {
+      stream.on("data", (chunk) => {
+        fromClient.push(Buffer.from(chunk));
+        resolve();
+      });
+    });
+
+    const fromGuest: Buffer[] = [];
+    const guestData = new Promise<void>((resolve) => {
+      client.on("data", (chunk) => {
+        fromGuest.push(Buffer.from(chunk));
+        resolve();
+      });
+    });
+
+    client.write("ping-from-host");
+    await clientData;
+    expect(Buffer.concat(fromClient).toString()).toContain("ping-from-host");
+
+    stream.write("pong-from-guest");
+    await guestData;
+    expect(Buffer.concat(fromGuest).toString()).toContain("pong-from-guest");
+
+    client.destroy();
+  });
+
+  it("closes the local socket when the Http2Stream is closed by the guest", async () => {
+    const client = await host.connect({ authority: "example.com:8080" });
+    const stream = [...serverStreams][0];
+
+    const closed = new Promise<void>((resolve) => client.once("close", resolve));
+
+    // The guest tears down the stream; the paired socket must follow suit.
+    stream.close(constants.NGHTTP2_NO_ERROR);
+
+    await closed;
+
+    expect(client.destroyed).toBe(true);
+  });
+
+  it("ends the Http2Stream when the local socket is ended", async () => {
+    const client = await host.connect({ authority: "example.com:8080" });
+    const stream = [...serverStreams][0];
+
+    const streamEnded = new Promise<void>((resolve) => stream.once("end", resolve));
+
+    // Ending the local socket signals an end of write on the bridged pair,
+    // which propagates an END_STREAM to the guest.
+    client.end();
+
+    await streamEnded;
+
+    expect(stream.readableEnded).toBe(true);
+    expect(stream.writableEnded).toBe(false);
+  });
+});

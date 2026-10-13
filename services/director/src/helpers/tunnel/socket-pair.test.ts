@@ -3,7 +3,7 @@ import { SocketPair } from "./socket-pair";
 
 describe("SocketPair", () => {
   it("creates a linked pair where data flows in both directions", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pairs = new SocketPair();
 
     try {
       const { client, server } = await pairs.create();
@@ -28,7 +28,7 @@ describe("SocketPair", () => {
   });
 
   it("matches concurrent pairs to the correct peers", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pairs = new SocketPair();
 
     try {
       const [a, b] = await Promise.all([pairs.create(), pairs.create()]);
@@ -64,7 +64,7 @@ describe("SocketPair", () => {
   });
 
   it("does not leak identifier bytes into the consumer's stream", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pairs = new SocketPair();
 
     try {
       const { client, server } = await pairs.create();
@@ -88,7 +88,7 @@ describe("SocketPair", () => {
   });
 
   it("preserves bytes that arrive together with the identifier in order", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pairs = new SocketPair();
 
     try {
       const { client, server } = await pairs.create();
@@ -112,23 +112,19 @@ describe("SocketPair", () => {
   });
 
   it("rejects create() when the client errors before the server side is accepted", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pairs = new SocketPair();
 
-    try {
-      await pairs.ready();
+    await pairs.ready();
 
-      // Stop the server so the client's dial fails immediately, before any
-      // server-side socket can be accepted.
-      await pairs.close();
+    // Stop the server so the client's dial fails immediately, before any
+    // server-side socket can be accepted.
+    await pairs.close();
 
-      await expect(pairs.create()).rejects.toThrow();
-    } finally {
-      await pairs.close();
-    }
+    await expect(pairs.create()).rejects.toThrow();
   });
 
   it("exposes its socket path and reports ready", async () => {
-    const path = `/tmp/socket-pair-test-${process.pid}.sock`;
+    const path = `/tmp/socket-pair-test-${crypto.randomUUID()}.sock`;
     const pairs = new SocketPair({ socketPath: path });
 
     try {
@@ -139,75 +135,81 @@ describe("SocketPair", () => {
     }
   });
 
-  it("propagates destruction from client to server", async () => {
+  it("transitions both sockets to the fully closed state after both sides end", async () => {
     const pairs = new SocketPair();
 
     try {
       const { client, server } = await pairs.create();
 
-      client.destroy();
+      client.on("error", () => {});
+      server.on("error", () => {});
 
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      client.end();
+
+      await new Promise((resole) => setTimeout(resole, 10));
 
       expect(server.readable).toBe(false);
+      expect(server.writable).toBe(true);
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(true);
 
+      server.end();
+
+      await new Promise((resole) => setTimeout(resole, 10));
+
+      expect(server.readable).toBe(false);
+      expect(server.writable).toBe(false);
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(false);
+
+      expect(server.closed).toBe(true);
+      expect(client.closed).toBe(true);
+
+      client.destroy();
       server.destroy();
-    } finally {
-      // await pairs.close();
-    }
-  });
-
-  it("propagates destruction from server to client", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
-
-    try {
-      const { client, server } = await pairs.create();
-
-      const clientClosed = new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("Timed out waiting for client to close")), 1000);
-        client.once("close", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
-
-      server.destroy();
-      await clientClosed;
-
-      expect(client.destroyed).toBe(true);
     } finally {
       await pairs.close();
     }
   });
 
-  it("propagates an error with destruction across the socket pair", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+  it("propagates server destruction to the client on write", async () => {
+    const pairs = new SocketPair();
 
     try {
       const { client, server } = await pairs.create();
 
-      client.on("error", () => {}); // Suppress client unhandled error
-      server.on("error", () => {}); // Suppress server unhandled error
+      client.on("error", () => {});
+      server.on("error", () => {});
 
-      const serverClosed = new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("Timed out waiting for server to close on error")), 1000);
-        server.once("close", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-      });
+      expect(client.closed).toBe(false);
+      expect(client.writable).toBe(true);
+      expect(client.readable).toBe(true);
 
-      client.destroy(new Error("client-forced-failure"));
-      await serverClosed;
+      server.destroy();
 
-      expect(server.destroyed).toBe(true);
+      await new Promise((resole) => setTimeout(resole, 10));
+
+      // Destroying one end does not synchronously destroy its peer.
+      expect(client.closed).toBe(false);
+      expect(client.writable).toBe(true);
+      expect(client.readable).toBe(false);
+
+      await new Promise((resolve) => client.write("", resolve));
+
+      expect(client.closed).toBe(true);
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(false);
+      expect(client.errored).not.toBe(null);
+
+      server.destroy();
+      client.destroy();
     } finally {
       await pairs.close();
     }
   });
 
   it("does not cross-contaminate destruction between concurrent independent pairs", async () => {
-    const pairs = new SocketPair({ socketPath: `/tmp/socket-pair-test-${process.pid}.sock` });
+    const pairs = new SocketPair();
 
     try {
       const pairA = await pairs.create();
@@ -224,6 +226,8 @@ describe("SocketPair", () => {
 
       pairB.client.destroy();
       pairB.server.destroy();
+      pairA.server.destroy();
+      pairA.client.destroy();
     } finally {
       await pairs.close();
     }

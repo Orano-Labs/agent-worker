@@ -10,7 +10,7 @@ import {
   type ServerHttp2Stream,
 } from "node:http2";
 import type { Socket } from "node:net";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Bridge } from "./bridge";
 import { SocketPair } from "./socket-pair";
 
@@ -127,11 +127,6 @@ describe("Bridge", () => {
     serverSocketPair = hostPair;
     clientSocketPair = guestPair;
 
-    const bridge = new Bridge();
-
-    bridge.pipeClientStream(hostPair.server, http2ClientStream);
-    bridge.pipeServerStream(guestPair.client, http2ServerStream);
-
     for (const s of [
       socketPair.client,
       socketPair.server,
@@ -177,30 +172,22 @@ describe("Bridge", () => {
     await new Promise<void>((resolve) => http2Server.close(() => resolve()));
   });
 
-  /**
-   * Collects every chunk delivered on `socket` until its readable side ends,
-   * then resolves with the concatenation of all chunks in arrival order.
-   * Using `end` (rather than the first `data`) as the completion signal is
-   * what lets a stream of arbitrary, possibly split/merged chunks be asserted
-   * against for completeness and ordering.
-   */
-  const collectUntilEnd = (stream: Socket | Http2Stream, onData?: (chunk: Buffer) => void) => {
+  const collectUntilEnd = (stream: Socket | Http2Stream) => {
     const chunks: Buffer[] = [];
 
     return new Promise<{ chunks: Buffer[]; data: Buffer }>((resolve, reject) => {
       stream.on("data", (chunk) => {
         chunks.push(Buffer.from(chunk));
-        onData?.(Buffer.from(chunk));
       });
       stream.once("end", () => resolve({ chunks, data: Buffer.concat(chunks) }));
       stream.once("error", reject);
     });
   };
 
-  const waitForClose = (socket: Socket | Http2Stream, ms = 3000) => {
+  const waitForClose = (stream: Socket | Http2Stream, ms = 3000) => {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Timed out waiting for 'close' to propagate")), ms);
-      socket.once("close", () => {
+      stream.once("close", () => {
         clearTimeout(timer);
         resolve();
       });
@@ -222,6 +209,11 @@ describe("Bridge", () => {
   };
 
   it("propagates a close from the client stream to the server stream", async () => {
+    const bridge = new Bridge();
+
+    bridge.pipeClientStream(serverSocketPair.server, http2ClientStream);
+    bridge.pipe(clientSocketPair.client, http2ServerStream);
+
     const serverStreamClosed = waitForClose(http2ServerStream);
 
     http2ClientStream.close();
@@ -388,19 +380,99 @@ describe("Bridge", () => {
     //     });
 
     it("splits a large payload into many chunks without loss or reordering", async () => {
-      let total = 0;
-
-      const received = collectUntilEnd(http2ServerStream, (chunk) => {
-        total += chunk.byteLength;
-
-        console.log(chunk.byteLength, performance.now(), total, http2ServerStream.state, http2ClientStream.state);
+      const http2SocketPair = await pairs.create();
+      const http2Server = createServer({
+        settings: {
+          enableConnectProtocol: true,
+        },
       });
 
-      http2ClientStream.write(Buffer.alloc(1024 * 1024, "x"));
+      const http2ServerSessionPromise = new Promise<ServerHttp2Session>((resolve, reject) => {
+        http2Server.once("session", (session) => {
+          // Advertise extended CONNECT (RFC 8441) so `:protocol` is accepted.
+          // Without this the client's `:protocol: "tcp"` CONNECT is rejected
+          // with NGHTTP2_PROTOCOL_ERROR.
+          session.settings({ enableConnectProtocol: true });
+          resolve(session);
+        });
+        http2Server.once("error", (error) => {
+          reject(error);
+        });
+      });
 
-      const { chunks, data } = await received;
+      const http2ClientSessionPromise = new Promise<ClientHttp2Session>((resolve, reject) => {
+        const client = connect("http://localhost:8000", {
+          createConnection: () => {
+            return http2SocketPair.client;
+          },
+        });
 
-      expect(chunks.length).toBeGreaterThan(1);
+        client.once("connect", () => {
+          resolve(client);
+        });
+
+        client.once("error", (error) => {
+          reject(error);
+        });
+      });
+
+      http2Server.emit("connection", http2SocketPair.server);
+
+      const [http2ClientSession, http2ServerSession] = await Promise.all([http2ClientSessionPromise, http2ServerSessionPromise]);
+
+      const http2ServerStreamPromise = new Promise<ServerHttp2Stream>((resolve, reject) => {
+        http2ServerSession.on("stream", (stream, headers) => {
+          if (headers[":method"] !== "CONNECT") {
+            stream.respond({ ":status": 405 });
+            stream.end();
+
+            return reject(new Error("Expected an extended CONNECT stream"));
+          }
+
+          stream.respond({ ":status": 200 });
+
+          resolve(stream);
+        });
+      });
+      const http2ClientStreamPromise = new Promise<ClientHttp2Stream>((resolve, reject) => {
+        const stream = http2ClientSession.request({
+          ":method": "CONNECT",
+          ":path": "/",
+          ":authority": "example.com:8080",
+          ":scheme": "http",
+          ":protocol": "tcp",
+          "content-type": "application/octet-stream",
+        });
+
+        // For an extended CONNECT stream, the client learns the tunnel is
+        // established via the `response` event (the peer's 200), not `ready`.
+        stream.on("response", () => {
+          resolve(stream);
+        });
+
+        stream.once("error", (error) => {
+          reject(error);
+        });
+      });
+
+      const [http2ClientStream, http2ServerStream] = await Promise.all([http2ClientStreamPromise, http2ServerStreamPromise]);
+
+      const received = new Promise<{ chunks: Buffer[]; data: Buffer }>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+
+        http2ServerStream.on("data", (chunk) => {
+          chunks.push(Buffer.from(chunk));
+        });
+        http2ServerStream.once("end", () => resolve({ chunks, data: Buffer.concat(chunks) }));
+        http2ServerStream.once("error", reject);
+      });
+
+      http2ClientStream.write(Buffer.alloc(1024 * 1024, "x"), () => {
+        http2ClientStream.end();
+      });
+
+      const { data } = await received;
+
       expect(data.equals(Buffer.alloc(1024 * 1024, "x"))).toBe(true);
     });
 

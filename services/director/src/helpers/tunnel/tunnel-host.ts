@@ -9,11 +9,9 @@ import {
   type OutgoingHttpHeaders,
 } from "node:http2";
 import type { Socket } from "node:net";
-import { SocketPair } from "./socket-pair";
 
 export class TunnelHost {
   #sessions: Set<TunnelHost.Session>;
-  #pairs: SocketPair;
   #closed?: Promise<void>;
   #queue: Array<TunnelHost.ConnectQueueJob>;
 
@@ -21,9 +19,6 @@ export class TunnelHost {
 
   constructor(options: TunnelHost.Options = {}) {
     this.#sessions = new Set();
-    this.#pairs = new SocketPair({
-      socketPath: options.socketPath,
-    });
     this.#queue = [];
     this.#sessionOptions = options.session;
   }
@@ -76,11 +71,9 @@ export class TunnelHost {
       throw new Error("TunnelHost is closed; cannot open a new connection");
     }
 
-    await this.#pairs.ready();
-
     const timeoutMs = options.timeoutMs ?? 30_000;
 
-    return new Promise<Socket>((resolve, reject) => {
+    return new Promise<ClientHttp2Stream>((resolve, reject) => {
       const job: TunnelHost.ConnectQueueJob = {
         authority: options.authority ?? "",
         protocol: options.protocol ?? "http",
@@ -131,23 +124,15 @@ export class TunnelHost {
     await Promise.all([...this.#sessions].map((session) => session.close()));
 
     this.#sessions.clear();
-
-    // Finally stop accepting new socket-pair connections and remove the file.
-    await this.#pairs.close();
   }
 
-  /**
-   * Prepares a freshly issued `:connect` stream for use: waits until the peer
-   * accepts it (the `response` event), then creates a bridge socket pair and
-   * splices the stream to its server side. Resolves with the client-side
-   * `net.Socket` that the caller may use as if it were the tunnel itself.
-   */
   async #prepareStream(stream: ClientHttp2Stream) {
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         stream.off("response", onResponse);
         stream.off("error", onError);
         stream.off("close", onClose);
+        stream.off("aborted", onAborted);
       };
 
       const onResponse = (headers: IncomingHttpHeaders & IncomingHttpStatusHeader) => {
@@ -170,64 +155,30 @@ export class TunnelHost {
         reject(new Error("Stream closed before the tunnel was established"));
       };
 
+      const onAborted = () => {
+        cleanup();
+        reject(new Error("Stream aborted before the tunnel was established"));
+      };
+
       stream.once("response", onResponse);
       stream.once("error", onError);
       stream.once("close", onClose);
+      stream.once("aborted", onAborted);
     });
 
-    const pair = await this.#pairs.create();
-
-    if (stream.destroyed || stream.closed) {
-      pair.client.destroy();
-      pair.server.destroy();
-
-      throw new Error("HTTP/2 stream closed before bridge setup");
-    }
-
-    const { client, server } = pair;
-
-    let disposed = false;
-
     const dispose = (error?: Error) => {
-      if (disposed) {
-        return;
+      stream.off("error", dispose);
+      stream.off("close", dispose);
+
+      if (!stream.destroyed) {
+        stream.destroy(error);
       }
-
-      disposed = true;
-
-      stream.off("error", onStreamError);
-      stream.off("close", onStreamClose);
-      client.off("error", onPairError);
-      client.off("close", onClientClose);
-      server.off("error", onPairError);
-      server.off("close", onServerClose);
-
-      if (!client.destroyed) client.destroy(error);
-      if (!server.destroyed) server.destroy(error);
     };
 
-    const onStreamError = (err: Error) => dispose(err);
-    const onStreamClose = () => dispose();
-    const onPairError = (err: Error) => dispose(err);
-    const onClientClose = () => dispose();
-    const onServerClose = () => dispose();
+    stream.once("error", dispose);
+    stream.once("close", dispose);
 
-    stream.on("error", onStreamError);
-    stream.once("close", onStreamClose);
-    client.on("error", onPairError);
-    client.once("close", onClientClose);
-    server.on("error", onPairError);
-    server.once("close", onServerClose);
-
-    if (stream.destroyed || stream.closed || client.destroyed || server.destroyed) {
-      dispose();
-      throw new Error("Stream closed during bridge setup");
-    }
-
-    stream.pipe(server);
-    server.pipe(stream);
-
-    return client;
+    return stream;
   }
 
   #dispatch() {

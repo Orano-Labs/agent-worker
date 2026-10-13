@@ -17,7 +17,7 @@ export class SocketPair {
   constructor(options: SocketPair.Options = {}) {
     this.#socketPath = options.socketPath ?? join(tmpdir(), `socket-pair-${crypto.randomUUID()}.sock`);
 
-    this.#server = createServer({}, (socket) => {
+    this.#server = createServer({ allowHalfOpen: true }, (socket) => {
       this.#accept(socket);
     });
 
@@ -79,27 +79,15 @@ export class SocketPair {
 
     const peer = await server;
 
+    client.off("error", onClientError);
+    client.off("close", onClientClose);
+
     if (!client.writable || !peer.writable || !client.readable || !peer.readable) {
       if (!client.destroyed) client.destroy();
       if (!peer.destroyed) peer.destroy();
 
       throw new Error("SocketPair connection is not fully open, readable, and writable on both ends");
     }
-
-    const destroyBoth = (result: Error | boolean) => {
-      if (!client.destroyed) client.destroy(result instanceof Error ? result : undefined);
-      if (!peer.destroyed) peer.destroy(result instanceof Error ? result : undefined);
-
-      client.off("close", destroyBoth);
-      client.off("error", destroyBoth);
-      peer.off("close", destroyBoth);
-      peer.off("error", destroyBoth);
-    };
-
-    client.once("close", destroyBoth);
-    client.once("error", destroyBoth);
-    peer.once("close", destroyBoth);
-    peer.once("error", destroyBoth);
 
     return { client, server: peer } satisfies SocketPair.Pair as SocketPair.Pair;
   }

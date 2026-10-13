@@ -129,8 +129,8 @@ model Project {
   supervisorId String?             @map("supervisor_id") @db.VarChar(24)
   // 固定承载该项目的 Supervisor
   supervisor   Supervisor?         @relation(fields: [supervisorId], references: [id])
-  // 在宿主机上的工作目录
-  workspace    String              @default("/") @db.VarChar(1024)
+  // 在宿主机上的工作目录 当未指定时会采用 /projects/<project-id> 作为工作目录
+  workspace    String?             @db.VarChar(1024)
 
   @@map("project")
 }

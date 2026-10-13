@@ -19,7 +19,7 @@ const REQUEST_ID_CONTEXT = createContextKey<string | null>(null);
 
 const USER_IDENTITY_CONTEXT = createContextKey<string | null>(null);
 const SUPERVISOR_IDENTITY_CONTEXT = createContextKey<string | null>(null);
-const IDENTITY_CASE_CONTEXT = createContextKey<SignatureIdentityValid["identity"]["case"] | null>(null);
+const IDENTITY_CASE_CONTEXT = createContextKey<Exclude<SignatureIdentityValid["identity"]["case"], undefined> | null>(null);
 
 /**
  * Access control map — service type name → permitted identity cases.
@@ -31,7 +31,7 @@ const IDENTITY_CASE_CONTEXT = createContextKey<SignatureIdentityValid["identity"
  */
 const SERVICE_ACCESS: Readonly<Record<string, ReadonlyArray<SignatureIdentityValid["identity"]["case"]>>> = {
   "api.v1.UserService": ["manager"],
-  "api.v1.SupervisorService": ["manager"],
+  "api.v1.SupervisorService": ["user", "manager"],
   "api.v1.SupervisorPortalService": ["supervisor"],
   "api.v1.ProjectService": ["user"],
   "api.v1.TemplateService": ["user"],

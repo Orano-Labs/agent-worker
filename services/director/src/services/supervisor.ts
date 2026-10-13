@@ -17,6 +17,7 @@ import {
 import { Container } from "@/helpers/container";
 import { Protobuf } from "@/helpers/protobuf";
 import { Allocator } from "@/internal/allocator";
+import { GRPCServer } from "@/internal/grpc-server";
 import { Key } from "@/internal/key";
 import { Repository } from "@/internal/repository";
 
@@ -24,14 +25,17 @@ export class SupervisorServiceImplementation {
   #repository: Repository;
   #key: Key;
   #allocator: Allocator;
+  #server: GRPCServer;
 
   constructor() {
     this.#repository = Container.inject(Repository);
     this.#allocator = Container.inject(Allocator);
     this.#key = Container.inject(Key);
+    this.#server = Container.inject(GRPCServer);
   }
 
-  async #create(request: SupervisorServiceCreateRequestValid, _: HandlerContext) {
+  async #create(request: SupervisorServiceCreateRequestValid, context: HandlerContext) {
+    const identityType = this.#server.getIdentityCaseContextMust(context);
     const keys = await this.#key.generateED25519();
 
     const supervisor = await this.#repository.client.supervisor.create({
@@ -40,6 +44,7 @@ export class SupervisorServiceImplementation {
         metadata: request.metadata ? Uint8Array.from(request.metadata) : null,
         capacity: request.capacity,
         remainingCapacity: request.capacity,
+        ownerId: identityType === "user" ? this.#server.getUserIdentityContextMust(context) : null,
       },
     });
 
@@ -57,11 +62,13 @@ export class SupervisorServiceImplementation {
     });
   }
 
-  async #get(request: SupervisorServiceGetRequestValid, _: HandlerContext) {
+  async #get(request: SupervisorServiceGetRequestValid, context: HandlerContext) {
+    const identityType = this.#server.getIdentityCaseContextMust(context);
     const supervisor = await this.#repository.client.supervisor.findUnique({
       where: {
         id: request.id,
         deleteTime: null,
+        ownerId: identityType === "user" ? this.#server.getUserIdentityContextMust(context) : null,
       },
     });
 
@@ -82,7 +89,9 @@ export class SupervisorServiceImplementation {
     });
   }
 
-  async #delete(request: SupervisorServiceDeleteRequestValid, _: HandlerContext) {
+  async #delete(request: SupervisorServiceDeleteRequestValid, context: HandlerContext) {
+    const identityType = this.#server.getIdentityCaseContextMust(context);
+
     if (this.#allocator.getLease(request.id)) {
       throw new ConnectError("Cannot delete a supervisor that is currently online.", Code.FailedPrecondition);
     }
@@ -92,6 +101,7 @@ export class SupervisorServiceImplementation {
         where: {
           id: request.id,
           deleteTime: null,
+          ownerId: identityType === "user" ? this.#server.getUserIdentityContextMust(context) : null,
         },
         data: {
           deleteTime: new Date(),
@@ -118,12 +128,15 @@ export class SupervisorServiceImplementation {
     });
   }
 
-  async #updateMetadata(request: SupervisorServiceUpdateMetadataRequestValid, _: HandlerContext) {
+  async #updateMetadata(request: SupervisorServiceUpdateMetadataRequestValid, context: HandlerContext) {
+    const identityType = this.#server.getIdentityCaseContextMust(context);
+
     const supervisor = await this.#repository.client.supervisor
       .update({
         where: {
           id: request.id,
           deleteTime: null,
+          ownerId: identityType === "user" ? this.#server.getUserIdentityContextMust(context) : null,
         },
         data: {
           metadata: request.metadata ? Uint8Array.from(request.metadata) : null,
@@ -150,7 +163,9 @@ export class SupervisorServiceImplementation {
     });
   }
 
-  async #list(request: SupervisorServiceListRequestValid, _: HandlerContext) {
+  async #list(request: SupervisorServiceListRequestValid, context: HandlerContext) {
+    const identityType = this.#server.getIdentityCaseContextMust(context);
+
     const take = request.pageSize;
     const skip = (request.page - 1) * take;
 
@@ -158,6 +173,7 @@ export class SupervisorServiceImplementation {
       await this.#repository.client.supervisor.findMany({
         where: {
           deleteTime: null,
+          ownerId: identityType === "user" ? this.#server.getUserIdentityContextMust(context) : null,
         },
         orderBy: {
           createTime: "desc",

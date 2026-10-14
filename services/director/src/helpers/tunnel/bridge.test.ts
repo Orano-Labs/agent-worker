@@ -20,7 +20,7 @@ describe("Bridge", () => {
   const bridge = new Bridge();
 
   let http2Server: Http2Server;
-  let http2ServerSockets: SocketPair.Pair;
+  let http2ServerSockets: SocketPair.Sockets;
   let http2ClientSession: ClientHttp2Session;
   let http2ServerSession: ServerHttp2Session;
   let http2ClientStream: ClientHttp2Stream;
@@ -112,7 +112,7 @@ describe("Bridge", () => {
       http2ServerStream,
       http2ClientStream,
     ]) {
-      s.on("error", console.log);
+      s.on("error", () => {});
     }
   });
 
@@ -176,7 +176,7 @@ describe("Bridge", () => {
     });
   };
 
-  describe("Bridge.pipe.clientStream", () => {
+  describe(".pipe() with client stream", () => {
     it("forwards all written data and propagates half-close in both directions", async () => {
       const socket = await bridge.pipe(http2ClientStream);
       const stream = http2ServerStream;
@@ -561,7 +561,7 @@ describe("Bridge", () => {
     });
   });
 
-  describe("Bridge.pipe.serverStream", () => {
+  describe(".pipe() with server stream", () => {
     it("forwards all written data and propagates half-close in both directions", async () => {
       const socket = await bridge.pipe(http2ServerStream);
       const stream = http2ClientStream;
@@ -942,6 +942,102 @@ describe("Bridge", () => {
       stream.destroy();
 
       await expect(writeResult).rejects.toThrow();
+    });
+  });
+
+  describe("paired stream communication and lifecycle states", () => {
+    it("creates a linked pair where data flows in both directions", async () => {
+      const client = await bridge.pipe(http2ClientStream);
+      const server = await bridge.pipe(http2ServerStream);
+
+      const received: string[] = [];
+
+      client.on("data", (chunk) => received.push(chunk.toString()));
+      server.on("data", (chunk) => received.push(chunk.toString()));
+
+      client.write("client->server");
+      server.write("server->client");
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(received).toContain("client->server");
+      expect(received).toContain("server->client");
+
+      client.destroy();
+      server.destroy();
+    });
+
+    it("transitions both sockets to the fully closed state after both sides end", async () => {
+      const client = await bridge.pipe(http2ClientStream);
+      const server = await bridge.pipe(http2ServerStream);
+
+      client.on("error", () => {});
+      server.on("error", () => {});
+
+      client.end();
+
+      await new Promise((resole) => setTimeout(resole, 10));
+
+      expect(server.readable).toBe(false);
+      expect(server.writable).toBe(true);
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(true);
+
+      server.end();
+
+      await new Promise((resole) => setTimeout(resole, 10));
+
+      expect(server.readable).toBe(false);
+      expect(server.writable).toBe(false);
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(false);
+
+      expect(server.closed).toBe(true);
+      expect(client.closed).toBe(true);
+      expect(http2ClientStream.closed).toBe(true);
+      expect(http2ServerStream.closed).toBe(true);
+    });
+
+    it("continues forwarding in the reverse direction after one side half-closes", async () => {
+      const client = await bridge.pipe(http2ClientStream);
+      const server = await bridge.pipe(http2ServerStream);
+
+      client.on("error", () => {});
+      server.on("error", () => {});
+
+      const received: Buffer[] = [];
+      client.on("data", (chunk) => received.push(Buffer.from(chunk)));
+
+      const serverEnded = new Promise<void>((resolve) => server.once("end", resolve));
+      server.resume();
+      client.end();
+
+      await serverEnded;
+
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(true);
+      expect(client.closed).toBe(false);
+      expect(server.writable).toBe(true);
+      expect(server.readable).toBe(false);
+      expect(server.closed).toBe(false);
+
+      server.write("reverse-after-half-close");
+
+      await new Promise<void>((resolve) => client.once("data", resolve));
+
+      expect(Buffer.concat(received).toString()).toBe("reverse-after-half-close");
+
+      const clientEnded = new Promise<void>((resolve) => client.once("end", resolve));
+      server.end();
+
+      await clientEnded;
+
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(false);
+      expect(client.closed).toBe(true);
+      expect(server.writable).toBe(false);
+      expect(server.readable).toBe(false);
+      expect(server.closed).toBe(true);
     });
   });
 });

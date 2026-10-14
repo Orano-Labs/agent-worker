@@ -33,6 +33,18 @@ export class Bridge {
     pump(stream, socket);
     pump(socket, stream);
 
+    stream.once("close", () => {
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+    });
+
+    socket.once("close", () => {
+      if (!stream.destroyed) {
+        stream.destroy();
+      }
+    });
+
     return pair.server;
   }
 }

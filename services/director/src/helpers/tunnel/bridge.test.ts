@@ -451,7 +451,6 @@ describe("Bridge", () => {
 
     it("handles destruction immediately after the bridge is created", async () => {
       const socket = await bridge.pipe(http2ClientStream);
-      const stream = http2ServerStream;
 
       socket.destroy();
 

@@ -1,3 +1,5 @@
+import { connect } from "node:net";
+import { setTimeout } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { SocketPair } from "./socket-pair";
 
@@ -15,7 +17,7 @@ describe("SocketPair", () => {
       client.write("client->server");
       server.write("server->client");
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      await setTimeout(50);
 
       expect(received).toContain("client->server");
       expect(received).toContain("server->client");
@@ -47,7 +49,7 @@ describe("SocketPair", () => {
       a.client.write("hello-a");
       b.client.write("hello-b");
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      await setTimeout(50);
 
       // The a-client's peer is a-server only, and b-client's peer is b-server only.
       expect(received.get("a-server")).toContain("hello-a");
@@ -74,7 +76,7 @@ describe("SocketPair", () => {
 
       client.write("payload-after-identifier");
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      await setTimeout(50);
 
       const received = Buffer.concat(chunks).toString();
       // The 8-byte ID header must be fully consumed before handoff.
@@ -100,7 +102,7 @@ describe("SocketPair", () => {
       // 8-byte header must be delivered intact and in order.
       client.write("0123456789-after-header");
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      await setTimeout(50);
 
       expect(Buffer.concat(chunks).toString()).toBe("0123456789-after-header");
 
@@ -125,11 +127,11 @@ describe("SocketPair", () => {
 
   it("exposes its socket path and reports ready", async () => {
     const path = `/tmp/socket-pair-test-${crypto.randomUUID()}.sock`;
-    const pairs = new SocketPair({ socketPath: path });
+    const pairs = new SocketPair({ path: path });
 
     try {
       await pairs.ready();
-      expect(pairs.socketPath).toBe(path);
+      expect(pairs.path).toBe(path);
     } finally {
       await pairs.close();
     }
@@ -146,7 +148,7 @@ describe("SocketPair", () => {
 
       client.end();
 
-      await new Promise((resole) => setTimeout(resole, 10));
+      await setTimeout(10);
 
       expect(server.readable).toBe(false);
       expect(server.writable).toBe(true);
@@ -155,7 +157,7 @@ describe("SocketPair", () => {
 
       server.end();
 
-      await new Promise((resole) => setTimeout(resole, 10));
+      await setTimeout(10);
 
       expect(server.readable).toBe(false);
       expect(server.writable).toBe(false);
@@ -187,7 +189,7 @@ describe("SocketPair", () => {
 
       server.destroy();
 
-      await new Promise((resole) => setTimeout(resole, 10));
+      await setTimeout(10);
 
       // Destroying one end does not synchronously destroy its peer.
       expect(client.closed).toBe(false);
@@ -218,7 +220,7 @@ describe("SocketPair", () => {
       // Destroy pair A completely
       pairA.client.destroy();
 
-      await new Promise((r) => setTimeout(r, 50));
+      await setTimeout(50);
 
       // Pair B should remain completely unaffected and active
       expect(pairB.client.destroyed).toBe(false);
@@ -231,5 +233,141 @@ describe("SocketPair", () => {
     } finally {
       await pairs.close();
     }
+  });
+
+  it("continues forwarding in the reverse direction after one side half-closes", async () => {
+    const pairs = new SocketPair();
+
+    try {
+      const { client, server } = await pairs.create();
+
+      client.on("error", () => {});
+      server.on("error", () => {});
+
+      const received: Buffer[] = [];
+      client.on("data", (chunk) => received.push(Buffer.from(chunk)));
+
+      const serverEnded = new Promise<void>((resolve) => server.once("end", resolve));
+      server.resume();
+      client.end();
+
+      await serverEnded;
+
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(true);
+      expect(client.closed).toBe(false);
+      expect(server.writable).toBe(true);
+      expect(server.readable).toBe(false);
+      expect(server.closed).toBe(false);
+
+      server.write("reverse-after-half-close");
+
+      await new Promise<void>((resolve) => client.once("data", resolve));
+
+      expect(Buffer.concat(received).toString()).toBe("reverse-after-half-close");
+
+      const clientEnded = new Promise<void>((resolve) => client.once("end", resolve));
+      server.end();
+
+      await clientEnded;
+
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(false);
+      expect(client.closed).toBe(true);
+      expect(server.writable).toBe(false);
+      expect(server.readable).toBe(false);
+      expect(server.closed).toBe(true);
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("propagates client destruction to the server on write", async () => {
+    const pairs = new SocketPair();
+
+    try {
+      const { client, server } = await pairs.create();
+
+      client.on("error", () => {});
+      server.on("error", () => {});
+
+      const serverEnded = new Promise<void>((resolve) => server.once("end", resolve));
+      server.resume();
+      client.destroy();
+
+      await serverEnded;
+
+      expect(client.closed).toBe(true);
+      expect(client.writable).toBe(false);
+      expect(client.readable).toBe(false);
+      expect(server.closed).toBe(false);
+      expect(server.writable).toBe(true);
+      expect(server.readable).toBe(false);
+
+      const writeError = await new Promise<Error | null>((resolve) => server.write("", (error) => resolve(error ?? null)));
+
+      expect(writeError).toBeInstanceOf(Error);
+      expect(server.closed).toBe(true);
+      expect(server.writable).toBe(false);
+      expect(server.readable).toBe(false);
+      expect(server.errored).not.toBe(null);
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("drops foreign connections that use an unknown identifier", async () => {
+    const pairs = new SocketPair();
+
+    try {
+      await pairs.ready();
+
+      const foreign = connect({ path: pairs.path });
+      foreign.on("error", () => {});
+      const foreignClosed = new Promise<void>((resolve) => foreign.once("close", resolve));
+
+      // A full eight-byte header with an identifier for which no create()
+      // waiter exists must be dropped without disrupting the socket server.
+      foreign.write(Buffer.alloc(SocketPair.ID_BYTES, 0xff));
+      await foreignClosed;
+
+      const { client, server } = await pairs.create();
+
+      const received = new Promise<Buffer>((resolve) => {
+        const chunks: Buffer[] = [];
+        server.on("data", (chunk) => {
+          chunks.push(Buffer.from(chunk));
+          resolve(Buffer.concat(chunks));
+        });
+      });
+
+      client.write("valid-after-foreign");
+      expect((await received).toString()).toBe("valid-after-foreign");
+
+      client.destroy();
+      server.destroy();
+    } finally {
+      await pairs.close();
+    }
+  });
+
+  it("destroys live accepted sockets when close times out and rejects later creates", async () => {
+    const pairs = new SocketPair();
+
+    const { client, server } = await pairs.create();
+
+    client.on("error", () => {});
+    server.on("error", () => {});
+
+    await pairs.close(10);
+    await setTimeout(10);
+
+    console.log(pairs.connections);
+
+    expect(pairs.connections).toBe(0);
+    expect(server.destroyed).toBe(true);
+    expect(client.destroyed).toBe(true);
+
+    await expect(pairs.create()).rejects.toThrow();
   });
 });

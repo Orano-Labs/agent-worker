@@ -180,7 +180,7 @@ export class VMNet extends Container.ServiceConstructable {
           const hex = name.replace("aw-", "");
           const slot = parseInt(hex, 16);
 
-          if (!isNaN(slot) && slot >= VMNet.NS_MIN_SLOT && slot <= VMNet.NS_MAX_SLOT) {
+          if (!Number.isNaN(slot) && slot >= VMNet.NS_MIN_SLOT && slot <= VMNet.NS_MAX_SLOT) {
             return this.#namespace(slot);
           }
 
@@ -330,7 +330,7 @@ export namespace VMNet {
   /**
    * 需要开放给虚机的宿主机 TCP 服务端口
    */
-  export const EXPOSED_HOST_TCP_PORTS = [26088 /** WEB-DAV */];
+  export const EXPOSED_HOST_TCP_PORTS = [26088 /** NFS */];
 
   /**
    * 需要开放给虚机的宿主机 UDP 服务端口

@@ -3,10 +3,6 @@ import type { Logger } from "@aw/logging";
 import { $, type LogEntry } from "zx";
 
 export class Shell extends Container.ServiceConstructable {
-  constructor() {
-    super();
-  }
-
   session(options: Shell.SessionOptions) {
     const commands: Record<string, Extract<LogEntry, { kind: "cmd" }>> = {};
     const logger = options.logger.namespace("$");
@@ -29,7 +25,7 @@ export class Shell extends Container.ServiceConstructable {
 
           const durationMs = entry.duration ?? 0;
           const duration = durationMs < 1000 ? `${durationMs.toFixed(0)}ms` : `${(durationMs / 1000).toFixed(2)}s`;
-          const summary = `${cmd.cwd}$ ${cmd.cmd} [exit=${entry.exitCode ?? 0}, duration=${duration}]`;
+          const summary = `${cmd.cmd} [exit=${entry.exitCode ?? 0}, duration=${duration}]`;
 
           if (entry.error) {
             logger.error(summary, { err: entry.error });

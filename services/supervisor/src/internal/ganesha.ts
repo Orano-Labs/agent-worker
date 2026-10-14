@@ -451,7 +451,7 @@ export namespace Ganesha {
         date_format = none;
         time_format = none;
         epoch = false;
-        clientip = false;
+        clientip = true;
         hostname = false;
         progname = false;
         pid = false;

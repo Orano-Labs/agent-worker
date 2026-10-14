@@ -2,6 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { err } from "neverthrow";
 
 export class SocketPair {
   #server: Server;
@@ -14,15 +15,24 @@ export class SocketPair {
   // accepted can propagate its error instead of hanging.
   #waiters: Map<bigint, SocketPair.Waiter>;
 
+  #connections: Set<Socket>;
+
   constructor(options: SocketPair.Options = {}) {
     this.#socketPath = options.socketPath ?? join(tmpdir(), `socket-pair-${crypto.randomUUID()}.sock`);
 
     this.#server = createServer({ allowHalfOpen: true }, (socket) => {
       this.#accept(socket);
+
+      this.#connections.add(socket);
+
+      socket.once("close", () => {
+        this.#connections.delete(socket);
+      });
     });
 
     this.#ready = this.#listen();
     this.#waiters = new Map();
+    this.#connections = new Set();
   }
 
   get socketPath() {
@@ -44,61 +54,111 @@ export class SocketPair {
 
     // Write the identifier first so the server can associate this connection
     // with its waiter regardless of accept ordering.
-    const client = connect({ path: this.#socketPath });
+    const client = await new Promise<Socket>((resolve, reject) => {
+      const client = connect({ path: this.#socketPath, allowHalfOpen: true });
 
-    // If the client side fails or closes before the server side has been
-    // accepted, reject the pending waiter so `create()` throws instead of
-    // hanging forever waiting on a peer that can never arrive.
-    const onClientError = (error: Error) => {
-      const waiter = this.#waiters.get(id);
+      const onConnect = () => {
+        cleanup();
+        resolve(client);
+      };
 
-      if (waiter) {
-        this.#waiters.delete(id);
-        waiter.reject(error);
-      }
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
 
-      client.off("error", onClientError);
-      client.off("close", onClientClose);
-    };
-    const onClientClose = () => {
-      const waiter = this.#waiters.get(id);
+      const onClose = () => {
+        cleanup();
+        reject(new Error("Socket client closed before the connection was established"));
+      };
 
-      if (waiter) {
-        this.#waiters.delete(id);
-        waiter.reject(new Error("SocketPair client closed before the server side was accepted"));
-      }
+      const cleanup = () => {
+        client.off("connect", onConnect);
+        client.off("error", onError);
+        client.off("close", onClose);
+      };
 
-      client.off("error", onClientError);
-      client.off("close", onClientClose);
-    };
+      client.on("connect", onConnect);
+      client.on("error", onError);
+      client.on("close", onClose);
+    });
 
-    client.once("error", onClientError);
-    client.once("close", onClientClose);
+    const peer = await new Promise<Socket>((resolve, reject) => {
+      // If the client side fails or closes before the server side has been
+      // accepted, reject the pending waiter so `create()` throws instead of
+      // hanging forever waiting on a peer that can never arrive.
+      const onError = (error: Error) => {
+        cancel(error);
+        cleanup();
+      };
 
-    client.write(this.#encodeId(id));
+      const onClose = () => {
+        cancel(new Error("SocketPair client closed before the server side was accepted"));
+        cleanup();
+      };
 
-    const peer = await server;
+      const cleanup = () => {
+        client.off("error", onError);
+        client.off("close", onClose);
+      };
 
-    client.off("error", onClientError);
-    client.off("close", onClientClose);
+      const cancel = (error: Error) => {
+        const waiter = this.#waiters.get(id);
 
-    if (!client.writable || !peer.writable || !client.readable || !peer.readable) {
-      if (!client.destroyed) client.destroy();
-      if (!peer.destroyed) peer.destroy();
+        if (waiter) {
+          this.#waiters.delete(id);
+          waiter.reject(error);
+        }
+      };
 
-      throw new Error("SocketPair connection is not fully open, readable, and writable on both ends");
-    }
+      client.on("error", onError);
+      client.on("close", onClose);
+
+      client.write(this.#encodeId(id));
+
+      server
+        .then((socket) => {
+          if (!client.writable || !socket.writable || !client.readable || !socket.readable) {
+            if (!client.destroyed) client.destroy();
+            if (!socket.destroyed) socket.destroy();
+
+            reject(new Error("SocketPair connection is not fully open, readable, and writable on both ends"));
+          }
+
+          resolve(socket);
+        })
+        .catch(reject);
+    });
 
     return { client, server: peer } satisfies SocketPair.Pair as SocketPair.Pair;
   }
 
-  async close() {
+  async close(timeout = 5000) {
+    const force = setTimeout(() => {
+      for (const socket of this.#connections) {
+        if (!socket.destroyed) {
+          socket.destroy();
+        }
+      }
+    }, timeout);
+
     await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => reject(error);
-      this.#server.once("error", onError);
-      this.#server.close(() => {
-        this.#server.off("error", onError);
-        resolve();
+      this.#server.close((error) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+
+        force.close();
+
+        if (error) {
+          for (const socket of this.#connections) {
+            if (!socket.destroyed) {
+              socket.destroy();
+            }
+          }
+        }
       });
     });
 
@@ -146,16 +206,10 @@ export class SocketPair {
       const header = socket.read(SocketPair.ID_BYTES) as Buffer | null;
 
       if (header === null) {
-        socket.off("readable", onReadable);
-        socket.off("error", onError);
-        socket.off("end", onEnd);
-        socket.destroy();
         return;
       }
 
-      socket.off("readable", onReadable);
-      socket.off("error", onError);
-      socket.off("end", onEnd);
+      cleanup();
 
       const id = this.#decodeId(header);
       const waiter = this.#waiters.get(id);
@@ -171,20 +225,26 @@ export class SocketPair {
     };
 
     const onEnd = () => {
-      socket.off("readable", onReadable);
-      socket.off("error", onError);
-      socket.destroy();
+      cleanup(true);
     };
 
     const onError = () => {
+      cleanup(true);
+    };
+
+    const cleanup = (destroy = false) => {
       socket.off("readable", onReadable);
       socket.off("end", onEnd);
-      socket.destroy();
+      socket.off("error", onError);
+
+      if (destroy) {
+        socket.destroy();
+      }
     };
 
     socket.on("readable", onReadable);
-    socket.once("end", onEnd);
-    socket.once("error", onError);
+    socket.on("end", onEnd);
+    socket.on("error", onError);
   }
 
   // Monotonic 64-bit counter for connection identifiers.

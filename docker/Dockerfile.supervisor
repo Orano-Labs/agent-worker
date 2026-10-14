@@ -1,8 +1,10 @@
-FROM ubuntu:26.04 AS firecracker-ci-artifacts-downloader
+FROM ubuntu:26.04 AS firecracker-artifacts-downloader
 
 COPY ./services/supervisor/scripts/download-firecracker-ci.sh /download-firecracker-ci.sh
 
 RUN /download-firecracker-ci.sh /app/firecracker-artifacts
+
+# app-builder
 
 FROM node:24.20.0-alpine AS app-builder
 
@@ -32,6 +34,55 @@ RUN pnpm install --frozen-lockfile --prod=false
 RUN pnpm --filter @aw/vm-director generate
 RUN pnpm --filter @aw/vm-supervisor exec turbo build
 RUN pnpm --filter @aw/vm-supervisor deploy /app/pruned/supervisor --prod --legacy
+
+# runtime-image-builder
+#
+# Builds the read-only runtime.squashfs that is booted inside each Firecracker
+# microVM. This used to happen at Supervisor startup (src/internal/vm-image.ts);
+# it is now a build-time concern so the runtime never needs buildah/network.
+
+FROM ubuntu:26.04 AS runtime-image-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        buildah \
+        crun \
+        squashfs-tools \
+        uidmap \
+        ca-certificates \
+        curl \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y --no-install-recommends \
+        nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /etc/containers \
+    && printf '%s\n' \
+        '[storage]' \
+        'driver = "vfs"' \
+        > /etc/containers/storage.conf
+
+# Rootless buildah: create a dedicated unprivileged user with a subordinate
+# UID/GID range so `buildah unshare` can mount without root.
+RUN useradd --create-home --uid 1000 builder \
+    && printf 'builder:100000:65536\n' >> /etc/subuid \
+    && printf 'builder:100000:65536\n' >> /etc/subgid
+
+WORKDIR /app
+
+COPY ./services/supervisor/scripts/build-runtime-image.sh /app/scripts/build-runtime-image.sh
+COPY ./services/supervisor/resources ./app/resources
+
+# Copy the ptyd binaries produced during app-builder's pnpm install.
+COPY --from=app-builder /app/native/ptyd/dist/ptyd-linux-amd64 ./native/ptyd/dist/ptyd-linux-amd64
+COPY --from=app-builder /app/native/ptyd/dist/ptyd-linux-arm64 ./native/ptyd/dist/ptyd-linux-arm64
+COPY --from=app-builder /app/native/ptyd/dist/index.cjs ./native/ptyd/dist/index.cjs
+
+RUN chown -R builder:builder /app
+
+RUN su builder -c '/app/scripts/build-runtime-image.sh /app/runtime.squashfs'
 
 # runner
 
@@ -71,7 +122,8 @@ WORKDIR /app
 VOLUME ["/aw-supervisor", "/aw-fs"]
 
 COPY --from=app-builder /app/pruned/supervisor .
-COPY --from=firecracker-ci-artifacts-downloader /app/firecracker-artifacts ./firecracker-artifacts
+COPY --from=firecracker-artifacts-downloader /app/firecracker-artifacts ./firecracker-artifacts
+COPY --from=runtime-image-builder /app/runtime.squashfs ./image/runtime.squashfs
 
 ENV NODE_ENV=production
 
@@ -80,6 +132,7 @@ ENV AW_SUPERVISOR_FS_ROOT="/aw-fs"
 ENV AW_SUPERVISOR_ID="unknown"
 ENV AW_SUPERVISOR_PRIVATE_KEY="unknown"
 ENV AW_SUPERVISOR_FIRECRACKER_ARTIFACTS="/app/firecracker-artifacts"
+ENV AW_SUPERVISOR_RUNTIME_IMAGE="/app/image/runtime.squashfs"
 
 CMD ["node", "./dist/index.cjs"]
 

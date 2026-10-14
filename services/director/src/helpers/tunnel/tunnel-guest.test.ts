@@ -1,305 +1,386 @@
+import { randomBytes } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
-import { connect } from "node:http2";
+import { type ClientHttp2Session, type ClientHttp2Stream, connect, type Http2Stream } from "node:http2";
 import type { Socket } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setTimeout } from "node:timers/promises";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { SocketPair } from "./socket-pair";
 import { TunnelGuest } from "./tunnel-guest";
-import { TunnelHost } from "./tunnel-host";
 
 describe("TunnelGuest", () => {
   let targetServer: ReturnType<typeof createHttpServer>;
-  let targetUrl: string;
 
   beforeEach(async () => {
-    targetServer = createHttpServer((_req, res) => {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
-    });
-
-    await new Promise<void>((resolve) => targetServer.listen(0, resolve));
-
-    const address = targetServer.address() as { port: number };
-    targetUrl = `http://127.0.0.1:${address.port}`;
+    targetServer = createHttpServer();
   });
 
   afterEach(async () => {
     await new Promise<void>((resolve) => targetServer.close(() => resolve()));
   });
 
-  /**
-   * A transport backed by a `SocketPair` that pairs each guest-dialed socket
-   * with a peer the test can hand to a `TunnelHost` (or otherwise dispose of).
-   */
-  class Transport {
-    readonly pairs: SocketPair;
-    readonly peers: Socket[] = [];
-    readonly dialed: Socket[] = [];
+  const collectStreamUntilEnd = (stream: Http2Stream | Socket) => {
+    const chunks: Buffer[] = [];
 
-    constructor(tag: string) {
-      this.pairs = new SocketPair({ socketPath: join(tmpdir(), `guest-transport-${tag}-${process.pid}.sock`) });
-    }
-
-    /** Used as `TunnelGuest`'s `createConnection`. */
-    async createConnection() {
-      const pair = await this.pairs.create();
-      this.dialed.push(pair.client);
-      this.peers.push(pair.server);
-      return pair.client;
-    }
-
-    /** Destroys any peer sockets the test did not consume. */
-    destroyUnconsumed() {
-      for (const peer of this.peers) {
-        if (!peer.destroyed) {
-          peer.destroy();
-        }
-      }
-    }
-
-    async close() {
-      this.destroyUnconsumed();
-      await this.pairs.close();
-    }
-  }
-
-  async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-
-    while (!predicate()) {
-      if (Date.now() > deadline) {
-        throw new Error("Timed out waiting for condition");
-      }
-
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-  }
-
-  /** Reads a complete HTTP/1.1 response (Content-Length or chunked) off a socket. */
-  function readHttpResponse(socket: Socket): Promise<{ status: number; body: string }> {
-    return new Promise((resolve, reject) => {
-      let buffer = Buffer.alloc(0);
-
-      const finish = () => {
-        socket.off("data", onData);
-        socket.off("error", onError);
-
-        const headerEnd = buffer.indexOf("\r\n\r\n");
-
-        if (headerEnd === -1) {
-          reject(new Error("No HTTP response received"));
-          return;
-        }
-
-        const head = buffer.subarray(0, headerEnd).toString("latin1");
-        const status = Number(head.split(" ")[1]);
-        const rest = buffer.subarray(headerEnd + 4);
-
-        if (/chunked/i.test(head)) {
-          const body = decodeChunked(rest);
-
-          if (body === null) {
-            reject(new Error("Incomplete chunked body"));
-            return;
-          }
-
-          resolve({ status, body });
-          return;
-        }
-
-        const contentLength = Number(/\r\ncontent-length:\s*(\d+)/i.exec(head)?.[1] ?? 0);
-        resolve({ status, body: rest.subarray(0, contentLength).toString("latin1") });
-      };
-
-      const onData = (chunk: Buffer) => {
-        buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
-
-        const headerEnd = buffer.indexOf("\r\n\r\n");
-
-        if (headerEnd === -1) return;
-
-        const head = buffer.subarray(0, headerEnd).toString("latin1");
-
-        if (/chunked/i.test(head)) {
-          if (decodeChunked(buffer.subarray(headerEnd + 4)) !== null) {
-            finish();
-          }
-          return;
-        }
-
-        const contentLength = Number(/\r\ncontent-length:\s*(\d+)/i.exec(head)?.[1] ?? 0);
-
-        if (buffer.length >= headerEnd + 4 + contentLength) {
-          finish();
-        }
-      };
-
-      const onError = (error: Error) => {
-        socket.off("data", onData);
-        reject(error);
-      };
-
-      socket.on("data", onData);
-      socket.once("error", onError);
+    return new Promise<{ chunks: Buffer[]; data: Buffer }>((resolve, reject) => {
+      stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      stream.once("end", () => resolve({ chunks, data: Buffer.concat(chunks) }));
+      stream.once("error", reject);
     });
-  }
+  };
 
-  function decodeChunked(body: Buffer): string | null {
-    let offset = 0;
-    let out = "";
+  it("should create connections up to the configured concurrency on startup", async () => {
+    const pair = new SocketPair();
 
-    while (offset < body.length) {
-      const lineEnd = body.indexOf("\r\n", offset);
+    await pair.ready();
 
-      if (lineEnd === -1) return null;
-
-      const sizeHex = body.subarray(offset, lineEnd).toString("latin1").split(";")[0].trim();
-      const size = Number.parseInt(sizeHex, 16);
-
-      if (Number.isNaN(size)) return null;
-
-      offset = lineEnd + 2;
-
-      if (size === 0) return out;
-
-      if (body.length < offset + size + 2) return null;
-
-      out += body.subarray(offset, offset + size).toString("latin1");
-      offset += size + 2;
-    }
-
-    return null;
-  }
-
-  describe("connection pool", () => {
-    it("establishes maxConnections transport sockets on construction", async () => {
-      const transport = new Transport("pool");
-
-      const guest = new TunnelGuest({
-        maxConnections: 3,
-        router: () => new URL(targetUrl),
-        createConnection: () => transport.createConnection(),
-      });
-
-      await waitUntil(() => transport.dialed.length === 3);
-
-      expect(transport.dialed.length).toBe(3);
-
-      await guest.close();
-      await transport.close();
+    const createConnectionMock = vi.fn(async () => {
+      return pair.create().then(({ server }) => server);
     });
 
-    it("re-establishes a dropped connection until close()", async () => {
-      const transport = new Transport("reconnect");
-
-      const guest = new TunnelGuest({
-        maxConnections: 1,
-        router: () => new URL(targetUrl),
-        createConnection: () => transport.createConnection(),
-      });
-
-      await waitUntil(() => transport.dialed.length === 1);
-
-      // Drop the connection; the guest should dial a replacement.
-      transport.dialed[0].destroy();
-
-      await waitUntil(() => transport.dialed.length >= 2);
-
-      expect(transport.dialed.length).toBeGreaterThanOrEqual(2);
-
-      await guest.close();
-      await transport.close();
+    const guest = new TunnelGuest({
+      concurrency: 128,
+      router: async () => {},
+      createConnection: createConnectionMock,
     });
 
-    it("stops reconnecting after close()", async () => {
-      const transport = new Transport("stop");
+    expect(createConnectionMock).toHaveBeenCalledTimes(128);
 
-      const guest = new TunnelGuest({
-        maxConnections: 1,
-        router: () => new URL(targetUrl),
-        createConnection: () => transport.createConnection(),
-      });
-
-      await waitUntil(() => transport.dialed.length === 1);
-
-      // Drop the connection to put the maintainer into its reconnect wait,
-      // then close: the maintainer must give up rather than dialing again.
-      transport.dialed[0].destroy();
-
-      await guest.close();
-
-      const countAfterClose = transport.dialed.length;
-
-      await new Promise<void>((resolve) => setImmediate(resolve));
-
-      expect(transport.dialed.length).toBe(countAfterClose);
-
-      await transport.close();
-    });
+    await pair.close();
+    await guest.close();
   });
 
-  describe("stream routing", () => {
-    it("routes a stream through the proxy to a guest target", async () => {
-      const transport = new Transport("route");
+  it("should handle up to the configured concurrency of concurrent CONNECT streams", async () => {
+    const pair = new SocketPair();
+    const sockets = await pair.create();
 
-      const guest = new TunnelGuest({
-        maxConnections: 1,
-        router: () => new URL(targetUrl),
-        createConnection: () => transport.createConnection(),
-      });
-
-      await waitUntil(() => transport.dialed.length === 1);
-
-      const host = new TunnelHost({ socketPath: join(tmpdir(), `guest-host-${process.pid}.sock`) });
-      await host.upgrade(transport.peers[0]);
-
-      const client = await host.connect({ authority: "example.com:8080" });
-
-      client.write("GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n");
-
-      const response = await readHttpResponse(client);
-
-      expect(response.status).toBe(200);
-      expect(response.body).toBe("ok");
-
-      client.destroy();
-      await host.close();
-      await guest.close();
-      await transport.close();
+    const guest = new TunnelGuest({
+      concurrency: 1,
+      router: async () => {},
+      createConnection: async () => sockets.server,
     });
 
-    it("rejects non-CONNECT streams with 405", async () => {
-      const transport = new Transport("nonconnect");
-
-      const guest = new TunnelGuest({
-        maxConnections: 1,
-        router: () => new URL(targetUrl),
-        createConnection: () => transport.createConnection(),
+    const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
+      const client = connect("http://localhost:8000", {
+        createConnection: () => {
+          return sockets.client;
+        },
       });
 
-      await waitUntil(() => transport.dialed.length === 1);
+      client.once("connect", () => {
+        resolve(client);
+      });
 
-      // Drive a raw HTTP/2 client against the transport peer to issue a
-      // non-CONNECT stream.
-      const session = connect("http://localhost:1", { createConnection: () => transport.peers[0] });
+      client.once("error", (error) => {
+        reject(error);
+      });
+    });
+
+    for (let i = 0; i < 10; i++) {
       await new Promise<void>((resolve, reject) => {
-        session.once("connect", resolve);
-        session.once("error", reject);
+        session
+          .request({
+            ":method": "CONNECT",
+            ":path": "/",
+            ":authority": "example.com:8080",
+            ":scheme": "http",
+            ":protocol": "tcp",
+          })
+          .once("response", resolve)
+          .once("error", reject);
       });
+    }
 
-      const stream = session.request({ ":method": "GET", ":path": "/" });
+    expect(guest.streams).toBe(10);
 
-      const headers = await new Promise<Record<string, string | string[]>>((resolve) => {
-        stream.once("response", resolve);
-      });
+    await pair.close();
+    await guest.close();
+  });
 
-      expect(headers[":status"]).toBe(405);
+  it("should tunnel duplex data over a CONNECT stream and close both ends together", async () => {
+    const pair = new SocketPair();
+    const sockets = await pair.create();
 
-      stream.close();
-      session.close();
-      await guest.close();
-      await transport.close();
+    let socket: Socket | undefined;
+
+    const guest = new TunnelGuest({
+      concurrency: 1,
+      router: (s) => {
+        socket = s;
+      },
+      createConnection: async () => sockets.server,
     });
+
+    const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
+      const client = connect("http://localhost:8000", {
+        createConnection: () => {
+          return sockets.client;
+        },
+      });
+
+      client.once("connect", () => {
+        resolve(client);
+      });
+
+      client.once("error", (error) => {
+        reject(error);
+      });
+    });
+
+    const stream = await new Promise<ClientHttp2Stream>((resolve, reject) => {
+      const stream = session
+        .request({
+          ":method": "CONNECT",
+          ":authority": "example.com:8080",
+          ":protocol": "tcp",
+        })
+        .once("response", () => resolve(stream))
+        .once("error", reject);
+    });
+
+    assert(socket);
+    expect(guest.streams).toBe(1);
+
+    const socketReceived = collectStreamUntilEnd(socket);
+    const streamReceived = collectStreamUntilEnd(stream);
+
+    const socketSent = randomBytes(128);
+    const streamSent = randomBytes(128);
+
+    socket.end(socketSent);
+    stream.end(streamSent);
+
+    const [socketReceivedData, streamReceivedData] = await Promise.all([
+      socketReceived.then(({ data }) => data),
+      streamReceived.then(({ data }) => data),
+    ]);
+
+    expect(socketReceivedData.equals(streamSent)).toBe(true);
+    expect(streamReceivedData.equals(socketSent)).toBe(true);
+
+    await setTimeout(10);
+
+    expect(socket.closed).toBe(true);
+    expect(stream.closed).toBe(true);
+
+    await pair.close();
+    await guest.close();
+  });
+
+  it("should route plain http requests through tunnel", async () => {
+    const pair = new SocketPair();
+    const sockets = await pair.create();
+
+    const requests = {} as Record<string, number>;
+
+    targetServer.on("request", (req, res) => {
+      requests[req.method || "UNKNOWN"] = (requests[req.method || "UNKNOWN"] ?? 0) + 1;
+
+      res.end("ok");
+    });
+
+    const guest = new TunnelGuest({
+      concurrency: 1,
+      router: (socket) => targetServer.emit("connection", socket),
+      createConnection: async () => sockets.server,
+    });
+
+    const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
+      const client = connect("http://localhost:8000", {
+        createConnection: () => {
+          return sockets.client;
+        },
+      });
+
+      client.once("connect", () => {
+        resolve(client);
+      });
+
+      client.once("error", (error) => {
+        reject(error);
+      });
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await new Promise<void>((resolve, reject) => {
+        const stream = session
+          .request({
+            ":method": "CONNECT",
+            ":authority": "example.com:8080",
+            ":protocol": "tcp",
+          })
+          .on("data", () => {})
+          .once("response", () => {
+            stream.end(`${i % 2 === 0 ? "GET" : "POST"} / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n`);
+          })
+          .once("error", reject)
+          .once("close", resolve);
+      });
+    }
+
+    expect(requests.GET).toBe(5);
+    expect(requests.POST).toBe(5);
+
+    await pair.close();
+    await guest.close();
+  });
+
+  it("should keep a persistent connection alive across multiple requests (keepalive)", async () => {
+    const pair = new SocketPair();
+    const sockets = await pair.create();
+
+    const requests: string[] = [];
+    const connectionCount = { value: 0 };
+
+    targetServer.on("connection", () => {
+      connectionCount.value += 1;
+    });
+
+    targetServer.on("request", (req, res) => {
+      requests.push(req.method || "UNKNOWN");
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    });
+
+    const guest = new TunnelGuest({
+      concurrency: 1,
+      router: (socket) => targetServer.emit("connection", socket),
+      createConnection: async () => sockets.server,
+    });
+
+    const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
+      const client = connect("http://localhost:8000", {
+        createConnection: () => sockets.client,
+      });
+
+      client.once("connect", () => resolve(client));
+      client.once("error", reject);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const stream = session
+        .request({
+          ":method": "CONNECT",
+          ":authority": "example.com:8080",
+          ":protocol": "tcp",
+        })
+        .on("data", () => {})
+        .once("response", () => {
+          let i = 0;
+
+          const timer = setInterval(() => {
+            if (i >= 5) {
+              stream.end();
+              clearInterval(timer);
+
+              return;
+            }
+
+            stream.write(`GET /req-${i} HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n`);
+
+            i++;
+          }, 10);
+        })
+        .once("error", reject)
+        .once("close", resolve);
+    });
+
+    expect(requests.length).toBe(5);
+    expect(requests.every((m) => m === "GET")).toBe(true);
+    expect(connectionCount.value).toBe(1);
+
+    await pair.close();
+    await guest.close();
+  });
+
+  it("should handle http upgrade and keep the upgraded connection alive", async () => {
+    const pair = new SocketPair();
+    const sockets = await pair.create();
+
+    const upgradeResponseHeader = Buffer.from("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+
+    targetServer.on("upgrade", (req, socket, head) => {
+      if (req.headers.upgrade?.toLowerCase() !== "websocket") {
+        socket.destroy();
+        return;
+      }
+
+      socket.write(upgradeResponseHeader);
+
+      if (head && head.length > 0) {
+        socket.write(head);
+      }
+
+      socket.on("end", () => socket.end());
+      socket.on("data", (chunk) => {
+        setImmediate(() => {
+          socket.write(chunk);
+        });
+      });
+    });
+
+    const guest = new TunnelGuest({
+      concurrency: 1,
+      router: (socket) => targetServer.emit("connection", socket),
+      createConnection: async () => sockets.server,
+    });
+
+    const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
+      const client = connect("http://localhost:8000", {
+        createConnection: () => sockets.client,
+      });
+
+      client.once("connect", () => resolve(client));
+      client.once("error", reject);
+    });
+
+    let received = Buffer.alloc(0);
+    let sent = Buffer.alloc(0);
+
+    await new Promise<void>((resolve, reject) => {
+      const onReadable = () => {
+        const header = stream.read(upgradeResponseHeader.byteLength) as Buffer | null;
+
+        if (header === null) {
+          return;
+        }
+
+        stream.off("readable", onReadable);
+
+        const interval = setInterval(() => {
+          if (sent.byteLength < 1024 * 1024) {
+            const bytes = randomBytes(1024 * 4);
+
+            sent = Buffer.concat([sent, bytes]);
+
+            stream.write(bytes);
+          } else {
+            stream.end();
+            interval.close();
+          }
+        });
+
+        stream.on("data", (chunk) => {
+          received = Buffer.concat([received, Buffer.from(chunk)]);
+        });
+      };
+
+      const stream = session
+        .request({
+          ":method": "CONNECT",
+          ":authority": "example.com:8080",
+          ":protocol": "tcp",
+        })
+        .on("readable", onReadable)
+        .once("response", () => {
+          stream.write("GET /chat HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+        })
+        .once("error", reject)
+        .once("close", resolve);
+    });
+
+    expect(sent.equals(received)).toBe(true);
+
+    await pair.close();
+    await guest.close();
   });
 });

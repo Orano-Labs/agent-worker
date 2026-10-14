@@ -19,19 +19,6 @@ fatal() {
   exit 1
 }
 
-# Lifecycle & Lifecycle Teardown Management
-# Triggers an immediate kernel-level poweroff.
-# This forces the Firecracker vCPU loop to exit cleanly and instantly.
-power_off_now() {
-  info "Triggering forced kernel poweroff..."
-
-  # sync || true
-
-  # -f forces immediate poweroff/reboot bypassing sysvinit/systemd.
-  # Essential for microVMs to prevent hanging on teardown.
-  poweroff -f || reboot -f || exit 1
-}
-
 # Global exit handler triggered by any trap event (EXIT, ERR, SIGTERM, SIGINT).
 # This functions as a "bulletproof" firewall ensuring the VM ALWAYS powers off.
 cleanup_and_poweroff() {
@@ -51,7 +38,7 @@ cleanup_and_poweroff() {
 
   info "Preparing to tear down MicroVM..." || true
 
-  power_off_now
+  exit $_actual_exit_code
 }
 
 # Intercept VM termination signals and shell exits.
@@ -67,7 +54,6 @@ info "Starting target application..."
 set +e
 
 # --idle-timeout=30s reaps a terminal only after 30 seconds of inactivity.
-# /sbin/tini -gs -- \
 /usr/local/bin/ptyd --port 8000 --idle-timeout 10s --command /usr/local/bin/pi --dir /workspace \
   --env PI_CODING_AGENT_DIR=/workspace/.pi/agent \
   --env PI_CODING_AGENT_SESSION_DIR=/workspace/.pi/agent/sessions \

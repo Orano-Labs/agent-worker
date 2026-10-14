@@ -262,7 +262,6 @@ export class Controller extends Container.ServiceConstructable {
       const vm = this.#manager.create({
         id: instance.id,
         machineTier: instance.projectResourceTier,
-        metadata: {},
       });
 
       const controller = new AbortController();

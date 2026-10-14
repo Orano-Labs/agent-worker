@@ -1,8 +1,8 @@
+import { join } from "node:path";
 import { Container } from "@aw/container";
 import { Environment } from "@aw/environment";
 import { Logger } from "@aw/logging";
 import { Controller } from "@/internal/controller";
-import { Dependencies } from "@/internal/dependencies";
 import { Director } from "@/internal/director";
 import { Ganesha } from "@/internal/ganesha";
 import { KVStorage } from "@/internal/kv-storage";
@@ -10,8 +10,9 @@ import { Shell } from "@/internal/shell";
 import { Tunnel } from "@/internal/tunnel";
 import { VMFactory } from "@/internal/vm-factory";
 import { VMImage } from "@/internal/vm-image";
-import { VMKernel } from "@/internal/vm-kernel";
 import { VMNet } from "@/internal/vm-net";
+
+process.env.AW_SUPERVISOR_FIRECRACKER_ARTIFACTS = join(process.cwd(), "firecracker-ci-artifacts");
 
 const EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
   SIGHUP: 129,
@@ -22,6 +23,7 @@ const EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
 export class Application extends Container.ServiceConstructable {
   #logger: Logger;
   #environment: Environment;
+  #factory: VMFactory;
 
   constructor(injector: Container.Injector) {
     super();
@@ -37,7 +39,10 @@ export class Application extends Container.ServiceConstructable {
       this.#logger.namespace("Environment.Warnings").warn(warn);
     }
 
-    injector.injectMust(Tunnel);
+    // injector.injectMust(Tunnel);
+    //
+
+    this.#factory = injector.injectMust(VMFactory);
   }
 
   protected override async dispose(reason: unknown) {
@@ -50,7 +55,15 @@ export class Application extends Container.ServiceConstructable {
     }
   }
 
-  protected override async initialize(_: AbortSignal) {}
+  protected override async initialize(s: AbortSignal) {
+    await this.#factory
+      .create({
+        id: Math.random().toString().slice(2, 8),
+        machineTier: "minimal",
+        metadata: {},
+      })
+      .run(s, async () => {});
+  }
 
   static async run() {
     const controller = new AbortController();
@@ -64,14 +77,8 @@ export class Application extends Container.ServiceConstructable {
     container.provide(Logger.Engine, () => {
       return new Logger.PinoEngine(environment.mode !== Environment.Mode.Production);
     });
-    container.provide(Dependencies, (injector) => {
-      return new Dependencies(injector.injectMust(Environment), injector.injectMust(Logger));
-    });
     container.provide(VMNet, (injector) => {
       return new VMNet(injector.injectMust(Logger), injector.injectMust(Shell));
-    });
-    container.provide(VMKernel, (injector) => {
-      return new VMKernel(injector.injectMust(Environment), injector.injectMust(Logger), injector.injectMust(Shell));
     });
     container.provide(VMImage, (injector) => {
       return new VMImage(injector.injectMust(Environment), injector.injectMust(Logger), injector.injectMust(Shell));
@@ -81,9 +88,7 @@ export class Application extends Container.ServiceConstructable {
         injector.injectMust(Environment),
         injector.injectMust(Logger),
         injector.injectMust(VMImage),
-        injector.injectMust(VMKernel),
         injector.injectMust(VMNet),
-        injector.injectMust(Dependencies),
       );
     });
     container.provide(Shell, () => {

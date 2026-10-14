@@ -8,41 +8,38 @@ import type { Environment } from "@aw/environment";
 import type { Logger } from "@aw/logging";
 import { $, type ProcessPromise } from "zx";
 import { Firecracker } from "@/helpers/firecracker";
-import type { Dependencies } from "@/internal/dependencies";
 import type { VMImage } from "@/internal/vm-image";
-import type { VMKernel } from "@/internal/vm-kernel";
 import { VMNet } from "@/internal/vm-net";
 
 export class VMFactory extends Container.ServiceConstructable {
   #environment: Environment;
   #logger: Logger;
   #image: VMImage;
-  #kernel: VMKernel;
   #net: VMNet;
-  #dependencies: Dependencies;
 
-  constructor(...deps: [Environment, Logger, VMImage, VMKernel, VMNet, Dependencies]) {
+  constructor(...deps: [Environment, Logger, VMImage, VMNet]) {
     super();
 
     this.#environment = deps[0];
     this.#logger = deps[1].namespace("VM");
     this.#image = deps[2];
-    this.#kernel = deps[3];
-    this.#net = deps[4];
-    this.#dependencies = deps[5];
+    this.#net = deps[3];
   }
 
-  create(options: Pick<VMFactory.VM.Options, "id" | "machineTier" | "metadata">) {
+  create(options: Pick<VMFactory.VM.Options, "id" | "machineTier">) {
     return new VMFactory.VM({
       ...options,
 
-      dependencies: this.#dependencies,
       environment: this.#environment,
       image: this.#image,
-      kernel: this.#kernel,
       net: this.#net,
       logger: this.#logger.namespace(options.id),
     });
+  }
+
+  protected override async initialize(_: AbortSignal) {
+    // const artifacts = this.#environment.get("FIRECRACKER_ARTIFACTS", true);
+    // TODO: 验证 firecracker jailer 可执行文件和 vmlinux 文件
   }
 }
 
@@ -52,12 +49,9 @@ export namespace VMFactory {
     #environment: Environment;
     #logger: Logger;
     #image: VMImage;
-    #kernel: VMKernel;
     #net: VMNet;
-    #dependencies: Dependencies;
     #machineTier: "minimal" | "standard" | "performance";
     #id: string;
-    #metadata: Record<string, unknown>;
 
     constructor(options: VM.Options) {
       this.#mac = (() => {
@@ -75,12 +69,9 @@ export namespace VMFactory {
       this.#machineTier = options.machineTier;
       this.#logger = options.logger;
       this.#image = options.image;
-      this.#kernel = options.kernel;
       this.#net = options.net;
       this.#environment = options.environment;
-      this.#dependencies = options.dependencies;
       this.#id = options.id;
-      this.#metadata = options.metadata;
     }
 
     get #machineTierMapMemoryLimit() {
@@ -119,8 +110,16 @@ export namespace VMFactory {
       return this.#machineTierMapCpuCapacity;
     }
 
-    get metadata() {
-      return this.#metadata;
+    get #firecrackerPath() {
+      return join(this.#environment.get("FIRECRACKER_ARTIFACTS", true), "firecracker");
+    }
+
+    get #jailerPath() {
+      return join(this.#environment.get("FIRECRACKER_ARTIFACTS", true), "jailer");
+    }
+
+    get #kernelPath() {
+      return join(this.#environment.get("FIRECRACKER_ARTIFACTS", true), "vmlinux");
     }
 
     async #buildArgs(ns: VMNet.Namespace) {
@@ -131,7 +130,7 @@ export namespace VMFactory {
 
       const args = [];
 
-      args.push("--exec-file", this.#dependencies.firecracker);
+      args.push("--exec-file", this.#firecrackerPath);
       args.push("--chroot-base-dir", join(this.#environment.root, "jailer"));
       args.push("--netns", `/var/run/netns/${ns.name}`);
       args.push("--uid", String(JAIL_UID));
@@ -269,8 +268,6 @@ export namespace VMFactory {
       const results = await Promise.allSettled([
         fc.putLogger({ log_path: "./firecracker.log", level: "Debug", show_level: true, show_log_origin: true }),
         fc.putGuestNetworkInterfaceById("eth0", { iface_id: "eth0", guest_mac: this.#mac, host_dev_name: VMNet.TAP }),
-        fc.putMmdsConfig({ version: "V2", network_interfaces: ["eth0"], ipv4_address: "169.254.169.254", imds_compat: false }),
-        fc.putMmds({ latest: { "meta-data": this.#metadata ?? {} } }),
         fc.putMachineConfiguration({
           cpu_template: "None",
           mem_size_mib: this.#machineTierMapMemoryLimit,
@@ -326,7 +323,7 @@ export namespace VMFactory {
 
       this.#logger.info("Network namespace allocated", { netns: ns.name, slot: ns.slot });
 
-      const root = join(this.#environment.root, "jailer", basename(this.#dependencies.firecracker), this.#id, "root");
+      const root = join(this.#environment.root, "jailer", basename(this.#firecrackerPath), this.#id, "root");
       const controller = new AbortController();
 
       const abort = controller.abort.bind(controller);
@@ -341,7 +338,7 @@ export namespace VMFactory {
 
         this.#logger.info("Preparing jail root filesystem", { root });
 
-        await cp(this.#kernel.path, join(root, "kernel"));
+        await cp(this.#kernelPath, join(root, "kernel"));
         await cp(this.#image.runtime, join(root, "runtime.squashfs"));
 
         this.#logger.debug("Copied kernel and runtime image into jail root");
@@ -359,7 +356,7 @@ export namespace VMFactory {
 
         const args = await this.#buildArgs(ns);
         const shell = $({ halt: true, signal: controller.signal });
-        const process = shell`${this.#dependencies.jailer} ${args}`.nothrow().run();
+        const process = shell`${this.#jailerPath} ${args}`.nothrow().run();
 
         const stderrLogger = this.#logger.namespace("STDERR");
         const stdoutLogger = this.#logger.namespace("STDOUT");
@@ -390,7 +387,11 @@ export namespace VMFactory {
         );
 
         await process.then((result) => {
-          this.#logger.info("Jailer process exited. ", { code: result.exitCode, signal: result.signal, duration: result.duration });
+          this.#logger.info("Jailer process exited. ", {
+            code: result.exitCode,
+            signal: result.signal,
+            duration: result.duration,
+          });
         });
       } finally {
         await this.#net.release(ns).catch(() => {});
@@ -408,13 +409,10 @@ export namespace VMFactory {
     export type Options = {
       id: string;
       machineTier: "minimal" | "standard" | "performance";
-      metadata: Record<string, unknown>;
       environment: Environment;
       logger: Logger;
       image: VMImage;
-      kernel: VMKernel;
       net: VMNet;
-      dependencies: Dependencies;
     };
 
     export type Resources = {

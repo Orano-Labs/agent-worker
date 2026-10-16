@@ -91,8 +91,11 @@ export class Generator {
     return optional;
   }
 
-  #fieldIsStruct(desc: DescField) {
-    return desc.message?.typeName === "google.protobuf.Struct";
+  #fieldIsStructJson(desc: DescField) {
+    // protoc-gen-es represents Struct as JsonObject only when it is used as a
+    // field. The struct_value field of google.protobuf.Value is the exception:
+    // it keeps the generated Struct message type.
+    return desc.message?.typeName === "google.protobuf.Struct" && desc.parent.typeName !== "google.protobuf.Value";
   }
 
   #fieldIsTimestamp(desc: DescField) {
@@ -255,7 +258,9 @@ export class Generator {
         type.push(scalarTypeScriptType(desc.scalar, desc.longAsString));
         break;
       case "message":
-        if (isWrapperDesc(desc.message) && desc.oneof === undefined) {
+        if (this.#fieldIsStructJson(desc)) {
+          type.push(ctx.f.runtime.JsonObject);
+        } else if (isWrapperDesc(desc.message) && desc.oneof === undefined) {
           type.push(scalarTypeScriptType(desc.message.fields[0].scalar, false));
         } else {
           type.push(this.#generateTypeReference(ctx, desc.message));
@@ -273,7 +278,11 @@ export class Generator {
             type.push(scalarTypeScriptType(desc.scalar, desc.longAsString), "[]");
             break;
           case "message":
-            type.push(this.#generateTypeReference(ctx, desc.message), "[]");
+            if (this.#fieldIsStructJson(desc)) {
+              type.push(ctx.f.runtime.JsonObject, "[]");
+            } else {
+              type.push(this.#generateTypeReference(ctx, desc.message), "[]");
+            }
             break;
         }
         break;
@@ -297,7 +306,7 @@ export class Generator {
             valueType = scalarTypeScriptType(desc.scalar, false);
             break;
           case "message":
-            valueType = this.#generateTypeReference(ctx, desc.message);
+            valueType = this.#fieldIsStructJson(desc) ? ctx.f.runtime.JsonObject : this.#generateTypeReference(ctx, desc.message);
             break;
           case "enum":
             valueType = this.#generateTypeReference(ctx, desc.enum);
@@ -328,7 +337,7 @@ export class Generator {
         if (member.kind === "field") {
           const guard = this.#fieldIsOptional(member) ? `${accessor} === undefined ? undefined : ` : "";
 
-          if (this.#fieldIsStruct(member)) {
+          if (this.#fieldIsStructJson(member)) {
             ctx.print`      ${key}: ${guard}${accessor},`;
 
             continue;
@@ -376,7 +385,7 @@ export class Generator {
         const conversion: Printable[] = [];
 
         for (const field of member.fields) {
-          if (this.#fieldIsStruct(field)) {
+          if (this.#fieldIsStructJson(field)) {
             continue;
           }
 
@@ -432,10 +441,6 @@ export class Generator {
   }
 
   #generateTypeReference(ctx: Generator.Context, desc: DescMessage | DescEnum): Printable {
-    if (desc.kind === "message" && desc.typeName === "google.protobuf.Struct") {
-      return ctx.f.runtime.JsonObject;
-    }
-
     if (desc.kind === "message" && desc.typeName === "google.protobuf.Timestamp") {
       return "Date";
     }

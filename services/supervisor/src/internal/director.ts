@@ -1,6 +1,6 @@
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
-import type { Logger } from "@aw/logging";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
 import { Client, SupervisorPortalPB } from "@aw/vm-director/sdk";
 import { createGrpcWebTransport } from "@connectrpc/connect-node";
 

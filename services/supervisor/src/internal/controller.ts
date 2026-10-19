@@ -1,13 +1,13 @@
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
-import type { Logger } from "@aw/logging";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
 import { Client, ProjectPB, SupervisorPortalPB } from "@aw/vm-director/sdk";
-import type { Director } from "@/internal/director";
-import type { Ganesha } from "@/internal/ganesha";
-import type { KVStorage } from "@/internal/kv-storage";
-import type { VMFactory } from "@/internal/vm-factory";
+import { Director } from "@/internal/director";
+import { Ganesha } from "@/internal/ganesha";
+import { KVStorage } from "@/internal/kv-storage";
+import { VMFactory } from "@/internal/vm-factory";
 
 export class Controller extends Container.ServiceConstructable {
   #logger: Logger;

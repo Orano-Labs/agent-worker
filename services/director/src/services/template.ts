@@ -292,7 +292,7 @@ export class TemplateServiceImplementation {
       });
     } catch (error) {
       rm(dir, { recursive: true, force: true }).catch((err) => {
-        this.#logger.error("Failed to rollback forked template directory creation", { directory: dir, error: err });
+        this.#logger.error("Failed to rollback forked template directory creation", { directory: dir, err });
       });
 
       throw error;

@@ -10,6 +10,7 @@ import { Signature, SignatureIdentity } from "@/generated/proto/api/v1/signature
 import { Authenticator } from "@/internal/authenticator-new";
 import { Cache } from "@/internal/cache-new";
 import { Database } from "@/internal/database";
+import { FileSystem } from "@/internal/file-system";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { HTTPServer } from "@/internal/http-server";
 import { Projects } from "@/internal/projects";
@@ -88,6 +89,9 @@ export class Application extends Container.ServiceConstructable {
     container.provide(Templates, (injector) => {
       return new Templates(injector.injectMust(Database), injector.injectMust(Logger));
     });
+    container.provide(FileSystem, (injector) => {
+      return new FileSystem(injector.injectMust(Environment));
+    });
     container.provide(Projects, (injector) => {
       return new Projects(injector.injectMust(Database), injector.injectMust(Logger));
     });
@@ -138,13 +142,19 @@ export class Application extends Container.ServiceConstructable {
       return new SupervisorServiceImpl(injector.injectMust(Authenticator), injector.injectMust(Supervisors), injector.injectMust(Logger));
     });
     container.provide(TemplateServiceImpl, (injector) => {
-      return new TemplateServiceImpl(injector.injectMust(Authenticator), injector.injectMust(Templates), injector.injectMust(Logger));
+      return new TemplateServiceImpl(
+        injector.injectMust(Authenticator),
+        injector.injectMust(Templates),
+        injector.injectMust(FileSystem),
+        injector.injectMust(Logger),
+      );
     });
     container.provide(ProjectServiceImpl, (injector) => {
       return new ProjectServiceImpl(
         injector.injectMust(Authenticator),
         injector.injectMust(Projects),
         injector.injectMust(Templates),
+        injector.injectMust(FileSystem),
         injector.injectMust(Logger),
       );
     });

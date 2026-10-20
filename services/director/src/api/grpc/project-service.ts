@@ -1,4 +1,5 @@
 import { Logger } from "@aw/logging";
+import { createId } from "@orama/cuid2";
 import { Base } from "@/api/grpc/base";
 import {
   ProjectResourceTier,
@@ -15,25 +16,31 @@ import {
   ProjectServiceUpdateMetadataResponse,
 } from "@/generated/proto/api/v1/project";
 import { Authenticator } from "@/internal/authenticator-new";
+import { FileSystem } from "@/internal/file-system";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { Projects } from "@/internal/projects";
 import { Templates } from "@/internal/templates";
 
 export class ProjectServiceImpl extends Base implements ProjectService<GRPCHandler.Context> {
+  #fileSystem: FileSystem;
   #projects: Projects;
   #templates: Templates;
+  #logger: Logger;
 
-  constructor(...deps: [Authenticator, Projects, Templates, Logger]) {
-    const logger = deps[3].namespace("GRPC.ProjectServiceImpl");
+  constructor(...deps: [Authenticator, Projects, Templates, FileSystem, Logger]) {
+    const logger = deps[4].namespace("GRPC.ProjectServiceImpl");
 
     super(deps[0], logger);
 
     this.#projects = deps[1];
     this.#templates = deps[2];
+    this.#fileSystem = deps[3];
+    this.#logger = logger;
   }
 
   async create(request: ProjectServiceCreateRequest, context: GRPCHandler.Context): Promise<ProjectServiceCreateResponse> {
     const owner = this.getAuthenticationIdentityMust(context, "user");
+    const projectId = createId();
 
     if (request.templateId) {
       const template = await this.#templates.get(request.templateId);
@@ -43,20 +50,39 @@ export class ProjectServiceImpl extends Base implements ProjectService<GRPCHandl
       }
     }
 
-    // TODO: create the project workspace directory and copy template contents when a template is provided.
+    let directoryCreated = false;
 
-    const project = await this.#projects.create({
-      ownerId: owner.id,
-      metadata: request.metadata ?? null,
-      resourceTier: this.#toResourceTier(request.resourceTier),
-      templateId: request.templateId ?? null,
-      supervisorId: request.supervisorId ?? null,
-      workspace: request.workspace ?? null,
-    });
+    try {
+      if (request.templateId) {
+        await this.#fileSystem.createProjectDirectoryFromTemplate(projectId, request.templateId);
+      } else {
+        await this.#fileSystem.createProjectDirectory(projectId);
+      }
 
-    return {
-      project: this.#toProject(project),
-    };
+      directoryCreated = true;
+
+      const project = await this.#projects.create({
+        id: projectId,
+        ownerId: owner.id,
+        metadata: request.metadata ?? null,
+        resourceTier: this.#toResourceTier(request.resourceTier),
+        templateId: request.templateId ?? null,
+        supervisorId: request.supervisorId ?? null,
+        workspace: request.workspace ?? null,
+      });
+
+      return {
+        project: this.#toProject(project),
+      };
+    } catch (error) {
+      if (directoryCreated) {
+        await this.#fileSystem.removeProjectDirectory(projectId).catch((cleanupError) => {
+          this.#logger.warn("Failed to clean up project directory.", { projectId, err: cleanupError });
+        });
+      }
+
+      throw error;
+    }
   }
 
   async get(request: ProjectServiceGetRequest, context: GRPCHandler.Context): Promise<ProjectServiceGetResponse> {
@@ -119,8 +145,9 @@ export class ProjectServiceImpl extends Base implements ProjectService<GRPCHandl
       throw GRPCHandler.Error.notFound("Project not found.");
     }
 
-    // TODO: prevent deletion while an instance exists.
-    // TODO: remove the project workspace directory.
+    if (await this.#projects.hasInstance(request.id)) {
+      throw GRPCHandler.Error.failedPrecondition("Project must be stopped before it can be deleted.");
+    }
 
     const deleted = await this.#projects.delete(request.id);
 

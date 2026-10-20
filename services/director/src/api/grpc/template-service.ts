@@ -1,4 +1,5 @@
 import { Logger } from "@aw/logging";
+import { createId } from "@orama/cuid2";
 import { Base } from "@/api/grpc/base";
 import {
   TemplateService,
@@ -19,30 +20,51 @@ import {
   TemplateStatus,
 } from "@/generated/proto/api/v1/template";
 import { Authenticator } from "@/internal/authenticator-new";
+import { FileSystem } from "@/internal/file-system";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { Templates } from "@/internal/templates";
 
 export class TemplateServiceImpl extends Base implements TemplateService<GRPCHandler.Context> {
+  #fileSystem: FileSystem;
   #templates: Templates;
+  #logger: Logger;
 
-  constructor(...deps: [Authenticator, Templates, Logger]) {
-    const logger = deps[2].namespace("GRPC.TemplateServiceImpl");
+  constructor(...deps: [Authenticator, Templates, FileSystem, Logger]) {
+    const logger = deps[3].namespace("GRPC.TemplateServiceImpl");
 
     super(deps[0], logger);
 
     this.#templates = deps[1];
+    this.#fileSystem = deps[2];
+    this.#logger = logger;
   }
 
   async create(request: TemplateServiceCreateRequest, _: GRPCHandler.Context): Promise<TemplateServiceCreateResponse> {
-    // TODO: create the template directory.
+    const templateId = createId();
+    let directoryCreated = false;
 
-    const template = await this.#templates.create({
-      metadata: request.metadata ?? null,
-    });
+    try {
+      await this.#fileSystem.createTemplateDirectory(templateId);
 
-    return {
-      template: this.#toTemplate(template),
-    };
+      directoryCreated = true;
+
+      const template = await this.#templates.create({
+        id: templateId,
+        metadata: request.metadata ?? null,
+      });
+
+      return {
+        template: this.#toTemplate(template),
+      };
+    } catch (error) {
+      if (directoryCreated) {
+        await this.#fileSystem.removeTemplateDirectory(templateId).catch((cleanupError) => {
+          this.#logger.warn("Failed to clean up template directory.", { templateId, err: cleanupError });
+        });
+      }
+
+      throw error;
+    }
   }
 
   async updateMetadata(
@@ -83,16 +105,32 @@ export class TemplateServiceImpl extends Base implements TemplateService<GRPCHan
       throw GRPCHandler.Error.notFound("Template not found.");
     }
 
-    // TODO: copy the source template directory and clean it up on failure.
+    const templateId = createId();
+    let directoryCreated = false;
 
-    const template = await this.#templates.create({
-      metadata: request.metadata ?? null,
-      sourceTemplateId: source.id,
-    });
+    try {
+      await this.#fileSystem.createTemplateDirectoryFromTemplate(templateId, source.id);
 
-    return {
-      template: this.#toTemplate(template),
-    };
+      directoryCreated = true;
+
+      const template = await this.#templates.create({
+        id: templateId,
+        metadata: request.metadata ?? null,
+        sourceTemplateId: source.id,
+      });
+
+      return {
+        template: this.#toTemplate(template),
+      };
+    } catch (error) {
+      if (directoryCreated) {
+        await this.#fileSystem.removeTemplateDirectory(templateId).catch((cleanupError) => {
+          this.#logger.warn("Failed to clean up forked template directory.", { templateId, err: cleanupError });
+        });
+      }
+
+      throw error;
+    }
   }
 
   async get(request: TemplateServiceGetRequest, _: GRPCHandler.Context): Promise<TemplateServiceGetResponse> {
@@ -132,8 +170,6 @@ export class TemplateServiceImpl extends Base implements TemplateService<GRPCHan
     if (!deleted) {
       throw GRPCHandler.Error.notFound("Template not found.");
     }
-
-    // TODO: remove the template directory.
 
     return {
       template: this.#toTemplate(template),

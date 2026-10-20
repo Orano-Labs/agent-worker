@@ -4,52 +4,33 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { Container } from "@aw/container";
 import { Environment } from "@aw/environment";
+import { createId } from "@orama/cuid2";
 import { ZipArchive } from "archiver";
-import { Projects } from "@/internal/projects";
-import { Templates } from "@/internal/templates";
 
 export class FileSystem extends Container.ServiceConstructable {
   #environment: Environment;
-  #projects: Projects;
-  #templates: Templates;
 
-  constructor(...deps: [Environment, Projects, Templates]) {
+  constructor(...deps: [Environment]) {
     super();
 
     this.#environment = deps[0];
-    this.#projects = deps[1];
-    this.#templates = deps[2];
   }
 
   async resolveProjectOperators(projectId: string): Promise<FileSystem.Operators> {
-    const project = await this.#projects.get(projectId);
-
-    if (!project) {
-      throw new Error(`Project "${projectId}" was not found.`);
-    }
-
     // TODO: return a remote Supervisor-backed adapter when the project is not hosted locally.
-    return new FileSystem.Operators.LocalAdapter(this.#operatorPath("projects", project.id));
+    return new FileSystem.Operators.LocalAdapter(this.#operatorPath("projects", projectId));
   }
 
   async resolveTemplateOperators(templateId: string): Promise<FileSystem.Operators> {
-    const template = await this.#templates.get(templateId);
-
-    if (!template) {
-      throw new Error(`Template "${templateId}" was not found.`);
-    }
-
-    return new FileSystem.Operators.LocalAdapter(this.#operatorPath("templates", template.id));
+    return new FileSystem.Operators.LocalAdapter(this.#operatorPath("templates", templateId));
   }
 
   async createProjectDirectory(projectId: string) {
-    const project = await this.#projects.get(projectId);
+    const path = this.#operatorPath("projects", projectId);
 
-    if (!project) {
-      throw new Error(`Project "${projectId}" was not found.`);
+    if (await this.#exists(path)) {
+      throw new Error(`Project directory "${projectId}" already exists.`);
     }
-
-    const path = this.#operatorPath("projects", project.id);
 
     await mkdir(path, { recursive: true });
 
@@ -57,13 +38,11 @@ export class FileSystem extends Container.ServiceConstructable {
   }
 
   async createTemplateDirectory(templateId: string) {
-    const template = await this.#templates.get(templateId);
+    const path = this.#operatorPath("templates", templateId);
 
-    if (!template) {
-      throw new Error(`Template "${templateId}" was not found.`);
+    if (await this.#exists(path)) {
+      throw new Error(`Template directory "${templateId}" already exists.`);
     }
-
-    const path = this.#operatorPath("templates", template.id);
 
     await mkdir(path, { recursive: true });
 
@@ -71,24 +50,55 @@ export class FileSystem extends Container.ServiceConstructable {
   }
 
   async createProjectDirectoryFromTemplate(projectId: string, templateId: string) {
-    const [project, template] = await Promise.all([this.#projects.get(projectId), this.#templates.get(templateId)]);
+    return this.#copyDirectory("templates", templateId, "projects", projectId);
+  }
 
-    if (!project) {
-      throw new Error(`Project "${projectId}" was not found.`);
+  async createTemplateDirectoryFromTemplate(templateId: string, sourceTemplateId: string) {
+    return this.#copyDirectory("templates", sourceTemplateId, "templates", templateId);
+  }
+
+  async removeProjectDirectory(projectId: string) {
+    await this.#removeDirectory("projects", projectId);
+  }
+
+  async removeTemplateDirectory(templateId: string) {
+    await this.#removeDirectory("templates", templateId);
+  }
+
+  async #copyDirectory(sourceKind: "projects" | "templates", sourceId: string, targetKind: "projects" | "templates", targetId: string) {
+    const source = this.#operatorPath(sourceKind, sourceId);
+    const target = this.#operatorPath(targetKind, targetId);
+    const stagingRoot = resolve(this.#root, targetKind, ".staging");
+    const staging = join(stagingRoot, createId());
+
+    if (await this.#exists(target)) {
+      throw new Error(`Directory "${targetId}" already exists.`);
     }
 
-    if (!template) {
-      throw new Error(`Template "${templateId}" was not found.`);
+    // TODO: delegate to the Supervisor-hosted file system when the target is not local.
+    await mkdir(stagingRoot, { recursive: true });
+
+    try {
+      await cp(source, staging, { recursive: true, force: false, errorOnExist: true });
+      await rename(staging, target);
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true }).catch(() => {});
+
+      throw error;
     }
-
-    const source = this.#operatorPath("templates", template.id);
-    const target = this.#operatorPath("projects", project.id);
-
-    // TODO: delegate to the Supervisor-hosted file system when the project is not local.
-    await mkdir(dirname(target), { recursive: true });
-    await cp(source, target, { recursive: true, force: false, errorOnExist: true });
 
     return target;
+  }
+
+  async #removeDirectory(kind: "projects" | "templates", id: string) {
+    await rm(this.#operatorPath(kind, id), { recursive: true, force: true });
+  }
+
+  async #exists(path: string) {
+    return lstat(path).then(
+      () => true,
+      () => false,
+    );
   }
 
   #operatorPath(kind: "projects" | "templates", id: string) {

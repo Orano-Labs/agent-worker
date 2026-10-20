@@ -1,12 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Environment } from "@aw/environment";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { FileSystem } from "@/internal/file-system";
-import { Projects } from "@/internal/projects";
-import { Templates } from "@/internal/templates";
 
 const collect = async (stream: ReadableStream<Uint8Array>) => {
   const reader = stream.getReader();
@@ -331,16 +329,10 @@ describe("FileSystem", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  const createFileSystem = (ids: { projects?: string[]; templates?: string[] } = {}) => {
+  const createFileSystem = () => {
     const environment = { get: (key: string) => (key === "FS_ROOT" ? root : undefined) } as unknown as Environment;
-    const projects = {
-      get: async (id: string) => ((ids.projects ?? ["project-1"]).includes(id) ? { id } : null),
-    } as unknown as Projects;
-    const templates = {
-      get: async (id: string) => ((ids.templates ?? ["template-1"]).includes(id) ? { id } : null),
-    } as unknown as Templates;
 
-    return new FileSystem(environment, projects, templates);
+    return new FileSystem(environment);
   };
 
   it("creates project and template directories", async () => {
@@ -364,8 +356,63 @@ describe("FileSystem", () => {
     expect(await readFile(join(projectPath, "index.ts"), "utf8")).toBe("export {};");
   });
 
+  it("uses staging when creating a project directory from a template", async () => {
+    const fileSystem = createFileSystem();
+    const templatePath = await fileSystem.createTemplateDirectory("template-1");
+
+    await writeFile(join(templatePath, "index.ts"), "export {};");
+
+    await fileSystem.createProjectDirectoryFromTemplate("project-1", "template-1");
+
+    await expect(readdir(join(root, "projects", ".staging"))).resolves.toEqual([]);
+  });
+
+  it("does not overwrite an existing project directory", async () => {
+    const fileSystem = createFileSystem();
+    const templatePath = await fileSystem.createTemplateDirectory("template-1");
+    const projectPath = await fileSystem.createProjectDirectory("project-1");
+
+    await writeFile(join(templatePath, "template.ts"), "template");
+    await writeFile(join(projectPath, "existing.ts"), "existing");
+
+    await expect(fileSystem.createProjectDirectoryFromTemplate("project-1", "template-1")).rejects.toThrow("already exists");
+    await expect(readFile(join(projectPath, "existing.ts"), "utf8")).resolves.toBe("existing");
+  });
+
+  it("cleans up staging when copying fails", async () => {
+    const fileSystem = createFileSystem();
+
+    await expect(fileSystem.createProjectDirectoryFromTemplate("project-1", "missing-template")).rejects.toThrow();
+
+    await expect(readdir(join(root, "projects", ".staging"))).resolves.toEqual([]);
+    await expect(stat(join(root, "projects", "project-1"))).rejects.toThrow();
+  });
+
+  it("creates a template directory from another template", async () => {
+    const fileSystem = createFileSystem();
+    const sourcePath = await fileSystem.createTemplateDirectory("template-1");
+
+    await writeFile(join(sourcePath, "index.ts"), "export {};");
+
+    const targetPath = await fileSystem.createTemplateDirectoryFromTemplate("template-2", "template-1");
+
+    expect(await readFile(join(targetPath, "index.ts"), "utf8")).toBe("export {};");
+  });
+
+  it("removes project and template directories", async () => {
+    const fileSystem = createFileSystem();
+    const projectPath = await fileSystem.createProjectDirectory("project-1");
+    const templatePath = await fileSystem.createTemplateDirectory("template-1");
+
+    await fileSystem.removeProjectDirectory("project-1");
+    await fileSystem.removeTemplateDirectory("template-1");
+
+    await expect(stat(projectPath)).rejects.toThrow();
+    await expect(stat(templatePath)).rejects.toThrow();
+  });
+
   it("rejects unsafe identifiers", async () => {
-    const fileSystem = createFileSystem({ projects: [".."] });
+    const fileSystem = createFileSystem();
 
     await expect(fileSystem.createProjectDirectory("..")).rejects.toThrow("Invalid file system identifier");
   });

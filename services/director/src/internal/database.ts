@@ -135,7 +135,7 @@ export class Database extends Container.ServiceConstructable {
 
     pool.on("connection", (connection) => {
       connection.on("error", (error) => {
-        this.#logger.error("Unexpected MySQL connection error.", { error });
+        this.#logger.error("Unexpected MySQL connection error.", { err: error });
       });
     });
 
@@ -194,7 +194,7 @@ export class Database extends Container.ServiceConstructable {
       await pool.end();
       this.#logger.info("Database pool closed gracefully.");
     } catch (error) {
-      this.#logger.error("Failed to close the database pool during shutdown.", { error });
+      this.#logger.error("Failed to close the database pool during shutdown.", { err: error });
     }
   }
 }

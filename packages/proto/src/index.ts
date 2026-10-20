@@ -84,6 +84,10 @@ export namespace Proto {
       return this.#converters.fromRuntimeShape(shape);
     }
 
+    fromRuntimeShapeUnsafe(shape: RuntimeShape) {
+      return this.#converters.fromRuntimeShape(shape);
+    }
+
     fromAny(any: Message.Any) {
       if (any.typeUrl === this.#schema.typeName) {
         return this.fromBinary(any.value);

@@ -13,3 +13,8 @@ plugins:
       - erasable_syntax=true
       - map_imports=buf/validate/:@bufbuild/protovalidate/gen
       - map_imports=extensions/:@/generated/proto-extensions
+  - local: proto-codegen
+    out: src/generated/proto
+    strategy: all
+    opt:
+      - target=ts

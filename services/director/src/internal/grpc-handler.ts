@@ -13,7 +13,6 @@ import { createValidator, violationsToProto } from "@bufbuild/protovalidate";
 import { ConnectError, ContextKey, createContextKey, createContextValues, HandlerContext, Interceptor } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { getClientIp } from "@supercharge/request-ip";
-import { Any } from "@/generated/proto/google/protobuf/any";
 import { HTTPServer } from "@/internal/http-server";
 
 export class GRPCHandler extends Container.ServiceConstructable {
@@ -285,7 +284,7 @@ export class GRPCHandler extends Container.ServiceConstructable {
 
       for (const detail of internal.details) {
         final.details.push({
-          type: detail.typeUrl,
+          type: detail.type,
           value: detail.value,
         });
       }
@@ -609,11 +608,11 @@ export namespace GRPCHandler {
 
   // biome-ignore lint/suspicious/noShadowRestrictedNames: x
   export class Error extends globalThis.Error {
-    #details: Any[];
+    #details: Error.Detail[];
     #metadata: Headers;
     #code: Error.Code;
 
-    constructor(code: Error.Code, message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    constructor(code: Error.Code, message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       super(message, { cause });
 
       this.#details = [...(details || [])];
@@ -635,9 +634,9 @@ export namespace GRPCHandler {
 
     find<T extends Proto.Message.Unknown>(message: Proto.Message<T>) {
       for (const detail of this.#details) {
-        if (detail.typeUrl === message.name) {
+        if (detail.type === message.name) {
           try {
-            return message.fromAny(detail);
+            return message.fromAny({ typeUrl: detail.type, value: detail.value });
           } catch {}
         }
       }
@@ -649,9 +648,9 @@ export namespace GRPCHandler {
       const result: T[] = [];
 
       for (const detail of this.#details) {
-        if (detail.typeUrl === message.name) {
+        if (detail.type === message.name) {
           try {
-            const value = message.fromAny(detail);
+            const value = message.fromAny({ typeUrl: detail.type, value: detail.value });
 
             if (value) {
               result.push(value);
@@ -671,14 +670,19 @@ export namespace GRPCHandler {
       return this;
     }
 
-    withDetail(detail: Any): this;
+    withDetail(detail: Error.Detail): this;
     withDetail<T extends Proto.Message>(message: T, value: Proto.Message.Type<T>): this;
 
-    withDetail<T extends Proto.Message>(...args: [Any] | [message: T, value: Proto.Message.Type<T>]) {
+    withDetail<T extends Proto.Message>(...args: [Error.Detail] | [message: T, value: Proto.Message.Type<T>]) {
       if (args.length === 1) {
         this.#details.push(args[0]);
       } else {
-        this.#details.push(args[0].toAny(args[1]));
+        const any = args[0].toAny(args[1]);
+
+        this.#details.push({
+          type: any.typeUrl,
+          value: any.value,
+        });
       }
 
       return this;
@@ -702,67 +706,67 @@ export namespace GRPCHandler {
       return new Error(code, message, undefined, undefined, unknown);
     }
 
-    static canceled(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static canceled(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Canceled, message, metadata, details, cause);
     }
 
-    static unknown(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static unknown(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Unknown, message, metadata, details, cause);
     }
 
-    static invalidArgument(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static invalidArgument(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.InvalidArgument, message, metadata, details, cause);
     }
 
-    static deadlineExceeded(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static deadlineExceeded(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.DeadlineExceeded, message, metadata, details, cause);
     }
 
-    static notFound(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static notFound(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.NotFound, message, metadata, details, cause);
     }
 
-    static alreadyExists(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static alreadyExists(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.AlreadyExists, message, metadata, details, cause);
     }
 
-    static permissionDenied(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static permissionDenied(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.PermissionDenied, message, metadata, details, cause);
     }
 
-    static resourceExhausted(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static resourceExhausted(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.ResourceExhausted, message, metadata, details, cause);
     }
 
-    static failedPrecondition(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static failedPrecondition(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.FailedPrecondition, message, metadata, details, cause);
     }
 
-    static aborted(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static aborted(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Aborted, message, metadata, details, cause);
     }
 
-    static outOfRange(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static outOfRange(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.OutOfRange, message, metadata, details, cause);
     }
 
-    static unimplemented(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static unimplemented(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Unimplemented, message, metadata, details, cause);
     }
 
-    static internal(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static internal(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Internal, message, metadata, details, cause);
     }
 
-    static unavailable(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static unavailable(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Unavailable, message, metadata, details, cause);
     }
 
-    static dataLoss(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static dataLoss(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.DataLoss, message, metadata, details, cause);
     }
 
-    static unauthenticated(message: string, metadata?: HeadersInit, details?: Any[], cause?: unknown) {
+    static unauthenticated(message: string, metadata?: HeadersInit, details?: Error.Detail[], cause?: unknown) {
       return new Error(Error.Code.Unauthenticated, message, metadata, details, cause);
     }
   }
@@ -786,5 +790,7 @@ export namespace GRPCHandler {
       DataLoss = 15,
       Unauthenticated = 16,
     }
+
+    export type Detail = { type: string; value: Uint8Array };
   }
 }

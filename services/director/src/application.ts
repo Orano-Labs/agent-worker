@@ -1,6 +1,7 @@
 import { Container } from "@aw/container";
 import { Environment } from "@aw/environment";
 import { Logger } from "@aw/logging";
+import { FileSystemServiceImpl } from "@/api/grpc/file-system-service";
 import { ProjectServiceImpl } from "@/api/grpc/project-service";
 import { SupervisorServiceImpl } from "@/api/grpc/supervisor-service";
 import { TemplateServiceImpl } from "@/api/grpc/template-service";
@@ -142,6 +143,15 @@ export class Application extends Container.ServiceConstructable {
     container.provide(ProjectServiceImpl, (injector) => {
       return new ProjectServiceImpl(
         injector.injectMust(Authenticator),
+        injector.injectMust(Projects),
+        injector.injectMust(Templates),
+        injector.injectMust(Logger),
+      );
+    });
+    container.provide(FileSystemServiceImpl, (injector) => {
+      return new FileSystemServiceImpl(
+        injector.injectMust(Authenticator),
+        injector.injectMust(Environment),
         injector.injectMust(Projects),
         injector.injectMust(Templates),
         injector.injectMust(Logger),

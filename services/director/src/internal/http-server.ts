@@ -1,23 +1,27 @@
-import { createServer } from "node:http";
-import type { Socket } from "node:net";
-
-import { Container } from "@/helpers/container";
-import { Result } from "@/helpers/result";
-import { Logger } from "@/internal/logger";
-import { Variables } from "@/internal/variables";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { Socket } from "node:net";
+import { networkInterfaces } from "node:os";
+import { Duplex } from "node:stream";
+import { Container } from "@aw/container";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
+import { addRoute, createRouter, findRoute, MatchedRoute } from "rou3";
 
 const SHUTDOWN_GRACE_MS = 5_000;
 
-export class HTTPServer {
+export class HTTPServer extends Container.ServiceConstructable {
+  #environment: Environment;
   #server: ReturnType<typeof createServer>;
-  #variables: Variables;
   #logger: Logger;
   #sockets: Set<Socket>;
+  #router: HTTPServer.Router;
 
-  constructor() {
+  constructor(...deps: [Environment, Logger]) {
+    super();
+
+    this.#environment = deps[0];
     this.#server = createServer();
-    this.#variables = Container.inject(Variables);
-    this.#logger = Container.inject(Logger).scope("HTTPServer");
+    this.#logger = deps[1].namespace("Server");
     this.#sockets = new Set();
 
     // Track open connections so shutdown can drain them.
@@ -27,6 +31,8 @@ export class HTTPServer {
         this.#sockets.delete(socket);
       });
     });
+
+    this.#router = new HTTPServer.Router(this.#server);
   }
 
   get server() {
@@ -38,27 +44,70 @@ export class HTTPServer {
   }
 
   get url() {
-    return `http://127.0.0.1:${this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008)}`;
+    return `http://127.0.0.1:${this.#environment.getNumber("HTTP_PORT", 3008)}`;
   }
 
-  /**
-   * Gracefully shut down the HTTP server.
-   *
-   * 1. Stops accepting new connections via {@link server.close}.
-   * 2. Waits up to {@link SHUTDOWN_GRACE_MS} for in-flight requests to complete.
-   * 3. Force-destroys any remaining sockets.
-   */
-  async shutdown(): Promise<void> {
+  get router() {
+    return this.#router;
+  }
+
+  protected override async initialize(signal: AbortSignal) {
+    if (signal.aborted) {
+      throw signal.reason;
+    }
+
+    const port = this.#environment.getNumber("HTTP_PORT", 3008);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          this.#server.off("listening", onListening);
+          reject(error);
+        };
+
+        const onListening = () => {
+          this.#server.off("error", onError);
+          resolve();
+        };
+
+        this.#server.once("error", onError);
+        this.#server.once("listening", onListening);
+        this.#server.listen(port);
+      });
+    } catch (error) {
+      throw new Error("Failed to start HTTP server.", { cause: error });
+    }
+
+    const endpoints = Object.values(networkInterfaces())
+      .flatMap((ifaces) => ifaces ?? [])
+      .filter((iface) => iface.family === "IPv4")
+      .map((iface) => `http://${iface.address}:${port}`);
+
+    this.#logger.info(`HTTP server is running on port ${port}.`, { endpoints });
+  }
+
+  protected override async dispose(_reason?: unknown) {
+    if (!this.#server.listening) {
+      return;
+    }
+
     this.#logger.info("Shutting down HTTP server...");
 
-    // Stop accepting new connections.
-    const closed = new Promise<void>((resolve) => {
-      this.#server.close(() => resolve());
-    });
+    await new Promise<void>((resolve) => {
+      let settled = false;
 
-    // Give existing connections a grace period, then destroy them.
-    const timeout = new Promise<void>((resolve) => {
-      setTimeout(() => {
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+
+      // Give existing connections a grace period, then destroy them.
+      const timer = setTimeout(() => {
         if (this.#sockets.size > 0) {
           this.#logger.warn("Force-closing remaining HTTP connections", {
             count: this.#sockets.size,
@@ -69,52 +118,132 @@ export class HTTPServer {
           socket.destroy();
         }
 
-        resolve();
+        finish();
       }, SHUTDOWN_GRACE_MS);
-    });
 
-    await Promise.race([closed, timeout]);
+      this.#server.close(() => finish());
+    });
 
     this.#logger.info("HTTP server shut down.");
   }
+}
 
-  async init(): Promise<Result<void, Error>> {
-    const port = this.#variables.getNumber("AW_DIRECTOR_HTTP_PORT", 3008);
+export namespace HTTPServer {
+  export class Router {
+    #server: ReturnType<typeof createServer>;
+    #requestRouter: ReturnType<typeof createRouter<Router.RequestHandler>>;
+    #upgradeRouter: ReturnType<typeof createRouter<Router.UpgradeHandler>>;
 
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const callback = async () => {
-          this.#logger.info(`HTTP server is running on port ${port}`);
+    constructor(server: ReturnType<typeof createServer>) {
+      this.#server = server;
 
-          const os = await import("node:os");
-          const interfaces = os.networkInterfaces();
+      this.#requestRouter = createRouter<Router.RequestHandler>();
+      this.#upgradeRouter = createRouter<Router.UpgradeHandler>();
 
-          const endpoints: unknown[] = [];
+      this.#server.on("request", (req, res) => {
+        const route = this.#find("request", req.method ?? "GET", req.url ?? "/");
 
-          for (const [_, ifaces] of Object.entries(interfaces)) {
-            if (!ifaces) continue;
+        if (!route) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not Found");
 
-            for (const iface of ifaces) {
-              if (iface.family === "IPv4") {
-                endpoints.push(`http://${iface.address}:${port}`);
-              }
-            }
-          }
+          return;
+        }
 
-          this.#logger.info("Server is listening on all interfaces. Available endpoints:", {
-            endpoints,
-          });
-
-          resolve();
-        };
-
-        this.#server.listen(port, callback);
-        this.#server.on("error", reject);
+        route.data({
+          req,
+          res,
+          params: route.params ?? {},
+        });
       });
-    } catch (error) {
-      return Result.error(new Error("Failed to start HTTP server.", { cause: error }));
+
+      this.#server.on("upgrade", (req, socket, head) => {
+        const route = this.#find("upgrade", req.method ?? "GET", req.url ?? "/");
+
+        if (!route) {
+          socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+
+          return;
+        }
+
+        route.data({
+          req,
+          socket,
+          head,
+          params: route.params ?? {},
+        });
+      });
     }
 
-    return Result.ok();
+    #normalizeMethod(method: string) {
+      const normalized = method.trim().toUpperCase();
+
+      // rou3 uses an empty method to represent a route that matches every method.
+      return normalized === "*" ? "" : normalized;
+    }
+
+    #normalizePath(path: string) {
+      const query = path.indexOf("?");
+
+      if (query !== -1) {
+        path = path.slice(0, query);
+      }
+
+      const hash = path.indexOf("#");
+
+      if (hash !== -1) {
+        path = path.slice(0, hash);
+      }
+
+      return path;
+    }
+
+    request(method: Router.Method, path: string, handler: Router.RequestHandler) {
+      addRoute(this.#requestRouter, this.#normalizeMethod(method), path, handler);
+
+      return this;
+    }
+
+    upgrade(method: Router.Method, path: string, handler: Router.UpgradeHandler) {
+      addRoute(this.#upgradeRouter, this.#normalizeMethod(method), path, handler);
+
+      return this;
+    }
+
+    #find(mode: "request", method: string, path: string): MatchedRoute<Router.RequestHandler> | undefined;
+    #find(mode: "upgrade", method: string, path: string): MatchedRoute<Router.UpgradeHandler> | undefined;
+    #find(mode: Router.Mode, method: string, path: string) {
+      const normalizedMethod = this.#normalizeMethod(method);
+      const normalizedPath = this.#normalizePath(path);
+
+      if (mode === "request") {
+        return findRoute(this.#requestRouter, normalizedMethod, normalizedPath, { params: true, normalize: true });
+      }
+
+      return findRoute(this.#upgradeRouter, normalizedMethod, normalizedPath, { params: true, normalize: true });
+    }
+  }
+
+  export namespace Router {
+    export type Mode = "request" | "upgrade";
+
+    export type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "CONNECT" | "TRACE" | "*";
+
+    export type RequestContext = {
+      req: IncomingMessage;
+      res: ServerResponse;
+      params: Record<string, string>;
+    };
+
+    export type UpgradeContext = {
+      req: IncomingMessage;
+      socket: Duplex;
+      head: Buffer;
+      params: Record<string, string>;
+    };
+
+    export type RequestHandler = (context: RequestContext) => void | Promise<void>;
+
+    export type UpgradeHandler = (context: UpgradeContext) => void | Promise<void>;
   }
 }

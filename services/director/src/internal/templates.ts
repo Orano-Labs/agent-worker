@@ -21,7 +21,7 @@ export class Templates extends Container.ServiceConstructable {
   }
 
   async create(input: Templates.CreateInput = {}) {
-    const id = createId();
+    const id = input.id ?? createId();
     const metadata = input.metadata == null ? null : Buffer.from(input.metadata);
 
     const template = await this.#database.client.transaction(async (tx) => {
@@ -128,6 +128,7 @@ export namespace Templates {
   export type Status = Template["status"];
 
   export type CreateInput = {
+    id?: string;
     metadata?: Uint8Array | null;
     status?: Status;
     sourceTemplateId?: string | null;

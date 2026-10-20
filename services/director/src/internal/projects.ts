@@ -3,7 +3,7 @@ import { Logger } from "@aw/logging";
 import { createId } from "@orama/cuid2";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { Database } from "@/internal/database";
-import { ProjectResourceTierEnum, ProjectTable } from "@/internal/database-schema";
+import { InstanceTable, ProjectResourceTierEnum, ProjectTable } from "@/internal/database-schema";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -20,7 +20,7 @@ export class Projects extends Container.ServiceConstructable {
   }
 
   async create(input: Projects.CreateInput) {
-    const id = createId();
+    const id = input.id ?? createId();
     const metadata = input.metadata == null ? null : Buffer.from(input.metadata);
 
     const project = await this.#database.client.transaction(async (tx) => {
@@ -123,6 +123,16 @@ export class Projects extends Container.ServiceConstructable {
     return this.get(id);
   }
 
+  async hasInstance(id: string) {
+    const [instance] = await this.#database.client
+      .select({ id: InstanceTable.id })
+      .from(InstanceTable)
+      .where(eq(InstanceTable.projectId, id))
+      .limit(1);
+
+    return Boolean(instance);
+  }
+
   async delete(id: string) {
     const [result] = await this.#database.client
       .update(ProjectTable)
@@ -144,6 +154,7 @@ export namespace Projects {
   export type ResourceTier = Project["resourceTier"];
 
   export type CreateInput = {
+    id?: string;
     ownerId: string;
     metadata?: Uint8Array | null;
     resourceTier?: ResourceTier;

@@ -367,8 +367,8 @@ export class GRPCHandler extends Container.ServiceConstructable {
 
     const adapter = connectNodeAdapter({
       grpc: false,
-      grpcWeb: true,
-      connect: false,
+      grpcWeb: false,
+      connect: true,
       requestPathPrefix: "/grpc",
       routes: (router) => {
         for (const service of this.#services) {
@@ -412,12 +412,12 @@ export class GRPCHandler extends Container.ServiceConstructable {
       },
     });
 
-    this.#server.router.request("*", "/grpc", ({ req, res }) => {
+    this.#server.router.request("*", "grpc/**:rest", ({ req, res }) => {
       adapter(req, res);
     });
 
     this.#logger.info("Registered endpoint routes", {
-      path: "/grpc-web",
+      path: "/grpc",
       services: this.#services.length,
       routes: routeCount,
     });

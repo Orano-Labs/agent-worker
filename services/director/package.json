@@ -84,6 +84,9 @@
     "@types/async-lock": "^1.4.2",
     "change-case": "^5.4.4",
     "drizzle-kit": "1.0.0-rc.4",
+    "get-port": "^7.2.0",
+    "mysql-memory-server": "^1.17.0",
+    "redis-memory-server": "^0.17.1",
     "tinyglobby": "^0.2.17",
     "tsx": "^4.23.13"
   }

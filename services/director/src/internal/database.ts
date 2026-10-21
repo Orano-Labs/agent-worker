@@ -4,7 +4,8 @@ import { Logger } from "@aw/logging";
 import { defineRelations } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { migrate } from "drizzle-orm/mysql2/migrator";
-import { createPool, Pool } from "mysql2/promise";
+import { createPool } from "mysql2";
+import { Pool as PromisePool } from "mysql2/promise";
 
 import { InstanceTable, ProjectTable, SupervisorTable, TemplateTable, UserTable } from "@/internal/database-schema";
 
@@ -97,8 +98,8 @@ export class Database extends Container.ServiceConstructable {
   #environment: Environment;
   #logger: Logger;
 
-  #pool?: Pool;
-  #client?: ReturnType<typeof drizzle<typeof DATABASE_RELATIONS>>;
+  #pool?: PromisePool;
+  #client?: ReturnType<typeof drizzle<typeof DATABASE_RELATIONS, ReturnType<typeof createPool>>>;
 
   constructor(...deps: [Environment, Logger]) {
     super();
@@ -131,9 +132,10 @@ export class Database extends Container.ServiceConstructable {
       throw new Error("Database initialization aborted.", { cause: signal.reason });
     }
 
-    const pool = createPool(connectionString);
+    const callbackPool = createPool(connectionString);
+    const pool = callbackPool.promise();
 
-    pool.on("connection", (connection) => {
+    callbackPool.on("connection", (connection) => {
       connection.on("error", (error) => {
         this.#logger.error("Unexpected MySQL connection error.", { err: error });
       });
@@ -156,7 +158,7 @@ export class Database extends Container.ServiceConstructable {
     }
 
     const client = drizzle({
-      client: pool,
+      client: callbackPool,
       relations: DATABASE_RELATIONS,
     });
 

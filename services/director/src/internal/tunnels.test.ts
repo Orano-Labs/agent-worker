@@ -32,7 +32,7 @@ type Harness = {
   close: () => Promise<void>;
 };
 
-const createHarness = async (initialSession = true): Promise<Harness> => {
+const createHarness = async (initialSession = true, tunnels?: Tunnels): Promise<Harness> => {
   let pings = 0;
   const authorities: string[] = [];
 
@@ -78,7 +78,7 @@ const createHarness = async (initialSession = true): Promise<Harness> => {
   }
 
   const sockets: Socket[] = [];
-  const tunnel = new Tunnels.Tunnel({ logger: createLogger() });
+  const tunnel = tunnels ? tunnels.ensure("supervisor-1") : new Tunnels.Tunnel({ logger: createLogger() });
 
   const connectSession = async () => {
     const serverSocket = new Promise<Socket>((resolve) => {
@@ -124,6 +124,13 @@ const createHarness = async (initialSession = true): Promise<Harness> => {
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 describe("Tunnels", () => {
+  let harness: Harness | undefined;
+
+  afterEach(async () => {
+    await harness?.close();
+    harness = undefined;
+  });
+
   it("gets or creates a tunnel by id", async () => {
     const tunnels = new Tunnels(createLogger());
     const first = tunnels.ensure("supervisor-1");
@@ -134,6 +141,47 @@ describe("Tunnels", () => {
     await tunnels[Container.SymbolDispose]();
 
     expect(() => tunnels.ensure("supervisor-1")).toThrow();
+  });
+
+  it("frees the id as soon as a tunnel starts closing", async () => {
+    const tunnels = new Tunnels(createLogger());
+    const first = tunnels.ensure("supervisor-1");
+    const closing = tunnels.close("supervisor-1");
+    const second = tunnels.ensure("supervisor-1");
+
+    expect(second).not.toBe(first);
+
+    await closing;
+    await tunnels[Container.SymbolDispose]();
+  });
+
+  it("tracks online supervisors and emits pool events", async () => {
+    const tunnels = new Tunnels(createLogger());
+    const online: string[] = [];
+    const offline: string[] = [];
+
+    tunnels.on("online", (id) => {
+      online.push(id);
+    });
+    tunnels.on("offline", (id) => {
+      offline.push(id);
+    });
+
+    harness = await createHarness(false, tunnels);
+
+    expect([...tunnels.iterator()]).toEqual([]);
+
+    await harness.connect();
+
+    expect([...tunnels.iterator()].map(([id]) => id)).toEqual(["supervisor-1"]);
+    expect(online).toEqual(["supervisor-1"]);
+
+    await tunnels.close("supervisor-1");
+
+    expect([...tunnels.iterator()]).toEqual([]);
+    expect(offline).toEqual(["supervisor-1"]);
+
+    await tunnels[Container.SymbolDispose]();
   });
 });
 

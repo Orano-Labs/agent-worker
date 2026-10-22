@@ -18,8 +18,9 @@ const TUNNEL_PING_TIMEOUT_MS = 5_000;
 const TUNNEL_PING_PAYLOAD = Buffer.alloc(8);
 const TUNNEL_MAX_STREAMS_PER_SESSION = 128;
 
-export class Tunnels extends Container.ServiceConstructable {
+export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.Service {
   #controller: AbortController;
+  #closing: Set<Promise<void>>;
   #tunnels: Map<string, Tunnels.Tunnel>;
   #logger: Logger;
 
@@ -29,19 +30,35 @@ export class Tunnels extends Container.ServiceConstructable {
     this.#logger = deps[0].namespace("Tunnels");
 
     this.#controller = new AbortController();
+    this.#closing = new Set();
     this.#tunnels = new Map();
   }
 
   ensure(id: string) {
-    let tunnel = this.#tunnels.get(id);
+    const existing = this.#tunnels.get(id);
 
-    if (!tunnel) {
-      if (this.#controller.signal.aborted) {
-        throw this.#controller.signal.reason;
+    if (existing) {
+      return existing;
+    }
+
+    if (this.#controller.signal.aborted) {
+      throw this.#controller.signal.reason;
+    }
+
+    const tunnel = new Tunnels.Tunnel({ logger: this.#logger.namespace("Tunnel").binding({ id }) });
+
+    tunnel.on("online", (online) => {
+      if (this.#tunnels.get(id) !== tunnel) {
+        return;
       }
 
-      tunnel = new Tunnels.Tunnel({ logger: this.#logger.namespace("Tunnel").binding({ id }) });
-    }
+      this.emit(online ? "online" : "offline", id, tunnel);
+    });
+
+    tunnel.on("close", (promise) => {
+      this.#tunnels.delete(id);
+      this.#closing.add(promise);
+    });
 
     this.#tunnels.set(id, tunnel);
 
@@ -52,20 +69,39 @@ export class Tunnels extends Container.ServiceConstructable {
     return this.#tunnels.get(id);
   }
 
-  protected override async dispose(reason?: unknown) {
+  *iterator() {
+    for (const entry of this.#tunnels) {
+      if (entry[1].online) {
+        yield entry;
+      }
+    }
+  }
+
+  get [Container.SymbolDispose]() {
+    return this.dispose.bind(this);
+  }
+
+  protected async dispose(reason?: unknown) {
     this.#controller.abort(reason);
 
-    await Promise.all(
-      [...this.#tunnels.values()].map((tunnel) => {
-        return tunnel.close(reason);
-      }),
-    );
+    const closing = [...this.#closing.values()];
+    const active = [...this.#tunnels.values()].map((tunnel) => tunnel.close(reason));
+
+    await Promise.all([...closing, ...active]);
 
     this.#tunnels.clear();
+    this.#closing.clear();
+
+    this.removeAllListeners();
   }
 }
 
 export namespace Tunnels {
+  export type Events = {
+    online: [id: string, tunnel: Tunnel];
+    offline: [id: string, tunnel: Tunnel];
+  };
+
   type PendingStream = {
     options: Tunnel.StreamOptions;
     resolve: (stream: ClientHttp2Stream) => void;
@@ -119,9 +155,13 @@ export namespace Tunnels {
       return this.#queue.length;
     }
 
+    get closed() {
+      return this.#controller.signal.aborted;
+    }
+
     async upgrade(socket: Duplex) {
-      if (this.#controller.signal.aborted) {
-        throw this.#controller.signal.reason;
+      if (this.closed) {
+        throw new Error("xxx");
       }
 
       const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
@@ -201,8 +241,8 @@ export namespace Tunnels {
     }
 
     async stream(options: Tunnel.StreamOptions) {
-      if (this.#controller.signal.aborted) {
-        throw this.#controller.signal.reason;
+      if (this.closed) {
+        throw new Error("xxx");
       }
 
       return await new Promise<ClientHttp2Stream>((resolve, reject) => {
@@ -236,8 +276,8 @@ export namespace Tunnels {
       });
     }
 
-    async close(reason?: unknown) {
-      if (this.#controller.signal.aborted) {
+    async close(reason?: unknown, _timeout = 1000 * 30) {
+      if (this.closed) {
         return;
       }
 
@@ -257,20 +297,29 @@ export namespace Tunnels {
 
       this.#sessions.clear();
       this.#updateOnline();
-      this.removeAllListeners();
 
-      await Promise.all(
-        sessions.map((session) => {
-          return new Promise<void>((resolve) => {
-            if (session.closed || session.destroyed) {
-              return resolve();
-            }
+      const promise = (async () => {
+        try {
+          await Promise.all(
+            sessions.map((session) => {
+              return new Promise<void>((resolve) => {
+                if (session.closed || session.destroyed) {
+                  return resolve();
+                }
 
-            session.once("close", () => resolve());
-            session.destroy(undefined, constants.NGHTTP2_CANCEL);
-          });
-        }),
-      );
+                session.once("close", () => resolve());
+                session.destroy(undefined, constants.NGHTTP2_CANCEL);
+              });
+            }),
+          );
+        } finally {
+          this.removeAllListeners();
+        }
+      })();
+
+      this.emit("close", promise);
+
+      await promise;
     }
 
     #register(session: ClientHttp2Session) {
@@ -593,6 +642,7 @@ export namespace Tunnels {
 
     export type Events = {
       online: [online: boolean];
+      close: [promise: Promise<void>];
     };
 
     export type StreamOptions = {

@@ -17,7 +17,7 @@ import {
   UserServiceUpdateMetadataRequest,
   UserServiceUpdateMetadataResponse,
 } from "@/generated/proto/api/v1/user";
-import { Authenticator } from "@/internal/authenticator-new";
+import { Authenticator } from "@/internal/authenticator";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { Users } from "@/internal/users";
 

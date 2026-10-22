@@ -15,7 +15,7 @@ import {
   ProjectServiceUpdateMetadataRequest,
   ProjectServiceUpdateMetadataResponse,
 } from "@/generated/proto/api/v1/project";
-import { Authenticator } from "@/internal/authenticator-new";
+import { Authenticator } from "@/internal/authenticator";
 import { FileSystem } from "@/internal/file-system";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { Projects } from "@/internal/projects";

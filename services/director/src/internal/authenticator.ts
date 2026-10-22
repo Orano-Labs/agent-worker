@@ -1,40 +1,60 @@
-import { SignatureIdentitySchema, type SignatureIdentityValid, SignatureSchema } from "@/generated/proto/api/v1/signature_pb";
-import { Container } from "@/helpers/container";
-import { Protobuf } from "@/helpers/protobuf";
-import { Cache } from "@/internal/cache";
-import { Key } from "@/internal/key";
-import { Logger } from "@/internal/logger";
-import { Repository } from "@/internal/repository";
-import { Variables } from "@/internal/variables";
+import { createPublicKey, generateKeyPair, verify } from "node:crypto";
+import { Container } from "@aw/container";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
+import { Redis } from "@/internal/redis";
+import { Supervisors } from "@/internal/supervisors";
+import { Users } from "@/internal/users";
 
 const TIMESTAMP_WINDOW_MS = 5 * 60 * 1000;
 const NONCE_TTL_SEC = 10 * 60;
 
-const PRODUCTION = process.env.NODE_ENV === "production";
+const KEY_FORMAT = "der" as const;
+const KEY_TYPE = "ed25519" as const;
+const KEY_ENCODINGS = {
+  PUBLIC_KEY: "spki",
+  PRIVATE_KEY: "pkcs8",
+} as const;
 
-export class Authenticator {
+const SIGNATURE_HEADER = "x-request-signature";
+const DEVELOPMENT_SIGNATURE_HEADER = "x-request-signature-development";
+
+export class Authenticator extends Container.ServiceConstructable {
+  #codec: Authenticator.Codec;
+  #environment: Environment;
   #logger: Logger;
-  #variables: Variables;
-  #key: Key;
-  #repository: Repository;
-  #cache: Cache;
+  #redis: Redis;
+  #users: Users;
+  #supervisors: Supervisors;
 
-  constructor() {
-    this.#logger = Container.inject(Logger).scope("Authenticator");
-    this.#variables = Container.inject(Variables);
-    this.#key = Container.inject(Key);
-    this.#repository = Container.inject(Repository);
-    this.#cache = Container.inject(Cache);
+  constructor(codec: Authenticator.Codec, ...deps: [Environment, Logger, Redis, Users, Supervisors]) {
+    super();
+
+    this.#codec = codec;
+    this.#environment = deps[0];
+    this.#logger = deps[1].namespace("Authenticator");
+    this.#redis = deps[2];
+    this.#users = deps[3];
+    this.#supervisors = deps[4];
   }
 
-  /**
-   * Authenticate a request from its headers.
-   *
-   * Reads the `x-request-signature` (production) or
-   * `x-request-signature-development` (non-production) header, verifies the
-   * Ed25519 signature (or bypasses verification in dev mode), and returns the
-   * authenticated identity.
-   */
+  async generateKeyPair() {
+    return await new Promise<[Buffer, Buffer]>((resolve, reject) => {
+      const options = {
+        publicKeyEncoding: { type: KEY_ENCODINGS.PUBLIC_KEY, format: KEY_FORMAT },
+        privateKeyEncoding: { type: KEY_ENCODINGS.PRIVATE_KEY, format: KEY_FORMAT },
+      };
+
+      generateKeyPair(KEY_TYPE, options, (error, publicKey, privateKey) => {
+        if (error) {
+          return reject(error);
+        }
+
+        return resolve([publicKey, privateKey]);
+      });
+    });
+  }
+
   async authenticate(headers: Headers) {
     const raw = this.#parseHeader(headers);
 
@@ -42,29 +62,157 @@ export class Authenticator {
       throw new Error("Missing signature header");
     }
 
-    const [value, dev] = raw;
+    const [value, development] = raw;
     const buffer = this.#decodeBase64(value);
 
-    if (dev) {
-      return this.#authenticateDev(buffer);
+    if (development) {
+      return this.#authenticateDevelopment(buffer);
     }
 
     return this.#authenticateProduction(buffer);
   }
 
+  async #authenticateDevelopment(buffer: Buffer) {
+    try {
+      return this.#codec.decodeIdentity(buffer);
+    } catch (error) {
+      this.#logger.warn("Failed to decode development identity.", { err: error });
+
+      throw new Error("Invalid development identity");
+    }
+  }
+
+  async #authenticateProduction(buffer: Buffer) {
+    let signature: Authenticator.Signature;
+
+    try {
+      signature = this.#codec.decodeSignature(buffer);
+    } catch (error) {
+      this.#logger.warn("Failed to decode request signature.", {
+        err: error,
+      });
+
+      throw new Error("Invalid request signature");
+    }
+
+    const nonceHex = Buffer.from(signature.nonce).toString("hex");
+    const unixSeconds = Math.floor(signature.timestamp.getTime() / 1000);
+
+    await this.#checkTimestamp(signature.timestamp);
+    await this.#checkNonce(nonceHex);
+
+    const key = await this.#resolvePublicKey(signature.identity, nonceHex, unixSeconds);
+
+    this.#verifySignature(key.publicKey, key.message, signature.signature);
+
+    return signature.identity;
+  }
+
+  async #checkTimestamp(timestamp: Date) {
+    const difference = Math.abs(Date.now() - timestamp.getTime());
+
+    if (difference > TIMESTAMP_WINDOW_MS) {
+      this.#logger.warn("Request timestamp outside allowed window.", {
+        difference,
+        window: TIMESTAMP_WINDOW_MS,
+      });
+
+      throw new Error("Request timestamp outside allowed window");
+    }
+  }
+
+  async #checkNonce(nonceHex: string) {
+    const key = `nonce:${nonceHex}`;
+
+    try {
+      const result = await this.#redis.client.set(key, "1", "EX", NONCE_TTL_SEC, "NX");
+
+      if (result !== "OK") {
+        this.#logger.warn("Nonce has already been used — possible replay attack.", {
+          key,
+        });
+
+        throw new Error("Nonce already used");
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Nonce")) {
+        throw error;
+      }
+
+      this.#logger.error("Failed to persist nonce in Redis. Failing closed.", {
+        err: error,
+      });
+
+      throw new Error("Nonce persistence failed");
+    }
+  }
+
+  async #resolvePublicKey(identity: Authenticator.Identity, nonceHex: string, unixSeconds: number) {
+    switch (identity.type) {
+      case "manager": {
+        const publicKey = this.#environment.get("MANAGER_PUBLIC_KEY");
+
+        if (!publicKey) {
+          throw new Error("Manager public key not configured");
+        }
+
+        return {
+          message: `${nonceHex}:${unixSeconds}`,
+          publicKey: Buffer.from(publicKey, "hex"),
+        };
+      }
+
+      case "user": {
+        const user = await this.#users.get(identity.id);
+
+        if (!user) {
+          this.#logger.warn("User not found for signature verification.", {
+            userId: identity.id,
+          });
+
+          throw new Error("User not found");
+        }
+
+        return {
+          message: `${nonceHex}:${unixSeconds}:${identity.id}`,
+          publicKey: Buffer.from(user.publicKey),
+        };
+      }
+
+      case "supervisor": {
+        const supervisor = await this.#supervisors.get(identity.id);
+
+        if (!supervisor) {
+          this.#logger.warn("Supervisor not found for signature verification.", {
+            supervisorId: identity.id,
+          });
+
+          throw new Error("Supervisor not found");
+        }
+
+        return {
+          message: `${nonceHex}:${unixSeconds}:${identity.id}`,
+          publicKey: Buffer.from(supervisor.publicKey),
+        };
+      }
+    }
+  }
+
   #parseHeader(headers: Headers) {
-    let value = headers.get("x-request-signature");
+    const value = headers.get(SIGNATURE_HEADER);
 
     if (value !== null) {
       return [value, false] as const;
     }
 
-    if (!PRODUCTION) {
-      value = headers.get("x-request-signature-development");
+    if (this.#environment.mode === Environment.Mode.Production) {
+      return null;
+    }
 
-      if (value !== null) {
-        return [value, true] as const;
-      }
+    const development = headers.get(DEVELOPMENT_SIGNATURE_HEADER);
+
+    if (development !== null) {
+      return [development, true] as const;
     }
 
     return null;
@@ -82,186 +230,19 @@ export class Authenticator {
     }
   }
 
-  async #authenticateDev(buffer: Buffer) {
-    let identity: SignatureIdentityValid;
-
-    try {
-      identity = Protobuf.decode(SignatureIdentitySchema, buffer);
-    } catch (error) {
-      this.#logger.warn("Failed to decode SignatureIdentity from development header.", {
-        err: error,
-      });
-
-      throw new Error("Invalid development identity protobuf");
-    }
-
-    const validation = Protobuf.validate(SignatureIdentitySchema, identity);
-
-    if (validation.kind !== "valid") {
-      this.#logger.warn("Development SignatureIdentity validation failed.", {
-        err: validation.error,
-      });
-
-      throw new Error("Development identity validation failed");
-    }
-
-    return this.#toIdentity(validation.message);
-  }
-
-  async #authenticateProduction(buffer: Buffer) {
-    let signature: ReturnType<typeof Protobuf.decode<typeof SignatureSchema>>;
-
-    try {
-      signature = Protobuf.decode(SignatureSchema, buffer);
-    } catch (error) {
-      this.#logger.warn("Failed to decode Signature protobuf from header.", {
-        err: error,
-      });
-
-      throw new Error("Invalid signature protobuf");
-    }
-
-    const validation = Protobuf.validate(SignatureSchema, signature);
-
-    if (validation.kind !== "valid") {
-      this.#logger.warn("Signature protobuf validation failed.", {
-        err: validation.error,
-      });
-
-      throw new Error("Signature protobuf validation failed");
-    }
-
-    const { payload, signature: sigBytes } = validation.message;
-    const { nonce, timestamp, identity } = payload;
-
-    this.#checkTimestamp(timestamp);
-
-    const nonceHex = Buffer.from(nonce).toString("hex");
-    await this.#checkNonce(nonceHex);
-    const unixSeconds = Math.floor(Protobuf.Timestamp.toDate(timestamp).getTime() / 1000);
-
-    const { message, publicKey } = await this.#resolvePublicKey(identity, nonceHex, unixSeconds);
-
-    this.#verifySignature(publicKey, message, Buffer.from(sigBytes));
-
-    return this.#toIdentity(identity);
-  }
-
-  #checkTimestamp(timestamp: Protobuf.Timestamp) {
-    const tsDate = Protobuf.Timestamp.toDate(timestamp);
-    const diffMs = Math.abs(Date.now() - tsDate.getTime());
-
-    if (diffMs > TIMESTAMP_WINDOW_MS) {
-      this.#logger.warn("Request timestamp outside allowed window.", {
-        diffMs,
-        windowMs: TIMESTAMP_WINDOW_MS,
-      });
-
-      throw new Error("Request timestamp outside allowed window");
-    }
-  }
-
-  async #checkNonce(nonceHex: string) {
-    const nonceKey = `nonce:${nonceHex}`;
-
-    try {
-      const result = await this.#cache.client.set(nonceKey, "1", "EX", NONCE_TTL_SEC, "NX");
-
-      if (result !== "OK") {
-        this.#logger.warn("Nonce has already been used — possible replay attack.", {
-          nonceKey: this.#logger.mask(nonceKey),
-        });
-
-        throw new Error("Nonce already used");
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith("Nonce")) throw error;
-
-      this.#logger.error("Failed to persist nonce in Redis. Failing closed.", {
-        err: error,
-      });
-
-      throw new Error("Nonce persistence failed");
-    }
-  }
-
-  async #resolvePublicKey(identity: SignatureIdentityValid, nonceHex: string, unixSeconds: number) {
-    switch (identity.identity.case) {
-      case "manager": {
-        const pubKeyHex = this.#variables.get("AW_DIRECTOR_MANAGER_PUBLIC_KEY");
-
-        if (!pubKeyHex) {
-          throw new Error("Manager public key not configured");
-        }
-
-        return {
-          message: `${nonceHex}:${unixSeconds}`,
-          publicKey: Buffer.from(pubKeyHex, "hex"),
-        };
-      }
-
-      case "user": {
-        const userId = identity.identity.value.id;
-
-        const user = await this.#repository.client.user.findUnique({
-          where: { id: userId, deleteTime: null },
-          select: { publicKey: true },
-        });
-
-        if (!user) {
-          this.#logger.warn("User not found for signature verification.", {
-            userId: this.#logger.mask(userId),
-          });
-
-          throw new Error("User not found");
-        }
-
-        return {
-          message: `${nonceHex}:${unixSeconds}:${userId}`,
-          publicKey: Buffer.from(user.publicKey),
-        };
-      }
-
-      case "supervisor": {
-        const supervisorId = identity.identity.value.id;
-
-        const supervisor = await this.#repository.client.supervisor.findUnique({
-          where: { id: supervisorId, deleteTime: null },
-          select: { publicKey: true },
-        });
-
-        if (!supervisor) {
-          this.#logger.warn("Supervisor not found for signature verification.", {
-            supervisorId: this.#logger.mask(supervisorId),
-          });
-
-          throw new Error("Supervisor not found");
-        }
-
-        return {
-          message: `${nonceHex}:${unixSeconds}:${supervisorId}`,
-          publicKey: Buffer.from(supervisor.publicKey),
-        };
-      }
-
-      default:
-        this.#logger.warn("Unknown identity case.", {
-          case: identity.identity.case,
-        });
-
-        throw new Error("Unknown identity case");
-    }
-  }
-
-  #verifySignature(publicKey: Buffer, message: string, sigBytes: Buffer) {
+  #verifySignature(publicKey: Buffer, message: string, signature: Uint8Array) {
     let verified: boolean;
 
     try {
-      verified = this.#key.verifyED25519(publicKey, Buffer.from(message, "utf-8"), sigBytes);
-    } catch (error) {
-      this.#logger.error("Ed25519 signature verification threw an exception.", {
-        err: error,
+      const publicKeyObject = createPublicKey({
+        key: publicKey,
+        format: KEY_FORMAT,
+        type: KEY_ENCODINGS.PUBLIC_KEY,
       });
+
+      verified = verify(undefined, Buffer.from(message, "utf-8"), publicKeyObject, Buffer.from(signature));
+    } catch (error) {
+      this.#logger.error("Ed25519 signature verification threw an exception.", { err: error });
 
       throw new Error("Signature verification error");
     }
@@ -270,38 +251,20 @@ export class Authenticator {
       throw new Error("Signature verification failed");
     }
   }
-
-  #toIdentity(message: SignatureIdentityValid): Authenticator.Identity {
-    const { identity } = message;
-
-    switch (identity.case) {
-      case "user":
-        return { case: "user", userId: identity.value.id };
-      case "manager":
-        return { case: "manager" };
-      case "supervisor":
-        return { case: "supervisor", supervisorId: identity.value.id };
-      default:
-        this.#logger.warn("Unknown identity case.", {
-          case: identity.case,
-        });
-
-        throw new Error("Unknown identity case");
-    }
-  }
 }
 
 export namespace Authenticator {
-  export type Identity =
-    | {
-        case: "user";
-        userId: string;
-      }
-    | {
-        case: "manager";
-      }
-    | {
-        case: "supervisor";
-        supervisorId: string;
-      };
+  export type Identity = { type: "user"; id: string } | { type: "manager" } | { type: "supervisor"; id: string };
+
+  export type Signature = {
+    nonce: Uint8Array;
+    timestamp: Date;
+    identity: Identity;
+    signature: Uint8Array;
+  };
+
+  export type Codec = {
+    decodeIdentity(buffer: Uint8Array): Identity;
+    decodeSignature(buffer: Uint8Array): Signature;
+  };
 }

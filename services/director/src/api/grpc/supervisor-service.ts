@@ -13,7 +13,7 @@ import {
   SupervisorServiceUpdateMetadataRequest,
   SupervisorServiceUpdateMetadataResponse,
 } from "@/generated/proto/api/v1/supervisor";
-import { Authenticator } from "@/internal/authenticator-new";
+import { Authenticator } from "@/internal/authenticator";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { Supervisors } from "@/internal/supervisors";
 

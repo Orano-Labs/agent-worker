@@ -1,5 +1,5 @@
 import { Logger } from "@aw/logging";
-import { Authenticator } from "@/internal/authenticator-new";
+import { Authenticator } from "@/internal/authenticator";
 import { GRPCHandler } from "@/internal/grpc-handler";
 
 const AUTHENTICATION_IDENTITY_CONTEXT = GRPCHandler.Context.key<Authenticator.Identity>();

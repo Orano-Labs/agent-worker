@@ -26,7 +26,7 @@ import {
   FileSystemType,
   TreeNode,
 } from "@/generated/proto/api/v1/file-system";
-import { Authenticator } from "@/internal/authenticator-new";
+import { Authenticator } from "@/internal/authenticator";
 import { GRPCHandler } from "@/internal/grpc-handler";
 import { Projects } from "@/internal/projects";
 import { Templates } from "@/internal/templates";

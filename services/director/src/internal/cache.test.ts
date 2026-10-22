@@ -1,7 +1,7 @@
 import { Environment } from "@aw/environment";
 import { Logger } from "@aw/logging";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Cache } from "@/internal/cache-new";
+import { Cache } from "@/internal/cache";
 import { TestingUtils } from "@/utils/testing-utils";
 
 describe("Cache", () => {

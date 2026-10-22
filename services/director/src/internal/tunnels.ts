@@ -48,6 +48,10 @@ export class Tunnels extends Container.ServiceConstructable {
     return tunnel;
   }
 
+  get(id: string) {
+    return this.#tunnels.get(id);
+  }
+
   protected override async dispose(reason?: unknown) {
     this.#controller.abort(reason);
 
@@ -73,14 +77,16 @@ export namespace Tunnels {
     #controller: AbortController;
     // Last emitted value, used only to suppress duplicate online events.
     #lastOnline: boolean;
+    #logger: Logger;
     #sessions: Map<ClientHttp2Session, Tunnel.SessionState>;
     #queue: PendingStream[];
 
-    constructor(_options: Tunnel.Options) {
+    constructor(options: Tunnel.Options) {
       super();
 
       this.#controller = new AbortController();
       this.#lastOnline = false;
+      this.#logger = options.logger;
       this.#sessions = new Map();
       this.#queue = [];
     }
@@ -123,8 +129,6 @@ export namespace Tunnels {
           createConnection: () => socket,
         });
 
-        let settled = false;
-
         const cleanup = () => {
           session.off("error", handleError);
           session.off("connect", handleConnect);
@@ -134,33 +138,42 @@ export namespace Tunnels {
         };
 
         const settle = (callback: () => void) => {
-          if (settled) {
-            return;
-          }
-
-          settled = true;
           cleanup();
           callback();
         };
 
         const handleError = (error: Error) => {
           settle(() => {
-            session.destroy();
+            if (!session.destroyed) {
+              session.destroy();
+            }
+
             reject(error);
           });
         };
 
         const handleConnect = () => {
-          settle(() => resolve(session));
+          settle(() => {
+            resolve(session);
+          });
         };
 
         const handleClose = () => {
-          settle(() => reject(new Error("HTTP/2 session closed before it was established")));
+          settle(() => {
+            if (!session.destroyed) {
+              session.destroy();
+            }
+
+            reject(new Error("HTTP/2 session closed before it was established"));
+          });
         };
 
         const handleAborted = () => {
           settle(() => {
-            session.destroy();
+            if (!session.destroyed) {
+              session.destroy();
+            }
+
             reject(this.#controller.signal.reason ?? new Error("Tunnel was closed"));
           });
         };
@@ -170,6 +183,10 @@ export namespace Tunnels {
         session.on("close", handleClose);
 
         this.#controller.signal.addEventListener("abort", handleAborted, { once: true });
+      });
+
+      session.on("error", (error) => {
+        this.#logger.warn("HTTP/2 session error.", { err: error });
       });
 
       if (this.#controller.signal.aborted) {
@@ -304,8 +321,6 @@ export namespace Tunnels {
       this.#sessions.set(session, state);
       this.#updateOnline();
 
-      session.on("error", () => {});
-
       session.on("goaway", () => {
         goaway = true;
         this.#updateOnline();
@@ -330,6 +345,8 @@ export namespace Tunnels {
         }
 
         const reason = error instanceof Error ? error : new Error(String(error));
+
+        this.#logger.warn("HTTP/2 session monitor failed.", { err: reason });
 
         if (!session.destroyed) {
           session.destroy(reason, constants.NGHTTP2_CANCEL);
@@ -454,8 +471,12 @@ export namespace Tunnels {
             request.off("error", dispose);
             request.off("close", dispose);
 
+            if (error) {
+              this.#logger.warn("HTTP/2 stream error.", { err: error, authority: options.authority });
+            }
+
             if (!request.destroyed) {
-              request.destroy(error);
+              request.destroy();
             }
           };
 
@@ -467,6 +488,13 @@ export namespace Tunnels {
 
         const handleError = (error: Error) => {
           cleanup();
+
+          this.#logger.warn("HTTP/2 stream error before establishment.", { err: error, authority: options.authority });
+
+          if (!request.destroyed) {
+            request.destroy();
+          }
+
           reject(error);
         };
 

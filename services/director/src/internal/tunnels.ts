@@ -15,6 +15,7 @@ import { Logger } from "@aw/logging";
 
 const TUNNEL_PING_INTERVAL_MS = 30_000;
 const TUNNEL_PING_TIMEOUT_MS = 5_000;
+const TUNNEL_CLOSE_TIMEOUT_MS = 5_000;
 const TUNNEL_PING_PAYLOAD = Buffer.alloc(8);
 const TUNNEL_MAX_STREAMS_PER_SESSION = 128;
 
@@ -58,6 +59,13 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
     tunnel.on("close", (promise) => {
       this.#tunnels.delete(id);
       this.#closing.add(promise);
+
+      promise.then(
+        () => this.#closing.delete(promise),
+        () => this.#closing.delete(promise),
+      );
+
+      this.emit("close", id, tunnel, promise);
     });
 
     this.#tunnels.set(id, tunnel);
@@ -100,6 +108,7 @@ export namespace Tunnels {
   export type Events = {
     online: [id: string, tunnel: Tunnel];
     offline: [id: string, tunnel: Tunnel];
+    close: [id: string, tunnel: Tunnel, promise: Promise<void>];
   };
 
   type PendingStream = {
@@ -111,6 +120,7 @@ export namespace Tunnels {
 
   export class Tunnel extends EventEmitter<Tunnel.Events> {
     #controller: AbortController;
+    #closeTimeoutMs: number;
     // Last emitted value, used only to suppress duplicate online events.
     #lastOnline: boolean;
     #logger: Logger;
@@ -121,6 +131,7 @@ export namespace Tunnels {
       super();
 
       this.#controller = new AbortController();
+      this.#closeTimeoutMs = options.closeTimeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS;
       this.#lastOnline = false;
       this.#logger = options.logger;
       this.#sessions = new Map();
@@ -276,7 +287,7 @@ export namespace Tunnels {
       });
     }
 
-    async close(reason?: unknown, _timeout = 1000 * 30) {
+    async close(reason?: unknown) {
       if (this.closed) {
         return;
       }
@@ -300,26 +311,60 @@ export namespace Tunnels {
 
       const promise = (async () => {
         try {
-          await Promise.all(
-            sessions.map((session) => {
-              return new Promise<void>((resolve) => {
-                if (session.closed || session.destroyed) {
-                  return resolve();
-                }
+          await Promise.all(sessions.map((session) => this.#closeSession(session, reason, this.#closeTimeoutMs)));
+        } catch {}
 
-                session.once("close", () => resolve());
-                session.destroy(undefined, constants.NGHTTP2_CANCEL);
-              });
-            }),
-          );
-        } finally {
-          this.removeAllListeners();
-        }
+        this.removeAllListeners();
       })();
 
       this.emit("close", promise);
 
       await promise;
+    }
+
+    async #closeSession(session: ClientHttp2Session, reason: unknown, timeout: number) {
+      return new Promise<void>((resolve) => {
+        if (session.destroyed) {
+          return resolve();
+        }
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const finish = () => {
+          if (timer) {
+            clearTimeout(timer);
+          }
+
+          session.off("close", finish);
+          resolve();
+        };
+
+        timer = setTimeout(() => {
+          this.#logger.warn("HTTP/2 session did not close before timeout; forcing destruction.", {
+            timeoutMs: timeout,
+          });
+
+          if (!session.destroyed) {
+            session.destroy(reason instanceof Error ? reason : new Error("Tunnel close timed out."), constants.NGHTTP2_CANCEL);
+          }
+
+          finish();
+        }, timeout);
+
+        session.once("close", finish);
+
+        try {
+          session.close();
+        } catch (error) {
+          this.#logger.warn("Failed to gracefully close HTTP/2 session.", { err: error });
+
+          if (!session.destroyed) {
+            session.destroy(error instanceof Error ? error : new Error(String(error)), constants.NGHTTP2_CANCEL);
+          }
+
+          finish();
+        }
+      });
     }
 
     #register(session: ClientHttp2Session) {
@@ -638,6 +683,7 @@ export namespace Tunnels {
   export namespace Tunnel {
     export type Options = {
       logger: Logger;
+      closeTimeoutMs?: number;
     };
 
     export type Events = {

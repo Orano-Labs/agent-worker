@@ -32,7 +32,7 @@ type Harness = {
   close: () => Promise<void>;
 };
 
-const createHarness = async (initialSession = true, tunnels?: Tunnels): Promise<Harness> => {
+const createHarness = async (initialSession = true, tunnels?: Tunnels, closeTimeoutMs = 50): Promise<Harness> => {
   let pings = 0;
   const authorities: string[] = [];
 
@@ -52,9 +52,11 @@ const createHarness = async (initialSession = true, tunnels?: Tunnels): Promise<
   http2Server.on("stream", (stream: ServerHttp2Stream, headers) => {
     authorities.push(String(headers[":authority"]));
 
+    stream.on("error", () => {});
     stream.respond({ ":status": 200 });
     stream.on("data", (chunk) => stream.write(chunk));
   });
+  http2Server.on("sessionError", () => {});
 
   const netServer = createNetServer();
   const pendingSockets: Array<(socket: Socket) => void> = [];
@@ -78,7 +80,7 @@ const createHarness = async (initialSession = true, tunnels?: Tunnels): Promise<
   }
 
   const sockets: Socket[] = [];
-  const tunnel = tunnels ? tunnels.ensure("supervisor-1") : new Tunnels.Tunnel({ logger: createLogger() });
+  const tunnel = tunnels ? tunnels.ensure("supervisor-1") : new Tunnels.Tunnel({ logger: createLogger(), closeTimeoutMs });
 
   const connectSession = async () => {
     const serverSocket = new Promise<Socket>((resolve) => {
@@ -146,7 +148,7 @@ describe("Tunnels", () => {
   it("frees the id as soon as a tunnel starts closing", async () => {
     const tunnels = new Tunnels(createLogger());
     const first = tunnels.ensure("supervisor-1");
-    const closing = tunnels.close("supervisor-1");
+    const closing = first.close();
     const second = tunnels.ensure("supervisor-1");
 
     expect(second).not.toBe(first);
@@ -176,7 +178,7 @@ describe("Tunnels", () => {
     expect([...tunnels.iterator()].map(([id]) => id)).toEqual(["supervisor-1"]);
     expect(online).toEqual(["supervisor-1"]);
 
-    await tunnels.close("supervisor-1");
+    await harness.tunnel.close();
 
     expect([...tunnels.iterator()]).toEqual([]);
     expect(offline).toEqual(["supervisor-1"]);
@@ -356,6 +358,25 @@ describe("Tunnels.Tunnel", () => {
     expect(harness.tunnel.connections).toBe(128);
 
     extra.close();
+  });
+
+  it("force destroys sessions when graceful close times out", async () => {
+    harness = await createHarness(true, undefined, 20);
+
+    const stream = await harness.tunnel.stream({
+      authority: "example.com:80",
+      path: "/",
+    });
+    const streamClosed = new Promise<void>((resolve) => stream.once("close", () => resolve()));
+    const started = Date.now();
+
+    await harness.tunnel.close();
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(10);
+
+    await streamClosed;
+
+    expect(stream.destroyed).toBe(true);
   });
 
   it("rejects queued streams when the tunnel closes", async () => {

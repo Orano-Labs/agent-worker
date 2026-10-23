@@ -7,6 +7,7 @@ import {
   constants,
   IncomingHttpHeaders,
   IncomingHttpStatusHeader,
+  OutgoingHttpHeaders,
 } from "node:http2";
 import { Duplex } from "node:stream";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
@@ -48,14 +49,6 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
 
     const tunnel = new Tunnels.Tunnel({ logger: this.#logger.namespace("Tunnel").binding({ id }) });
 
-    tunnel.on("online", (online) => {
-      if (this.#tunnels.get(id) !== tunnel) {
-        return;
-      }
-
-      this.emit(online ? "online" : "offline", id, tunnel);
-    });
-
     tunnel.on("close", (promise) => {
       this.#tunnels.delete(id);
       this.#closing.add(promise);
@@ -69,6 +62,8 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
     });
 
     this.#tunnels.set(id, tunnel);
+
+    this.emit("create", id, tunnel);
 
     return tunnel;
   }
@@ -106,8 +101,7 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
 
 export namespace Tunnels {
   export type Events = {
-    online: [id: string, tunnel: Tunnel];
-    offline: [id: string, tunnel: Tunnel];
+    create: [id: string, tunnel: Tunnel];
     close: [id: string, tunnel: Tunnel, promise: Promise<void>];
   };
 
@@ -170,9 +164,23 @@ export namespace Tunnels {
       return this.#controller.signal.aborted;
     }
 
+    request(headers: OutgoingHttpHeaders, options: ClientSessionRequestOptions = {}) {
+      if (this.closed) {
+        throw new Error("Tunnel is closed");
+      }
+
+      const session = this.#pick();
+
+      if (!session) {
+        throw new Error("No available tunnel session");
+      }
+
+      return session.request(headers, options);
+    }
+
     async upgrade(socket: Duplex) {
       if (this.closed) {
-        throw new Error("xxx");
+        throw new Error("Tunnel is closed");
       }
 
       const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
@@ -240,12 +248,12 @@ export namespace Tunnels {
         this.#logger.warn("HTTP/2 session error.", { err: error });
       });
 
-      if (this.#controller.signal.aborted) {
+      if (this.closed) {
         if (!session.destroyed) {
           session.destroy();
         }
 
-        throw this.#controller.signal.reason;
+        throw new Error("Tunnel is closed");
       }
 
       this.#register(session);
@@ -253,16 +261,11 @@ export namespace Tunnels {
 
     async stream(options: Tunnel.StreamOptions) {
       if (this.closed) {
-        throw new Error("xxx");
+        throw new Error("Tunnel is closed");
       }
 
       return await new Promise<ClientHttp2Stream>((resolve, reject) => {
-        const job: {
-          options: Tunnel.StreamOptions;
-          resolve: (stream: ClientHttp2Stream) => void;
-          reject: (error: Error) => void;
-          timer?: ReturnType<typeof setTimeout>;
-        } = {
+        const job: PendingStream = {
           options,
           resolve,
           reject,
@@ -386,6 +389,10 @@ export namespace Tunnels {
       const request = session.request.bind(session);
 
       session.request = (headers, options) => {
+        if (goaway) {
+          throw new Error("HTTP/2 session is going away and cannot open new streams.");
+        }
+
         let stream: ClientHttp2Stream;
 
         try {
@@ -413,24 +420,32 @@ export namespace Tunnels {
       };
 
       this.#sessions.set(session, state);
-      this.#updateOnline();
 
-      session.on("goaway", () => {
+      const handleGoaway = () => {
         goaway = true;
         this.#updateOnline();
 
         if (streams === 0 && !session.closed && !session.destroyed) {
           session.close();
         }
-      });
+      };
 
-      session.on("close", () => {
+      const handleClose = () => {
         controller.abort();
+
         this.#sessions.delete(session);
+
         this.#updateOnline();
         this.#dispatch();
-      });
 
+        session.off("goaway", handleGoaway);
+        session.off("close", handleClose);
+      };
+
+      session.on("goaway", handleGoaway);
+      session.on("close", handleClose);
+
+      this.#updateOnline();
       this.#dispatch();
 
       this.#monitor(session, controller.signal).catch((error) => {
@@ -482,6 +497,10 @@ export namespace Tunnels {
     }
 
     #dispatch() {
+      if (this.closed) {
+        return;
+      }
+
       while (this.#queue.length > 0) {
         const session = this.#pick();
 
@@ -522,7 +541,7 @@ export namespace Tunnels {
     }
 
     async #open(session: ClientHttp2Session, options: Tunnel.StreamOptions) {
-      const requestOptions: ClientSessionRequestOptions = { endStream: false };
+      const requestOptions: ClientSessionRequestOptions = { endStream: false, signal: this.#controller.signal };
       const request = session.request(
         {
           ":method": "CONNECT",
@@ -704,5 +723,7 @@ export namespace Tunnels {
       readonly usable: boolean;
       readonly streams: number;
     };
+
+    export class Session {}
   }
 }

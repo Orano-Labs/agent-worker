@@ -3,7 +3,7 @@ import { Logger } from "@aw/logging";
 import { createId } from "@orama/cuid2";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { Database } from "@/internal/database";
-import { InstanceTable, ProjectResourceTierEnum, ProjectTable } from "@/internal/database-schema";
+import { DeploymentTable, ProjectResourceTierEnum, ProjectTable } from "@/internal/database-schema";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -123,14 +123,14 @@ export class Projects extends Container.ServiceConstructable {
     return this.get(id);
   }
 
-  async hasInstance(id: string) {
-    const [instance] = await this.#database.client
-      .select({ id: InstanceTable.id })
-      .from(InstanceTable)
-      .where(eq(InstanceTable.projectId, id))
+  async hasDeployment(id: string) {
+    const [deployment] = await this.#database.client
+      .select({ id: DeploymentTable.id })
+      .from(DeploymentTable)
+      .where(eq(DeploymentTable.projectId, id))
       .limit(1);
 
-    return Boolean(instance);
+    return Boolean(deployment);
   }
 
   async delete(id: string) {

@@ -38,11 +38,23 @@ export const ProjectResourceTierEnum = {
   performance: "PERFORMANCE",
 } as const;
 
+export const SupervisorStatusEnum = {
+  /** Accepts new scheduling. */
+  active: "ACTIVE",
+  /** Stops new scheduling while existing deployments finish; used before deletion. */
+  draining: "DRAINING",
+  /** Administratively disabled and not schedulable; not tied to deletion. */
+  disabled: "DISABLED",
+} as const;
+
 // biome-ignore format: x
 const TemplateStatusValues = [TemplateStatusEnum.draft, TemplateStatusEnum.published, TemplateStatusEnum.archived] as const;
 
 // biome-ignore format: x
 const ProjectResourceTierValues = [ProjectResourceTierEnum.minimum, ProjectResourceTierEnum.standard, ProjectResourceTierEnum.performance]  as const;
+
+// biome-ignore format: x
+const SupervisorStatusValues = [SupervisorStatusEnum.active, SupervisorStatusEnum.draining, SupervisorStatusEnum.disabled] as const;
 
 export const UserTable = mysqlTable(
   "user",
@@ -106,6 +118,10 @@ export const SupervisorTable = mysqlTable(
      * biome-ignore format: x
      */
     deleteTime: timestamp("delete_time", { fsp: 3 }),
+    /**
+     * biome-ignore format: x
+     */
+    status: utf8mb4(mysqlEnum("status", SupervisorStatusValues)).notNull().default(SupervisorStatusEnum.active),
     /**
      * biome-ignore format: x
      */
@@ -204,8 +220,8 @@ export const ProjectTable = mysqlTable(
   () => [],
 );
 
-export const InstanceTable = mysqlTable(
-  "instance",
+export const DeploymentTable = mysqlTable(
+  "deployment",
   {
     /**
      * biome-ignore format: x
@@ -228,5 +244,5 @@ export const InstanceTable = mysqlTable(
      */
     createTime: timestamp("create_time", { fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
   },
-  (t) => [uniqueIndex("instance_project_id_key").on(t.projectId), index("instance_supervisor_id_idx").on(t.supervisorId)],
+  (t) => [uniqueIndex("deployment_project_id_key").on(t.projectId), index("deployment_supervisor_id_idx").on(t.supervisorId)],
 );

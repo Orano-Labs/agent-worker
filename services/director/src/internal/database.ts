@@ -7,13 +7,13 @@ import { migrate } from "drizzle-orm/mysql2/migrator";
 import { createPool } from "mysql2";
 import { Pool as PromisePool } from "mysql2/promise";
 
-import { InstanceTable, ProjectTable, SupervisorTable, TemplateTable, UserTable } from "@/internal/database-schema";
+import { DeploymentTable, ProjectTable, SupervisorTable, TemplateTable, UserTable } from "@/internal/database-schema";
 
 const DATABASE_TABLES = {
   user: UserTable,
   project: ProjectTable,
   supervisor: SupervisorTable,
-  instance: InstanceTable,
+  deployment: DeploymentTable,
   template: TemplateTable,
 } as const;
 
@@ -44,9 +44,9 @@ const DATABASE_RELATIONS = defineRelations(DATABASE_TABLES, (r) => ({
       to: [r.supervisor.id],
       optional: true,
     }),
-    instance: r.one.instance({
+    deployment: r.one.deployment({
       from: [r.project.id],
-      to: [r.instance.projectId],
+      to: [r.deployment.projectId],
       optional: true,
     }),
   },
@@ -56,23 +56,23 @@ const DATABASE_RELATIONS = defineRelations(DATABASE_TABLES, (r) => ({
       to: [r.user.id],
       optional: true,
     }),
-    instances: r.many.instance({
+    deployments: r.many.deployment({
       from: [r.supervisor.id],
-      to: [r.instance.supervisorId],
+      to: [r.deployment.supervisorId],
     }),
     projects: r.many.project({
       from: [r.supervisor.id],
       to: [r.project.supervisorId],
     }),
   },
-  instance: {
+  deployment: {
     project: r.one.project({
-      from: [r.instance.projectId],
+      from: [r.deployment.projectId],
       to: [r.project.id],
       optional: false,
     }),
     supervisor: r.one.supervisor({
-      from: [r.instance.supervisorId],
+      from: [r.deployment.supervisorId],
       to: [r.supervisor.id],
       optional: false,
     }),

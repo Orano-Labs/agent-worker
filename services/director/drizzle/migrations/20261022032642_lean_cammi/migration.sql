@@ -1,0 +1,1 @@
+ALTER TABLE `supervisor` ADD `status` enum('ACTIVE','DRAINING','DISABLED') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'ACTIVE' NOT NULL;

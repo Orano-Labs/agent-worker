@@ -52,7 +52,7 @@ describe("Database", () => {
     const [tables] = await database.pool.query<RowDataPacket[]>("SHOW TABLES");
     const names = tables.map((table) => Object.values(table)[0]);
 
-    expect(names).toEqual(expect.arrayContaining(["instance", "project", "supervisor", "template", "user"]));
+    expect(names).toEqual(expect.arrayContaining(["deployment", "project", "supervisor", "template", "user"]));
 
     await expect(database.client.select().from(UserTable)).resolves.toEqual([]);
   });

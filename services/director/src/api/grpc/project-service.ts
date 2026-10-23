@@ -145,7 +145,7 @@ export class ProjectServiceImpl extends Base implements ProjectService<GRPCHandl
       throw GRPCHandler.Error.notFound("Project not found.");
     }
 
-    if (await this.#projects.hasInstance(request.id)) {
+    if (await this.#projects.hasDeployment(request.id)) {
       throw GRPCHandler.Error.failedPrecondition("Project must be stopped before it can be deleted.");
     }
 

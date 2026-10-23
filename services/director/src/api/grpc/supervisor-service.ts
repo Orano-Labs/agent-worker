@@ -79,9 +79,17 @@ export class SupervisorServiceImpl extends Base implements SupervisorService<GRP
       throw GRPCHandler.Error.notFound("Supervisor not found.");
     }
 
-    // TODO: reject deletion while the supervisor is online.
+    let deleted: boolean;
 
-    const deleted = await this.#supervisors.delete(request.id);
+    try {
+      deleted = await this.#supervisors.delete(request.id);
+    } catch (error) {
+      if (error instanceof Supervisors.DeleteConflictError) {
+        throw GRPCHandler.Error.failedPrecondition(error.message);
+      }
+
+      throw error;
+    }
 
     if (!deleted) {
       throw GRPCHandler.Error.notFound("Supervisor not found.");

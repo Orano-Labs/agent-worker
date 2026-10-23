@@ -2,7 +2,7 @@ import { Container } from "@aw/container";
 import { Logger } from "@aw/logging";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { Database } from "@/internal/database";
-import { SupervisorTable } from "@/internal/database-schema";
+import { DeploymentTable, SupervisorStatusEnum, SupervisorTable } from "@/internal/database-schema";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -27,6 +27,7 @@ export class Supervisors extends Container.ServiceConstructable {
       await tx.insert(SupervisorTable).values({
         publicKey,
         metadata,
+        status: input.status ?? SupervisorStatusEnum.active,
         capacity,
         remainingCapacity: capacity,
         ownerId: input.ownerId ?? null,
@@ -100,7 +101,7 @@ export class Supervisors extends Container.ServiceConstructable {
     const metadata = input.metadata === undefined ? undefined : input.metadata === null ? null : Buffer.from(input.metadata);
     const capacity = input.capacity === undefined ? undefined : Math.max(1, Math.floor(input.capacity));
 
-    if (metadata === undefined && capacity === undefined) {
+    if (metadata === undefined && capacity === undefined && input.status === undefined) {
       return this.get(id);
     }
 
@@ -115,10 +116,14 @@ export class Supervisors extends Container.ServiceConstructable {
         return null;
       }
 
-      const data: Partial<Pick<Supervisors.Supervisor, "metadata" | "capacity" | "remainingCapacity">> = {};
+      const data: Partial<Pick<Supervisors.Supervisor, "metadata" | "status" | "capacity" | "remainingCapacity">> = {};
 
       if (metadata !== undefined) {
         data.metadata = metadata;
+      }
+
+      if (input.status !== undefined) {
+        data.status = input.status;
       }
 
       if (capacity !== undefined) {
@@ -154,33 +159,64 @@ export class Supervisors extends Container.ServiceConstructable {
   }
 
   async delete(id: string) {
-    const [result] = await this.#database.client
-      .update(SupervisorTable)
-      .set({ deleteTime: new Date() })
-      .where(and(eq(SupervisorTable.id, id), isNull(SupervisorTable.deleteTime)));
+    const deleted = await this.#database.client.transaction(async (tx) => {
+      const [supervisor] = await tx
+        .select({ id: SupervisorTable.id })
+        .from(SupervisorTable)
+        .where(and(eq(SupervisorTable.id, id), isNull(SupervisorTable.deleteTime)))
+        .limit(1);
 
-    if (result.affectedRows === 0) {
-      return false;
+      if (!supervisor) {
+        return false;
+      }
+
+      const [deployment] = await tx
+        .select({ id: DeploymentTable.id })
+        .from(DeploymentTable)
+        .where(eq(DeploymentTable.supervisorId, id))
+        .limit(1);
+
+      if (deployment) {
+        throw new Supervisors.DeleteConflictError("Supervisor still has deployments.");
+      }
+
+      await tx
+        .update(SupervisorTable)
+        .set({ deleteTime: new Date() })
+        .where(and(eq(SupervisorTable.id, id), isNull(SupervisorTable.deleteTime)));
+
+      return true;
+    });
+
+    if (deleted) {
+      this.#logger.debug("Supervisor deleted.", { id });
     }
 
-    this.#logger.debug("Supervisor deleted.", { id });
-
-    return true;
+    return deleted;
   }
 }
 
 export namespace Supervisors {
+  export class DeleteConflictError extends Error {
+    get name() {
+      return "SupervisorDeleteConflictError";
+    }
+  }
+
   export type Supervisor = typeof SupervisorTable.$inferSelect;
+  export type Status = Supervisor["status"];
 
   export type CreateInput = {
     publicKey: Uint8Array;
     metadata?: Uint8Array | null;
+    status?: Status;
     capacity?: number;
     ownerId?: string | null;
   };
 
   export type UpdateInput = {
     metadata?: Uint8Array | null;
+    status?: Status;
     capacity?: number;
   };
 

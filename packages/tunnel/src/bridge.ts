@@ -2,7 +2,8 @@ import { default as assert } from "node:assert";
 import type { ClientHttp2Stream, ServerHttp2Stream } from "node:http2";
 import type { Socket } from "node:net";
 import { default as pump } from "pump";
-import { SocketPair } from "./socket-pair";
+
+import { SocketPair } from "@/socket-pair";
 
 export class Bridge {
   #pairs: SocketPair;
@@ -22,10 +23,6 @@ export class Bridge {
   async pipe(stream: ServerHttp2Stream | ClientHttp2Stream): Promise<Socket> {
     assert(stream.readable, "Bridge cannot pipe a stream that is not readable");
     assert(stream.writable, "Bridge cannot pipe a stream that is not writable");
-
-    // if ("headersSent" in stream) {
-    //   assert(!stream.headersSent, "xxxxx");
-    // }
 
     const pair = await this.#pairs.create();
     const socket = pair.client;

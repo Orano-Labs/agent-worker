@@ -4,8 +4,9 @@ import { type ClientHttp2Session, type ClientHttp2Stream, connect, type Http2Str
 import type { Socket } from "node:net";
 import { setTimeout } from "node:timers/promises";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
-import { SocketPair } from "./socket-pair";
-import { TunnelGuest } from "./tunnel-guest";
+
+import { SocketPair } from "@/socket-pair";
+import { TunnelGuest } from "@/tunnel-guest";
 
 describe("TunnelGuest", () => {
   let targetServer: ReturnType<typeof createHttpServer>;
@@ -40,7 +41,7 @@ describe("TunnelGuest", () => {
     const guest = new TunnelGuest({
       concurrency: 128,
       router: async () => {},
-      createConnection: createConnectionMock,
+      connect: createConnectionMock,
     });
 
     expect(createConnectionMock).toHaveBeenCalledTimes(128);
@@ -56,7 +57,7 @@ describe("TunnelGuest", () => {
     const guest = new TunnelGuest({
       concurrency: 1,
       router: async () => {},
-      createConnection: async () => sockets.server,
+      connect: async () => sockets.server,
     });
 
     const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
@@ -107,7 +108,7 @@ describe("TunnelGuest", () => {
       router: (s) => {
         socket = s;
       },
-      createConnection: async () => sockets.server,
+      connect: async () => sockets.server,
     });
 
     const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
@@ -181,7 +182,7 @@ describe("TunnelGuest", () => {
     const guest = new TunnelGuest({
       concurrency: 1,
       router: (socket) => targetServer.emit("connection", socket),
-      createConnection: async () => sockets.server,
+      connect: async () => sockets.server,
     });
 
     const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
@@ -244,7 +245,7 @@ describe("TunnelGuest", () => {
     const guest = new TunnelGuest({
       concurrency: 1,
       router: (socket) => targetServer.emit("connection", socket),
-      createConnection: async () => sockets.server,
+      connect: async () => sockets.server,
     });
 
     const session = await new Promise<ClientHttp2Session>((resolve, reject) => {
@@ -321,7 +322,7 @@ describe("TunnelGuest", () => {
     const guest = new TunnelGuest({
       concurrency: 1,
       router: (socket) => targetServer.emit("connection", socket),
-      createConnection: async () => sockets.server,
+      connect: async () => sockets.server,
     });
 
     const session = await new Promise<ClientHttp2Session>((resolve, reject) => {

@@ -1,14 +1,14 @@
 import {
-  type ClientHttp2Session,
-  type ClientHttp2Stream,
-  type ClientSessionRequestOptions,
+  ClientHttp2Session,
+  ClientHttp2Stream,
+  ClientSessionRequestOptions,
   connect,
   constants,
-  type IncomingHttpHeaders,
-  type IncomingHttpStatusHeader,
-  type OutgoingHttpHeaders,
+  IncomingHttpHeaders,
+  IncomingHttpStatusHeader,
+  OutgoingHttpHeaders,
 } from "node:http2";
-import type { Socket } from "node:net";
+import { Socket } from "node:net";
 
 export class TunnelHost {
   #sessions: Set<TunnelHost.Session>;

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
+import { Environment } from "@aw/environment";
 import { open } from "lmdb";
 
 const DB_NAME = "kv";

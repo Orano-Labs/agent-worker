@@ -3,9 +3,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface as createReadLineInterface } from "node:readline";
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
-import type { Logger } from "@aw/logging";
-import { $, type ProcessPromise } from "zx";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
+import { $, ProcessPromise } from "zx";
 
 export class Ganesha extends Container.ServiceConstructable {
   #logger: Logger;

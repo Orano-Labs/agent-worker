@@ -1,7 +1,8 @@
 import { connect } from "node:net";
 import { setTimeout } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { SocketPair } from "./socket-pair";
+
+import { SocketPair } from "@/socket-pair";
 
 describe("SocketPair", () => {
   it("creates a linked pair where data flows in both directions", async () => {
@@ -361,8 +362,6 @@ describe("SocketPair", () => {
 
     await pairs.close(10);
     await setTimeout(10);
-
-    console.log(pairs.connections);
 
     expect(pairs.connections).toBe(0);
     expect(server.destroyed).toBe(true);

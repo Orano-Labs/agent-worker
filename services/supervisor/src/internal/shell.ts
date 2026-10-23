@@ -1,6 +1,6 @@
 import { Container } from "@aw/container";
-import type { Logger } from "@aw/logging";
-import { $, type LogEntry } from "zx";
+import { Logger } from "@aw/logging";
+import { $, LogEntry } from "zx";
 
 export class Shell extends Container.ServiceConstructable {
   session(options: Shell.SessionOptions) {

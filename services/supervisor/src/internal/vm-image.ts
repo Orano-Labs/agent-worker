@@ -1,9 +1,9 @@
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
-import type { Logger } from "@aw/logging";
-import type { Shell } from "@/internal/shell";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
+import { Shell } from "@/internal/shell";
 
 const RUNTIME_IMAGE_FILE = "runtime.squashfs";
 

@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+package api.v2;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+message FileSystemStats {
+  // Total capacity in bytes.
+  uint64 total = 1 [(buf.validate.field).uint64 = {gte: 0}];
+
+  // Used capacity in bytes.
+  uint64 used = 2 [(buf.validate.field).uint64 = {gte: 0}];
+
+  // Available capacity in bytes.
+  uint64 available = 3 [(buf.validate.field).uint64 = {gte: 0}];
+}
+
+message FileSystemChunk {
+  // Chunk payload. This is the maximum transfer unit for file reads and writes.
+  bytes data = 1 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 1048576 // 1 MiB
+  }];
+}
+
+message FileSystemEntry {
+  // Entry name, relative to the directory that was read.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+
+  // Entry size in bytes.
+  uint64 size = 2 [(buf.validate.field).uint64 = {gte: 0}];
+
+  // Creation time.
+  google.protobuf.Timestamp create_time = 3 [(buf.validate.field).required = true];
+
+  // Last modification time.
+  google.protobuf.Timestamp modify_time = 4 [(buf.validate.field).required = true];
+
+  // Whether this entry is a symbolic link.
+  bool symlink = 5 [(buf.validate.field).bool = {}];
+
+  // Entry type.
+  oneof entry {
+    option (buf.validate.oneof).required = true;
+
+    api.v2.FileSystemEntryFile file = 11;
+    api.v2.FileSystemEntryDirectory directory = 12;
+  }
+}
+
+enum FileSystemEntryFileType {
+  FILE_SYSTEM_ENTRY_FILE_TYPE_UNSPECIFIED = 0;
+  FILE_SYSTEM_ENTRY_FILE_TYPE_REGULAR = 1;
+  FILE_SYSTEM_ENTRY_FILE_TYPE_BLOCK_DEVICE = 2;
+  FILE_SYSTEM_ENTRY_FILE_TYPE_CHARACTER_DEVICE = 3;
+  FILE_SYSTEM_ENTRY_FILE_TYPE_FIFO = 4;
+  FILE_SYSTEM_ENTRY_FILE_TYPE_SOCKET = 5;
+  FILE_SYSTEM_ENTRY_FILE_TYPE_UNKNOWN = 6;
+}
+
+message FileSystemEntryFile {
+  FileSystemEntryFileType type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+message FileSystemEntryDirectory {
+  oneof state {
+    option (buf.validate.oneof).required = true;
+
+    // Directory contents have been loaded.
+    FileSystemEntryDirectoryExpanded expanded = 1;
+    // Directory exists but its contents have not been loaded.
+    FileSystemEntryDirectoryUnexpanded unexpanded = 2;
+  }
+}
+
+message FileSystemEntryDirectoryExpanded {
+  repeated FileSystemEntry entries = 1 [(buf.validate.field).repeated = {max_items: 10000}];
+}
+
+message FileSystemEntryDirectoryUnexpanded {}
+
+message FileSystemServiceReadRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  uint64 offset = 2 [(buf.validate.field).uint64 = {gte: 0}];
+
+  uint64 size = 3 [(buf.validate.field).uint64 = {
+    gt: 0
+    lte: 1048576 // 1 MiB
+  }];
+}
+
+message FileSystemServiceReadResponse {
+  FileSystemChunk chunk = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceReadStreamRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  uint64 offset = 2 [(buf.validate.field).uint64 = {gte: 0}];
+}
+
+message FileSystemServiceReadStreamResponse {
+  FileSystemChunk chunk = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceWriteRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  FileSystemChunk chunk = 2 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceWriteResponse {
+  FileSystemEntry entry = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceWriteStreamRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  FileSystemChunk chunk = 2 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceWriteStreamResponse {
+  FileSystemEntry entry = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceRenameRequest {
+  string source = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  string target = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message FileSystemServiceRenameResponse {
+  FileSystemEntry entry = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceRemoveRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  bool recursive = 2 [(buf.validate.field).bool = {}];
+}
+
+message FileSystemServiceRemoveResponse {}
+
+message FileSystemServiceCopyRequest {
+  string source = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  string target = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  bool recursive = 3 [(buf.validate.field).bool = {}];
+  bool overwrite = 4 [(buf.validate.field).bool = {}];
+}
+
+message FileSystemServiceCopyResponse {
+  FileSystemEntry entry = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceDownloadRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message FileSystemServiceDownloadResponse {
+  bytes chunk = 1 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 1048576 // 1 MiB
+  }];
+}
+
+message FileSystemServiceStatRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+}
+
+message FileSystemServiceStatResponse {
+  FileSystemEntry entry = 1 [(buf.validate.field).required = true];
+  FileSystemStats stats = 2 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceCreateDirectoryRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  bool recursive = 2 [(buf.validate.field).bool = {}];
+}
+
+message FileSystemServiceCreateDirectoryResponse {
+  FileSystemEntry entry = 1 [(buf.validate.field).required = true];
+}
+
+message FileSystemServiceReadDirectoryRequest {
+  string path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 4096
+  }];
+
+  // Maximum directory depth to expand. A value of 0 returns only the
+  // immediate entries without expanding nested directories.
+  uint32 depth = 2 [(buf.validate.field).uint32 = {lte: 10}];
+}
+
+message FileSystemServiceReadDirectoryResponse {
+  repeated FileSystemEntry entries = 1 [(buf.validate.field).repeated = {max_items: 10000}];
+}
+
+service FileSystemService {
+  rpc Read(FileSystemServiceReadRequest) returns (FileSystemServiceReadResponse);
+  rpc ReadStream(FileSystemServiceReadStreamRequest) returns (stream FileSystemServiceReadStreamResponse);
+  rpc ReadDirectory(FileSystemServiceReadDirectoryRequest) returns (FileSystemServiceReadDirectoryResponse);
+  rpc Write(FileSystemServiceWriteRequest) returns (FileSystemServiceWriteResponse);
+  rpc WriteStream(stream FileSystemServiceWriteStreamRequest) returns (FileSystemServiceWriteStreamResponse);
+  rpc Rename(FileSystemServiceRenameRequest) returns (FileSystemServiceRenameResponse);
+  rpc Remove(FileSystemServiceRemoveRequest) returns (FileSystemServiceRemoveResponse);
+  rpc Copy(FileSystemServiceCopyRequest) returns (FileSystemServiceCopyResponse);
+  rpc Download(FileSystemServiceDownloadRequest) returns (stream FileSystemServiceDownloadResponse);
+  rpc Stat(FileSystemServiceStatRequest) returns (FileSystemServiceStatResponse);
+  rpc CreateDirectory(FileSystemServiceCreateDirectoryRequest) returns (FileSystemServiceCreateDirectoryResponse);
+}

@@ -1,19 +1,20 @@
 import { randomBytes } from "node:crypto";
 import {
-  type ClientHttp2Session,
-  type ClientHttp2Stream,
+  ClientHttp2Session,
+  ClientHttp2Stream,
   connect,
   constants,
   createServer,
-  type Http2Server,
-  type Http2Stream,
-  type ServerHttp2Session,
-  type ServerHttp2Stream,
+  Http2Server,
+  Http2Stream,
+  ServerHttp2Session,
+  ServerHttp2Stream,
 } from "node:http2";
-import type { Socket } from "node:net";
+import { Socket } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Bridge } from "./bridge";
-import { SocketPair } from "./socket-pair";
+
+import { Bridge } from "@/bridge";
+import { SocketPair } from "@/socket-pair";
 
 describe("Bridge", () => {
   const pairs = new SocketPair();

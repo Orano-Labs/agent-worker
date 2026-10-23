@@ -4,11 +4,11 @@ import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 import { createInterface as createReadLineInterface } from "node:readline";
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
-import type { Logger } from "@aw/logging";
-import { $, type ProcessPromise } from "zx";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
+import { $, ProcessPromise } from "zx";
 import { Firecracker } from "@/helpers/firecracker";
-import type { VMImage } from "@/internal/vm-image";
+import { VMImage } from "@/internal/vm-image";
 import { VMNet } from "@/internal/vm-net";
 
 export class VMFactory extends Container.ServiceConstructable {

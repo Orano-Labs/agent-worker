@@ -1,35 +1,33 @@
-import {
-  createServer as createHttp2Server,
-  type IncomingHttpHeaders,
-  type IncomingHttpStatusHeader,
-  type ServerHttp2Stream,
-} from "node:http2";
-import type { Socket } from "node:net";
-import { Bridge } from "./bridge";
+import { createServer, IncomingHttpHeaders, IncomingHttpStatusHeader, ServerHttp2Stream } from "node:http2";
+import { Socket } from "node:net";
+import { setTimeout } from "node:timers/promises";
+
+import { Bridge } from "@/bridge";
 
 type ServerHttp2StreamHeaders = IncomingHttpHeaders & IncomingHttpStatusHeader;
 
 export class TunnelGuest {
   #router: (router: Socket, headers: ServerHttp2StreamHeaders) => void;
   #concurrency: number;
-  #createConnection: () => Socket | Promise<Socket>;
+  #connect: () => Socket | Promise<Socket>;
   #bridge: Bridge;
 
-  #http2Server: ReturnType<typeof createHttp2Server>;
+  #http2Server: ReturnType<typeof createServer>;
 
   #streams: Set<ServerHttp2Stream>;
+  #sockets: Set<Socket>;
 
   #closed?: Promise<void>;
-  #sockets = new Set<Socket>();
 
   constructor(options: TunnelGuest.Options) {
     this.#router = options.router;
     this.#concurrency = options.concurrency;
-    this.#createConnection = options.createConnection;
+    this.#connect = options.connect;
     this.#bridge = new Bridge();
     this.#streams = new Set();
+    this.#sockets = new Set();
 
-    this.#http2Server = createHttp2Server({
+    this.#http2Server = createServer({
       settings: {
         enableConnectProtocol: true,
       },
@@ -49,6 +47,14 @@ export class TunnelGuest {
 
   get streams() {
     return this.#streams.size;
+  }
+
+  get server() {
+    return this.#http2Server;
+  }
+
+  get concurrency() {
+    return this.#concurrency;
   }
 
   /**
@@ -87,50 +93,39 @@ export class TunnelGuest {
       let socket: Socket;
 
       try {
-        socket = await this.#createConnection();
+        socket = await this.#connect();
       } catch {
-        await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+        await setTimeout(200);
         continue;
       }
 
       if (this.#closed || socket.destroyed) {
-        socket?.destroy();
-        return;
+        return socket.destroy();
       }
 
       this.#sockets.add(socket);
+
+      socket.once("close", () => {
+        this.#sockets.delete(socket);
+      });
 
       try {
         this.#http2Server.emit("connection", socket);
       } catch {
         socket.destroy();
-        this.#sockets.delete(socket);
-        await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+        await setTimeout(200);
         continue;
       }
 
       await new Promise<void>((resolve) => {
-        const onClose = () => {
-          socket.off("close", onClose);
-          socket.off("error", onError);
-          resolve();
-        };
-
-        // Errors are followed by a `close`; swallow to avoid an uncaught
-        // exception, the `close` listener above completes the slot cycle.
-        const onError = () => {};
-
-        socket.once("close", onClose);
-        socket.once("error", onError);
+        socket.once("close", resolve);
       });
-
-      this.#sockets.delete(socket);
 
       if (this.#closed) {
         return;
       }
 
-      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      await setTimeout(200);
     }
   }
 
@@ -204,6 +199,6 @@ export namespace TunnelGuest {
   export type Options = {
     router: (socket: Socket, headers: Headers) => void;
     concurrency: number;
-    createConnection: () => Socket | Promise<Socket>;
+    connect: () => Socket | Promise<Socket>;
   };
 }

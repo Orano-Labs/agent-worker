@@ -1,14 +1,4 @@
-import {
-  type DescEnum,
-  type DescField,
-  type DescFile,
-  type DescMessage,
-  type DescOneof,
-  type DescService,
-  getOption,
-  hasOption,
-  ScalarType,
-} from "@bufbuild/protobuf";
+import { DescEnum, DescField, DescFile, DescMessage, DescOneof, DescService, getOption, hasOption, ScalarType } from "@bufbuild/protobuf";
 import { scalarTypeScriptType, wktPublicImportPaths } from "@bufbuild/protobuf/codegenv2";
 import {
   FeatureSet_FieldPresence,
@@ -29,8 +19,8 @@ import {
   file_google_protobuf_wrappers,
   isWrapperDesc,
 } from "@bufbuild/protobuf/wkt";
-import { createEcmaScriptPlugin, type GeneratedFile, type Printable, type Schema } from "@bufbuild/protoplugin";
-import { field as FieldExtension, type FieldRules, Ignore } from "@/generated/proto-extensions/extensions/v1/buf-validate-minimal_pb";
+import { createEcmaScriptPlugin, GeneratedFile, Printable, Schema } from "@bufbuild/protoplugin";
+import { field as FieldExtension, FieldRules, Ignore } from "@/generated/buf-validate-minimal_pb";
 
 export class Generator {
   #fieldIsLegacyRequired(field: DescField) {
@@ -101,8 +91,11 @@ export class Generator {
     return optional;
   }
 
-  #fieldIsStruct(desc: DescField) {
-    return desc.message?.typeName === "google.protobuf.Struct";
+  #fieldIsStructJson(desc: DescField) {
+    // protoc-gen-es represents Struct as JsonObject only when it is used as a
+    // field. The struct_value field of google.protobuf.Value is the exception:
+    // it keeps the generated Struct message type.
+    return desc.message?.typeName === "google.protobuf.Struct" && desc.parent.typeName !== "google.protobuf.Value";
   }
 
   #fieldIsTimestamp(desc: DescField) {
@@ -112,7 +105,6 @@ export class Generator {
   #generateFile(ctx: Generator.Context) {
     ctx.f.preamble(ctx.file);
 
-    ctx.print`export default ${ctx.f.importSchema(ctx.file)};`;
     ctx.print``;
 
     for (const desc of ctx.schema.typesInFile(ctx.file)) {
@@ -176,19 +168,19 @@ export class Generator {
       const res = this.#generateTypeReference(ctx, method.output);
 
       if (method.methodKind === "unary") {
-        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createUnaryMethod(${req}, ${res}),`;
+        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createUnaryMethod("${method.localName}", ${ctx.f.importSchema(desc)}.method.${method.localName}, ${req}, ${res}),`;
       }
 
       if (method.methodKind === "client_streaming") {
-        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createClientStreamingMethod(${req}, ${res}),`;
+        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createClientStreamingMethod("${method.localName}", ${ctx.f.importSchema(desc)}.method.${method.localName}, ${req}, ${res}),`;
       }
 
       if (method.methodKind === "server_streaming") {
-        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createServerStreamingMethod(${req}, ${res}),`;
+        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createServerStreamingMethod("${method.localName}", ${ctx.f.importSchema(desc)}.method.${method.localName}, ${req}, ${res}),`;
       }
 
       if (method.methodKind === "bidi_streaming") {
-        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createBidiStreamingMethod(${req}, ${res}),`;
+        ctx.print`  ${method.localName}: /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createBidiStreamingMethod("${method.localName}", ${ctx.f.importSchema(desc)}.method.${method.localName}, ${req}, ${res}),`;
       }
     }
 
@@ -196,7 +188,7 @@ export class Generator {
     ctx.print``;
 
     ctx.print`${ctx.f.jsDoc(desc, "")}`;
-    ctx.print`${ctx.f.export("const", name)}: ReturnType<typeof ${ctx.f.import("Proto", "@/helpers/proto")}.createService<typeof ${name}$$, typeof ${ctx.f.importSchema(desc)}>> = /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createService(${name}$$, ${ctx.f.importSchema(desc)});`;
+    ctx.print`${ctx.f.export("const", name)}: ReturnType<typeof ${ctx.f.import("Proto", "@aw/proto")}.createService<typeof ${name}$$, typeof ${ctx.f.importSchema(desc)}>> = /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createService(${name}$$, ${ctx.f.importSchema(desc)});`;
     ctx.print``;
   }
 
@@ -218,7 +210,7 @@ export class Generator {
     ctx.print``;
 
     ctx.print`${ctx.f.jsDoc(desc, "")}`;
-    ctx.print`${ctx.f.export("const", name)}: ReturnType<typeof ${ctx.f.import("Proto", "@/helpers/proto")}.createMessage<${name}>> = /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createMessage(${ctx.f.importSchema(desc)}, {`;
+    ctx.print`${ctx.f.export("const", name)}: ReturnType<typeof ${ctx.f.import("Proto", "@aw/proto")}.createMessage<${name}>> = /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createMessage(${ctx.f.importSchema(desc)}, {`;
 
     this.#generateMessageConverters(ctx, desc);
 
@@ -266,7 +258,9 @@ export class Generator {
         type.push(scalarTypeScriptType(desc.scalar, desc.longAsString));
         break;
       case "message":
-        if (isWrapperDesc(desc.message) && desc.oneof === undefined) {
+        if (this.#fieldIsStructJson(desc)) {
+          type.push(ctx.f.runtime.JsonObject);
+        } else if (isWrapperDesc(desc.message) && desc.oneof === undefined) {
           type.push(scalarTypeScriptType(desc.message.fields[0].scalar, false));
         } else {
           type.push(this.#generateTypeReference(ctx, desc.message));
@@ -284,7 +278,11 @@ export class Generator {
             type.push(scalarTypeScriptType(desc.scalar, desc.longAsString), "[]");
             break;
           case "message":
-            type.push(this.#generateTypeReference(ctx, desc.message), "[]");
+            if (this.#fieldIsStructJson(desc)) {
+              type.push(ctx.f.runtime.JsonObject, "[]");
+            } else {
+              type.push(this.#generateTypeReference(ctx, desc.message), "[]");
+            }
             break;
         }
         break;
@@ -308,7 +306,7 @@ export class Generator {
             valueType = scalarTypeScriptType(desc.scalar, false);
             break;
           case "message":
-            valueType = this.#generateTypeReference(ctx, desc.message);
+            valueType = this.#fieldIsStructJson(desc) ? ctx.f.runtime.JsonObject : this.#generateTypeReference(ctx, desc.message);
             break;
           case "enum":
             valueType = this.#generateTypeReference(ctx, desc.enum);
@@ -339,7 +337,7 @@ export class Generator {
         if (member.kind === "field") {
           const guard = this.#fieldIsOptional(member) ? `${accessor} === undefined ? undefined : ` : "";
 
-          if (this.#fieldIsStruct(member)) {
+          if (this.#fieldIsStructJson(member)) {
             ctx.print`      ${key}: ${guard}${accessor},`;
 
             continue;
@@ -387,7 +385,7 @@ export class Generator {
         const conversion: Printable[] = [];
 
         for (const field of member.fields) {
-          if (this.#fieldIsStruct(field)) {
+          if (this.#fieldIsStructJson(field)) {
             continue;
           }
 
@@ -443,10 +441,6 @@ export class Generator {
   }
 
   #generateTypeReference(ctx: Generator.Context, desc: DescMessage | DescEnum): Printable {
-    if (desc.kind === "message" && desc.typeName === "google.protobuf.Struct") {
-      return ctx.f.runtime.JsonObject;
-    }
-
     if (desc.kind === "message" && desc.typeName === "google.protobuf.Timestamp") {
       return "Date";
     }
@@ -480,12 +474,12 @@ export class Generator {
     ctx.print`} as const;`;
     ctx.print``;
     ctx.print`${ctx.f.jsDoc(desc, "")}`;
-    ctx.print`${ctx.f.export("const", name)}: ReturnType<typeof ${ctx.f.import("Proto", "@/helpers/proto")}.createEnum<${name}, typeof ${name}$$>> = /*@__PURE__*/ ${ctx.f.import("Proto", "@/helpers/proto")}.createEnum(${ctx.f.importSchema(desc)}, ${name}$$);`;
+    ctx.print`${ctx.f.export("const", name)}: ReturnType<typeof ${ctx.f.import("Proto", "@aw/proto")}.createEnum<${name}, typeof ${name}$$>> = /*@__PURE__*/ ${ctx.f.import("Proto", "@aw/proto")}.createEnum(${ctx.f.importSchema(desc)}, ${name}$$);`;
     ctx.print``;
   }
 
   #generate(schema: Schema) {
-    for (const file of [
+    const files = [
       ...schema.files,
       file_google_protobuf_any,
       file_google_protobuf_api,
@@ -502,9 +496,25 @@ export class Generator {
       file_google_protobuf_timestamp,
       file_google_protobuf_type,
       file_google_protobuf_wrappers,
-    ]) {
+    ];
+
+    for (const file of files) {
       this.#generateFile(this.#createContext(schema, file, ".ts"));
     }
+
+    const registry = schema.generateFile("registry.ts");
+
+    registry.print("const r = ", registry.import("createRegistry", "@bufbuild/protobuf"), "(");
+
+    for (const file of files) {
+      registry.print("  ", registry.importSchema(file), ",");
+    }
+
+    registry.print(");");
+    registry.print("");
+    registry.print("for (const entity of r) {");
+    registry.print("   ", registry.import("Proto", "@aw/proto"), ".registry.add(entity)");
+    registry.print("}");
   }
 
   #createContext(schema: Schema, file: DescFile, suffix: string) {

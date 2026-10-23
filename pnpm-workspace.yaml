@@ -16,6 +16,7 @@ allowBuilds:
   msw: true
   prisma: true
   protobufjs: true
+  redis-memory-server: true
   sharp: true
   ssh2: true
 

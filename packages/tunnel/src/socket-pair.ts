@@ -1,5 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
-import { connect, createServer, type Server, type Socket } from "node:net";
+import { connect, createServer, Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 

@@ -1,8 +1,8 @@
 import { Container } from "@aw/container";
-import type { Environment } from "@aw/environment";
-import type { Logger } from "@aw/logging";
+import { Environment } from "@aw/environment";
+import { Logger } from "@aw/logging";
 import { TunnelClient } from "@aw/vm-director/tunnel";
-import type { Controller } from "@/internal/controller";
+import { Controller } from "@/internal/controller";
 
 export class Tunnel extends Container.ServiceConstructable {
   #client?: TunnelClient;

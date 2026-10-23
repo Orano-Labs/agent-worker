@@ -1,7 +1,7 @@
 import { Container } from "@aw/container";
-import type { Logger } from "@aw/logging";
+import { Logger } from "@aw/logging";
 import { default as Lock } from "async-lock";
-import type { Shell } from "@/internal/shell";
+import { Shell } from "@/internal/shell";
 
 export class VMNet extends Container.ServiceConstructable {
   #logger: Logger;

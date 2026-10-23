@@ -1,15 +1,8 @@
-import {
-  type ClientHttp2Session,
-  connect,
-  constants,
-  createServer,
-  type Http2SessionEventMap,
-  type Http2Stream,
-  type ServerHttp2Stream,
-} from "node:http2";
+import { ClientHttp2Session, connect, constants, createServer, Http2SessionEventMap, Http2Stream, ServerHttp2Stream } from "node:http2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SocketPair } from "./socket-pair";
-import { TunnelHost } from "./tunnel-host";
+
+import { SocketPair } from "@/socket-pair";
+import { TunnelHost } from "@/tunnel-host";
 
 describe("TunnelHost.Session", () => {
   const socketPairs = new SocketPair();

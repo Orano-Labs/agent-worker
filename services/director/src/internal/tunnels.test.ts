@@ -197,21 +197,12 @@ describe("Tunnels", () => {
     await tunnels[Container.SymbolDispose]();
   });
 
-  it("tracks online supervisors and emits pool events", async () => {
+  it("tracks online supervisors", async () => {
     const tunnels = new Tunnels(createLogger());
-    const created: string[] = [];
-    const closed: string[] = [];
-
-    tunnels.on("create", (id) => {
-      created.push(id);
-    });
-    tunnels.on("close", (id) => {
-      closed.push(id);
-    });
 
     harness = await createHarness(false, tunnels);
 
-    expect(created).toEqual(["supervisor-1"]);
+    expect(tunnels.get("supervisor-1")).toBe(harness.tunnel);
     expect([...tunnels.iterator()]).toEqual([]);
 
     await harness.connect();
@@ -221,7 +212,7 @@ describe("Tunnels", () => {
     await harness.tunnel.close();
 
     expect([...tunnels.iterator()]).toEqual([]);
-    expect(closed).toEqual(["supervisor-1"]);
+    expect(tunnels.get("supervisor-1")).toBeUndefined();
 
     await tunnels[Container.SymbolDispose]();
   });
@@ -242,26 +233,18 @@ describe("Tunnels.Tunnel", () => {
     expect(harness.tunnel.connections).toBe(0);
   });
 
-  it("tracks online state and emits changes", async () => {
+  it("tracks online state", async () => {
     harness = await createHarness(false);
-
-    const states: boolean[] = [];
-
-    harness.tunnel.on("online", (online) => {
-      states.push(online);
-    });
 
     expect(harness.tunnel.online).toBe(false);
 
     await harness.connect();
 
     expect(harness.tunnel.online).toBe(true);
-    expect(states).toEqual([true]);
 
     await harness.tunnel.close();
 
     expect(harness.tunnel.online).toBe(false);
-    expect(states).toEqual([true, false]);
   });
 
   it("opens a CONNECT stream and tracks active connections", async () => {
@@ -292,7 +275,7 @@ describe("Tunnels.Tunnel", () => {
   it("opens a request on an available session", async () => {
     harness = await createHarness();
 
-    const request = harness.tunnel.request(
+    const request = await harness.tunnel.request(
       {
         ":method": "GET",
         ":path": "/request",
@@ -301,11 +284,7 @@ describe("Tunnels.Tunnel", () => {
       { endStream: true },
     );
 
-    const response = new Promise<{ ":status"?: number }>((resolve) => {
-      request.once("response", (headers) => resolve(headers));
-    });
-
-    expect((await response)[":status"]).toBe(200);
+    expect(request.closed).toBe(false);
 
     await new Promise<void>((resolve) => {
       request.once("close", () => resolve());
@@ -321,11 +300,11 @@ describe("Tunnels.Tunnel", () => {
       ":authority": "example.com",
     };
 
-    expect(() => tunnel.request(headers)).toThrow("No available tunnel session");
+    await expect(tunnel.request(headers)).rejects.toThrow("No available tunnel session");
 
     await tunnel.close();
 
-    expect(() => tunnel.request(headers)).toThrow("Tunnel is closed");
+    await expect(tunnel.request(headers)).rejects.toThrow("Tunnel is closed");
   });
 
   it("queues streams until a session becomes available", async () => {
@@ -510,9 +489,6 @@ describe("Tunnels.Tunnel", () => {
     harness = await createHarness();
 
     const tunnel = harness.tunnel;
-    const offline = new Promise<boolean>((resolve) => {
-      tunnel.once("online", resolve);
-    });
     const stream = await tunnel.stream({
       authority: "example.com:80",
       path: "/",
@@ -520,7 +496,7 @@ describe("Tunnels.Tunnel", () => {
 
     harness.serverSessions[0].goaway();
 
-    expect(await offline).toBe(false);
+    await waitFor(() => !tunnel.online);
     expect(tunnel.online).toBe(false);
     expect(tunnel.sessions).toBe(1);
 
@@ -543,13 +519,10 @@ describe("Tunnels.Tunnel", () => {
     harness = await createHarness();
 
     const tunnel = harness.tunnel;
-    const offline = new Promise<boolean>((resolve) => {
-      tunnel.once("online", resolve);
-    });
 
     harness.serverSessions[0].goaway();
 
-    expect(await offline).toBe(false);
+    await waitFor(() => !tunnel.online);
 
     const pending = tunnel.stream({
       authority: "queued",
@@ -575,7 +548,7 @@ describe("Tunnels.Tunnel", () => {
     harness = await createHarness(true, undefined, 20);
 
     // Use a raw request so closing the tunnel does not abort the stream through the tunnel signal.
-    const stream = harness.tunnel.request(
+    const stream = await harness.tunnel.request(
       {
         ":method": "GET",
         ":path": "/",
@@ -585,10 +558,7 @@ describe("Tunnels.Tunnel", () => {
     );
     stream.on("error", () => {});
 
-    const responded = new Promise<void>((resolve) => stream.once("response", () => resolve()));
     const streamClosed = new Promise<void>((resolve) => stream.once("close", () => resolve()));
-
-    await responded;
 
     const started = Date.now();
 
@@ -629,20 +599,6 @@ describe("Tunnels.Tunnel", () => {
 
     expect(tunnel.closed).toBe(true);
     await expect(tunnel.close()).resolves.toBeUndefined();
-  });
-
-  it("emits a close event with a completion promise", async () => {
-    const tunnel = new Tunnels.Tunnel({ logger: createLogger() });
-    let completion: Promise<void> | undefined;
-
-    tunnel.once("close", (promise) => {
-      completion = promise;
-    });
-
-    await tunnel.close();
-
-    expect(completion).toBeInstanceOf(Promise);
-    await expect(completion).resolves.toBeUndefined();
   });
 
   it("rejects upgrades and streams after the tunnel closes", async () => {

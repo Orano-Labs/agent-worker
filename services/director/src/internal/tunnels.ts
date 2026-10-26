@@ -1,4 +1,3 @@
-import { EventEmitter } from "node:events";
 import {
   ClientHttp2Session,
   ClientHttp2Stream,
@@ -20,15 +19,13 @@ const TUNNEL_CLOSE_TIMEOUT_MS = 5_000;
 const TUNNEL_PING_PAYLOAD = Buffer.alloc(8);
 const TUNNEL_MAX_STREAMS_PER_SESSION = 128;
 
-export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.Service {
+export class Tunnels implements Container.Service {
   #controller: AbortController;
   #closing: Set<Promise<void>>;
   #tunnels: Map<string, Tunnels.Tunnel>;
   #logger: Logger;
 
   constructor(...deps: [Logger]) {
-    super();
-
     this.#logger = deps[0].namespace("Tunnels");
 
     this.#controller = new AbortController();
@@ -40,7 +37,12 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
     const existing = this.#tunnels.get(id);
 
     if (existing) {
-      return existing;
+      if (!existing.closed) {
+        return existing;
+      }
+
+      this.#tunnels.delete(id);
+      this.#trackClosing(existing.close());
     }
 
     if (this.#controller.signal.aborted) {
@@ -49,27 +51,26 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
 
     const tunnel = new Tunnels.Tunnel({ logger: this.#logger.namespace("Tunnel").binding({ id }) });
 
-    tunnel.on("close", (promise) => {
-      this.#tunnels.delete(id);
-      this.#closing.add(promise);
-
-      promise.then(
-        () => this.#closing.delete(promise),
-        () => this.#closing.delete(promise),
-      );
-
-      this.emit("close", id, tunnel, promise);
-    });
-
     this.#tunnels.set(id, tunnel);
-
-    this.emit("create", id, tunnel);
 
     return tunnel;
   }
 
   get(id: string) {
-    return this.#tunnels.get(id);
+    const tunnel = this.#tunnels.get(id);
+
+    if (!tunnel) {
+      return;
+    }
+
+    if (tunnel.closed) {
+      this.#tunnels.delete(id);
+      this.#trackClosing(tunnel.close());
+
+      return;
+    }
+
+    return tunnel;
   }
 
   *iterator() {
@@ -94,17 +95,19 @@ export class Tunnels extends EventEmitter<Tunnels.Events> implements Container.S
 
     this.#tunnels.clear();
     this.#closing.clear();
+  }
 
-    this.removeAllListeners();
+  #trackClosing(promise: Promise<void>) {
+    this.#closing.add(promise);
+
+    promise.then(
+      () => this.#closing.delete(promise),
+      () => this.#closing.delete(promise),
+    );
   }
 }
 
 export namespace Tunnels {
-  export type Events = {
-    create: [id: string, tunnel: Tunnel];
-    close: [id: string, tunnel: Tunnel, promise: Promise<void>];
-  };
-
   type PendingStream = {
     options: Tunnel.StreamOptions;
     resolve: (stream: ClientHttp2Stream) => void;
@@ -112,29 +115,25 @@ export namespace Tunnels {
     timer?: ReturnType<typeof setTimeout>;
   };
 
-  export class Tunnel extends EventEmitter<Tunnel.Events> {
+  export class Tunnel {
+    #closing?: Promise<void>;
     #controller: AbortController;
     #closeTimeoutMs: number;
-    // Last emitted value, used only to suppress duplicate online events.
-    #lastOnline: boolean;
     #logger: Logger;
-    #sessions: Map<ClientHttp2Session, Tunnel.SessionState>;
+    #sessions: Set<Tunnel.Session>;
     #queue: PendingStream[];
 
     constructor(options: Tunnel.Options) {
-      super();
-
       this.#controller = new AbortController();
       this.#closeTimeoutMs = options.closeTimeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS;
-      this.#lastOnline = false;
       this.#logger = options.logger;
-      this.#sessions = new Map();
+      this.#sessions = new Set();
       this.#queue = [];
     }
 
     get online() {
-      for (const state of this.#sessions.values()) {
-        if (state.usable) {
+      for (const session of this.#sessions) {
+        if (session.usable) {
           return true;
         }
       }
@@ -149,8 +148,8 @@ export namespace Tunnels {
     get connections() {
       let connections = 0;
 
-      for (const state of this.#sessions.values()) {
-        connections += state.streams;
+      for (const session of this.#sessions) {
+        connections += session.streams;
       }
 
       return connections;
@@ -164,7 +163,7 @@ export namespace Tunnels {
       return this.#controller.signal.aborted;
     }
 
-    request(headers: OutgoingHttpHeaders, options: ClientSessionRequestOptions = {}) {
+    async request(headers: OutgoingHttpHeaders, options: ClientSessionRequestOptions = {}) {
       if (this.closed) {
         throw new Error("Tunnel is closed");
       }
@@ -175,7 +174,7 @@ export namespace Tunnels {
         throw new Error("No available tunnel session");
       }
 
-      return session.request(headers, options);
+      return await session.request(headers, options);
     }
 
     async upgrade(socket: Duplex) {
@@ -244,10 +243,6 @@ export namespace Tunnels {
         this.#controller.signal.addEventListener("abort", handleAborted, { once: true });
       });
 
-      session.on("error", (error) => {
-        this.#logger.warn("HTTP/2 session error.", { err: error });
-      });
-
       if (this.closed) {
         if (!session.destroyed) {
           session.destroy();
@@ -290,9 +285,9 @@ export namespace Tunnels {
       });
     }
 
-    async close(reason?: unknown) {
-      if (this.closed) {
-        return;
+    close(reason?: unknown): Promise<void> {
+      if (this.#closing) {
+        return this.#closing;
       }
 
       this.#controller.abort(reason);
@@ -307,160 +302,35 @@ export namespace Tunnels {
         job.reject(error);
       }
 
-      const sessions = [...this.#sessions.keys()];
+      const sessions = [...this.#sessions];
 
       this.#sessions.clear();
-      this.#updateOnline();
 
-      const promise = (async () => {
+      this.#closing = (async () => {
         try {
-          await Promise.all(sessions.map((session) => this.#closeSession(session, reason, this.#closeTimeoutMs)));
+          await Promise.all(sessions.map((session) => session.close(reason)));
         } catch {}
-
-        this.removeAllListeners();
       })();
 
-      this.emit("close", promise);
-
-      await promise;
+      return this.#closing;
     }
 
-    async #closeSession(session: ClientHttp2Session, reason: unknown, timeout: number) {
-      return new Promise<void>((resolve) => {
-        if (session.destroyed) {
-          return resolve();
-        }
-
-        let timer: ReturnType<typeof setTimeout> | undefined;
-
-        const finish = () => {
-          if (timer) {
-            clearTimeout(timer);
-          }
-
-          session.off("close", finish);
-          resolve();
-        };
-
-        timer = setTimeout(() => {
-          this.#logger.warn("HTTP/2 session did not close before timeout; forcing destruction.", {
-            timeoutMs: timeout,
-          });
-
-          if (!session.destroyed) {
-            session.destroy(reason instanceof Error ? reason : new Error("Tunnel close timed out."), constants.NGHTTP2_CANCEL);
-          }
-
-          finish();
-        }, timeout);
-
-        session.once("close", finish);
-
-        try {
-          session.close();
-        } catch (error) {
-          this.#logger.warn("Failed to gracefully close HTTP/2 session.", { err: error });
-
-          if (!session.destroyed) {
-            session.destroy(error instanceof Error ? error : new Error(String(error)), constants.NGHTTP2_CANCEL);
-          }
-
-          finish();
-        }
-      });
-    }
-
-    #register(session: ClientHttp2Session) {
-      let streams = 0;
-      let goaway = false;
-      let requestFailed = false;
-
-      const controller = new AbortController();
-
-      const state: Tunnel.SessionState = {
-        get usable() {
-          return !requestFailed && !goaway && !session.closed && !session.destroyed;
-        },
-        get streams() {
-          return streams;
-        },
-      };
-
-      const request = session.request.bind(session);
-
-      session.request = (headers, options) => {
-        if (goaway) {
-          throw new Error("HTTP/2 session is going away and cannot open new streams.");
-        }
-
-        let stream: ClientHttp2Stream;
-
-        try {
-          stream = request(headers, options);
-        } catch (error) {
-          requestFailed = true;
-          this.#updateOnline();
-
-          throw new Error("Failed to create HTTP/2 tunnel stream.", { cause: error });
-        }
-
-        streams += 1;
-
-        stream.once("close", () => {
-          streams = Math.max(0, streams - 1);
-
-          if (goaway && streams === 0 && !session.closed && !session.destroyed) {
-            session.close();
-          }
-
+    #register(http2Session: ClientHttp2Session) {
+      const session = new Tunnel.Session({
+        logger: this.#logger,
+        session: http2Session,
+        closeTimeoutMs: this.#closeTimeoutMs,
+        onChange: () => {
           this.#dispatch();
-        });
-
-        return stream;
-      };
-
-      this.#sessions.set(session, state);
-
-      const handleGoaway = () => {
-        goaway = true;
-        this.#updateOnline();
-
-        if (streams === 0 && !session.closed && !session.destroyed) {
-          session.close();
-        }
-      };
-
-      const handleClose = () => {
-        controller.abort();
-
-        this.#sessions.delete(session);
-
-        this.#updateOnline();
-        this.#dispatch();
-
-        session.off("goaway", handleGoaway);
-        session.off("close", handleClose);
-      };
-
-      session.on("goaway", handleGoaway);
-      session.on("close", handleClose);
-
-      this.#updateOnline();
-      this.#dispatch();
-
-      this.#monitor(session, controller.signal).catch((error) => {
-        if (controller.signal.aborted || session.closed || session.destroyed) {
-          return;
-        }
-
-        const reason = error instanceof Error ? error : new Error(String(error));
-
-        this.#logger.warn("HTTP/2 session monitor failed.", { err: reason });
-
-        if (!session.destroyed) {
-          session.destroy(reason, constants.NGHTTP2_CANCEL);
-        }
+        },
+        onClose: () => {
+          this.#sessions.delete(session);
+          this.#dispatch();
+        },
       });
+
+      this.#sessions.add(session);
+      this.#dispatch();
     }
 
     #enqueue(job: PendingStream) {
@@ -483,17 +353,6 @@ export namespace Tunnels {
       } else {
         this.#queue.splice(index, 0, job);
       }
-    }
-
-    #updateOnline() {
-      const online = this.online;
-
-      if (online === this.#lastOnline) {
-        return;
-      }
-
-      this.#lastOnline = online;
-      this.emit("online", online);
     }
 
     #dispatch() {
@@ -523,26 +382,25 @@ export namespace Tunnels {
     }
 
     #pick() {
-      let selected: ClientHttp2Session | undefined;
+      let selected: Tunnel.Session | undefined;
       let selectedStreams = TUNNEL_MAX_STREAMS_PER_SESSION;
 
-      for (const [session, state] of this.#sessions) {
-        if (!state.usable || state.streams >= TUNNEL_MAX_STREAMS_PER_SESSION) {
+      for (const session of this.#sessions) {
+        if (!session.usable || session.streams >= TUNNEL_MAX_STREAMS_PER_SESSION) {
           continue;
         }
 
-        if (state.streams < selectedStreams) {
+        if (session.streams < selectedStreams) {
           selected = session;
-          selectedStreams = state.streams;
+          selectedStreams = session.streams;
         }
       }
 
       return selected;
     }
 
-    async #open(session: ClientHttp2Session, options: Tunnel.StreamOptions) {
-      const requestOptions: ClientSessionRequestOptions = { endStream: false, signal: this.#controller.signal };
-      const request = session.request(
+    async #open(session: Tunnel.Session, options: Tunnel.StreamOptions) {
+      return await session.request(
         {
           ":method": "CONNECT",
           ":path": options.path ?? "/",
@@ -550,152 +408,9 @@ export namespace Tunnels {
           ":scheme": options.scheme ?? "http",
           ":protocol": options.protocol ?? "tcp",
         },
-        requestOptions,
+        { endStream: false, signal: this.#controller.signal },
+        options.timeout,
       );
-
-      return await new Promise<ClientHttp2Stream>((resolve, reject) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-
-        const cleanup = () => {
-          request.off("response", handleResponse);
-          request.off("error", handleError);
-          request.off("close", handleClose);
-          request.off("aborted", handleAborted);
-
-          if (timer) {
-            clearTimeout(timer);
-          }
-        };
-
-        const handleResponse = (headers: IncomingHttpHeaders & IncomingHttpStatusHeader) => {
-          const status = headers[":status"];
-
-          if (status !== 200) {
-            cleanup();
-            request.destroy();
-            reject(new Error(`HTTP/2 CONNECT failed with status ${status ?? "unknown"}`));
-
-            return;
-          }
-
-          cleanup();
-
-          const dispose = (error?: Error) => {
-            request.off("error", dispose);
-            request.off("close", dispose);
-
-            if (error) {
-              this.#logger.warn("HTTP/2 stream error.", { err: error, authority: options.authority });
-            }
-
-            if (!request.destroyed) {
-              request.destroy();
-            }
-          };
-
-          request.once("error", dispose);
-          request.once("close", dispose);
-
-          resolve(request);
-        };
-
-        const handleError = (error: Error) => {
-          cleanup();
-
-          this.#logger.warn("HTTP/2 stream error before establishment.", { err: error, authority: options.authority });
-
-          if (!request.destroyed) {
-            request.destroy();
-          }
-
-          reject(error);
-        };
-
-        const handleClose = () => {
-          cleanup();
-          reject(new Error("HTTP/2 stream closed before the tunnel was established"));
-        };
-
-        const handleAborted = () => {
-          cleanup();
-          reject(new Error("HTTP/2 stream aborted before the tunnel was established"));
-        };
-
-        const handleTimeout = () => {
-          cleanup();
-          request.destroy();
-          reject(new Error("HTTP/2 stream timed out before the tunnel was established"));
-        };
-
-        request.once("response", handleResponse);
-        request.once("error", handleError);
-        request.once("close", handleClose);
-        request.once("aborted", handleAborted);
-
-        if (options.timeout !== undefined) {
-          timer = setTimeout(handleTimeout, options.timeout);
-        }
-      });
-    }
-
-    async #monitor(session: ClientHttp2Session, signal: AbortSignal) {
-      while (!session.closed && !session.destroyed && !signal.aborted) {
-        try {
-          await setTimeoutPromise(TUNNEL_PING_INTERVAL_MS, undefined, {
-            ref: false,
-            signal,
-          });
-        } catch {
-          break;
-        }
-
-        if (session.closed || session.destroyed || signal.aborted) {
-          break;
-        }
-
-        await this.#ping(session, signal);
-      }
-    }
-
-    async #ping(session: ClientHttp2Session, signal: AbortSignal) {
-      await new Promise<void>((resolve, reject) => {
-        if (signal.aborted) {
-          return reject(signal.reason);
-        }
-
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error("HTTP/2 PING timeout"));
-        }, TUNNEL_PING_TIMEOUT_MS);
-
-        const cleanup = () => {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", handleAborted);
-        };
-
-        const handleAborted = () => {
-          cleanup();
-          reject(signal.reason);
-        };
-
-        timer.unref();
-        signal.addEventListener("abort", handleAborted, { once: true });
-
-        try {
-          session.ping(TUNNEL_PING_PAYLOAD, (error) => {
-            cleanup();
-
-            if (error) {
-              reject(error);
-            } else {
-              resolve();
-            }
-          });
-        } catch (error) {
-          cleanup();
-          reject(error);
-        }
-      });
     }
   }
 
@@ -703,11 +418,6 @@ export namespace Tunnels {
     export type Options = {
       logger: Logger;
       closeTimeoutMs?: number;
-    };
-
-    export type Events = {
-      online: [online: boolean];
-      close: [promise: Promise<void>];
     };
 
     export type StreamOptions = {
@@ -719,11 +429,327 @@ export namespace Tunnels {
       priority?: number;
     };
 
-    export type SessionState = {
-      readonly usable: boolean;
-      readonly streams: number;
-    };
+    export class Session {
+      #closeTimeoutMs: number;
+      #closed: boolean;
+      #closing?: Promise<void>;
+      #controller: AbortController;
+      #goaway: boolean;
+      #logger: Logger;
+      #onChange: () => void;
+      #onClose: () => void;
+      #request: ClientHttp2Session["request"];
+      #requestFailed: boolean;
+      #session: ClientHttp2Session;
+      #streams: number;
 
-    export class Session {}
+      constructor(options: Session.Options) {
+        this.#closeTimeoutMs = options.closeTimeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS;
+        this.#closed = false;
+        this.#controller = new AbortController();
+        this.#goaway = false;
+        this.#logger = options.logger;
+        this.#onChange = options.onChange ?? (() => {});
+        this.#onClose = options.onClose ?? (() => {});
+        this.#request = options.session.request.bind(options.session);
+        this.#requestFailed = false;
+        this.#session = options.session;
+        this.#streams = 0;
+
+        this.#session.on("error", this.#handleError);
+        this.#session.on("goaway", this.#handleGoaway);
+        this.#session.on("close", this.#handleClose);
+
+        this.#monitor().catch((error) => {
+          if (this.#controller.signal.aborted || this.#session.closed || this.#session.destroyed) {
+            return;
+          }
+
+          const reason = error instanceof Error ? error : new Error(String(error));
+
+          this.#logger.warn("HTTP/2 session monitor failed.", { err: reason });
+
+          if (!this.#session.destroyed) {
+            this.#session.destroy(reason, constants.NGHTTP2_CANCEL);
+          }
+        });
+      }
+
+      get usable() {
+        return !this.#requestFailed && !this.#goaway && !this.#session.closed && !this.#session.destroyed;
+      }
+
+      get streams() {
+        return this.#streams;
+      }
+
+      get closed() {
+        return this.#closed || this.#session.destroyed;
+      }
+
+      async request(headers: OutgoingHttpHeaders, options?: ClientSessionRequestOptions, timeout?: number) {
+        if (this.#goaway) {
+          throw new Error("HTTP/2 session is going away and cannot open new streams.");
+        }
+
+        let request: ClientHttp2Stream;
+
+        try {
+          request = this.#request(headers, options);
+        } catch (error) {
+          this.#requestFailed = true;
+          this.#onChange();
+
+          throw new Error("Failed to create HTTP/2 tunnel stream.", { cause: error });
+        }
+
+        this.#streams += 1;
+
+        request.once("close", () => {
+          this.#streams = Math.max(0, this.#streams - 1);
+
+          if (this.#goaway && this.#streams === 0 && !this.#session.closed && !this.#session.destroyed) {
+            this.#session.close();
+          }
+
+          this.#onChange();
+        });
+
+        const authority = headers[":authority"];
+
+        return await new Promise<ClientHttp2Stream>((resolve, reject) => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+
+          const cleanup = () => {
+            request.off("response", handleResponse);
+            request.off("error", handleError);
+            request.off("close", handleClose);
+            request.off("aborted", handleAborted);
+
+            if (timer) {
+              clearTimeout(timer);
+            }
+          };
+
+          const handleResponse = (responseHeaders: IncomingHttpHeaders & IncomingHttpStatusHeader) => {
+            const status = responseHeaders[":status"];
+
+            if (status !== 200) {
+              cleanup();
+              request.destroy();
+              reject(new Error(`HTTP/2 CONNECT failed with status ${status ?? "unknown"}`));
+
+              return;
+            }
+
+            cleanup();
+
+            const dispose = (error?: Error) => {
+              request.off("error", dispose);
+              request.off("close", dispose);
+
+              if (error) {
+                this.#logger.warn("HTTP/2 stream error.", { err: error, authority });
+              }
+
+              if (!request.destroyed) {
+                request.destroy();
+              }
+            };
+
+            request.once("error", dispose);
+            request.once("close", dispose);
+
+            resolve(request);
+          };
+
+          const handleError = (error: Error) => {
+            cleanup();
+
+            this.#logger.warn("HTTP/2 stream error before establishment.", { err: error, authority });
+
+            if (!request.destroyed) {
+              request.destroy();
+            }
+
+            reject(error);
+          };
+
+          const handleClose = () => {
+            cleanup();
+            reject(new Error("HTTP/2 stream closed before the tunnel was established"));
+          };
+
+          const handleAborted = () => {
+            cleanup();
+            reject(new Error("HTTP/2 stream aborted before the tunnel was established"));
+          };
+
+          const handleTimeout = () => {
+            cleanup();
+            request.destroy();
+            reject(new Error("HTTP/2 stream timed out before the tunnel was established"));
+          };
+
+          request.once("response", handleResponse);
+          request.once("error", handleError);
+          request.once("close", handleClose);
+          request.once("aborted", handleAborted);
+
+          if (timeout !== undefined) {
+            timer = setTimeout(handleTimeout, timeout);
+          }
+        });
+      }
+
+      async close(reason?: unknown) {
+        if (this.#closing) {
+          return this.#closing;
+        }
+
+        this.#controller.abort(reason);
+
+        this.#closing = new Promise<void>((resolve) => {
+          if (this.#session.destroyed) {
+            return resolve();
+          }
+
+          let timer: ReturnType<typeof setTimeout> | undefined;
+
+          const finish = () => {
+            if (timer) {
+              clearTimeout(timer);
+            }
+
+            this.#session.off("close", finish);
+            resolve();
+          };
+
+          timer = setTimeout(() => {
+            this.#logger.warn("HTTP/2 session did not close before timeout; forcing destruction.", {
+              timeoutMs: this.#closeTimeoutMs,
+            });
+
+            if (!this.#session.destroyed) {
+              this.#session.destroy(reason instanceof Error ? reason : new Error("Tunnel close timed out."), constants.NGHTTP2_CANCEL);
+            }
+
+            finish();
+          }, this.#closeTimeoutMs);
+
+          this.#session.once("close", finish);
+
+          try {
+            this.#session.close();
+          } catch (error) {
+            this.#logger.warn("Failed to gracefully close HTTP/2 session.", { err: error });
+
+            if (!this.#session.destroyed) {
+              this.#session.destroy(error instanceof Error ? error : new Error(String(error)), constants.NGHTTP2_CANCEL);
+            }
+
+            finish();
+          }
+        });
+
+        return this.#closing;
+      }
+
+      #handleError = (error: Error) => {
+        this.#logger.warn("HTTP/2 session error.", { err: error });
+      };
+
+      #handleGoaway = () => {
+        this.#goaway = true;
+
+        if (this.#streams === 0 && !this.#session.closed && !this.#session.destroyed) {
+          this.#session.close();
+        }
+
+        this.#onChange();
+      };
+
+      #handleClose = () => {
+        this.#closed = true;
+        this.#controller.abort();
+
+        this.#session.off("goaway", this.#handleGoaway);
+        this.#session.off("close", this.#handleClose);
+
+        this.#onClose();
+      };
+
+      async #monitor() {
+        while (!this.#session.closed && !this.#session.destroyed && !this.#controller.signal.aborted) {
+          try {
+            await setTimeoutPromise(TUNNEL_PING_INTERVAL_MS, undefined, {
+              ref: false,
+              signal: this.#controller.signal,
+            });
+          } catch {
+            break;
+          }
+
+          if (this.#session.closed || this.#session.destroyed || this.#controller.signal.aborted) {
+            break;
+          }
+
+          await this.#ping();
+        }
+      }
+
+      async #ping() {
+        const signal = this.#controller.signal;
+
+        await new Promise<void>((resolve, reject) => {
+          if (signal.aborted) {
+            return reject(signal.reason);
+          }
+
+          const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error("HTTP/2 PING timeout"));
+          }, TUNNEL_PING_TIMEOUT_MS);
+
+          const cleanup = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", handleAborted);
+          };
+
+          const handleAborted = () => {
+            cleanup();
+            reject(signal.reason);
+          };
+
+          timer.unref();
+          signal.addEventListener("abort", handleAborted, { once: true });
+
+          try {
+            this.#session.ping(TUNNEL_PING_PAYLOAD, (error) => {
+              cleanup();
+
+              if (error) {
+                reject(error);
+              } else {
+                resolve();
+              }
+            });
+          } catch (error) {
+            cleanup();
+            reject(error);
+          }
+        });
+      }
+    }
+
+    export namespace Session {
+      export type Options = {
+        logger: Logger;
+        session: ClientHttp2Session;
+        closeTimeoutMs?: number;
+        onChange?: () => void;
+        onClose?: () => void;
+      };
+    }
   }
 }

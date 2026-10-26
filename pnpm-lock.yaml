@@ -237,9 +237,6 @@ importers:
       '@aw/ptyd':
         specifier: workspace:*
         version: link:../../native/ptyd
-      '@aw/vm-director':
-        specifier: workspace:*
-        version: link:../director
       '@aw/webdav':
         specifier: workspace:*
         version: link:../../native/webdav
@@ -307,6 +304,12 @@ importers:
         specifier: ^8.8.5
         version: 8.8.5
     devDependencies:
+      '@aw/proto-codegen':
+        specifier: workspace:*
+        version: link:../../packages/proto-codegen
+      '@bufbuild/protoc-gen-es':
+        specifier: ^2.16.0
+        version: 2.16.0(@bufbuild/protobuf@2.16.0)
       '@hey-api/openapi-ts':
         specifier: ^0.98.2
         version: 0.98.2(typescript@6.0.3)

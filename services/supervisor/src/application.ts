@@ -1,13 +1,12 @@
+import "@/gen/proto/registry";
+
 import { Container } from "@aw/container";
 import { Environment } from "@aw/environment";
 import { Logger } from "@aw/logging";
-import { Controller } from "@/internal/controller";
-import { Director } from "@/internal/director";
 import { Ganesha } from "@/internal/ganesha";
 import { KVStorage } from "@/internal/kv-storage";
 import { RPC } from "@/internal/rpc";
 import { Shell } from "@/internal/shell";
-import { Tunnel } from "@/internal/tunnel";
 import { VMFactory } from "@/internal/vm-factory";
 import { VMImage } from "@/internal/vm-image";
 import { VMNet } from "@/internal/vm-net";
@@ -37,9 +36,6 @@ export class Application extends Container.ServiceConstructable {
     for (const warn of this.#environment.warnings) {
       this.#logger.namespace("Environment.Warnings").warn(warn);
     }
-
-    // injector.injectMust(Tunnel);
-    //
 
     this.#factory = injector.injectMust(VMFactory);
   }
@@ -95,24 +91,8 @@ export class Application extends Container.ServiceConstructable {
     container.provide(Ganesha, (injector) => {
       return new Ganesha(injector.injectMust(Environment), injector.injectMust(Logger));
     });
-    container.provide(Director, (injector) => {
-      return new Director(injector.injectMust(Environment), injector.injectMust(Logger));
-    });
-    container.provide(Controller, (injector) => {
-      return new Controller(
-        injector.injectMust(Environment),
-        injector.injectMust(Logger),
-        injector.injectMust(KVStorage),
-        injector.injectMust(Director),
-        injector.injectMust(VMFactory),
-        injector.injectMust(Ganesha),
-      );
-    });
     container.provide(KVStorage, (injector) => {
       return new KVStorage(injector.injectMust(Environment));
-    });
-    container.provide(Tunnel, (injector) => {
-      return new Tunnel(injector.injectMust(Environment), injector.injectMust(Logger), injector.injectMust(Controller));
     });
     container.provide(Server, (injector) => {
       return new Server(injector.injectMust(Environment), injector.injectMust(Logger));

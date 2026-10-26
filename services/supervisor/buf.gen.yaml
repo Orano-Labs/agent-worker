@@ -1,0 +1,17 @@
+version: v2
+clean: true
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-es
+    out: src/gen/proto
+    opt:
+      - valid_types=protovalidate_required+legacy_required
+      - target=ts
+      - erasable_syntax=true
+      - map_imports=buf/validate/:@bufbuild/protovalidate/gen
+  - local: proto-codegen
+    out: src/gen/proto
+    strategy: all
+    opt:
+      - target=ts

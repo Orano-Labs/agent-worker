@@ -1,0 +1,11 @@
+version: v2
+deps:
+  - buf.build/bufbuild/protovalidate
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    - FIELD_NOT_REQUIRED
+    - FILE_LOWER_SNAKE_CASE

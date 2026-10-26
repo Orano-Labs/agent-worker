@@ -4,6 +4,7 @@ inputs:
   - directory: proto
     paths:
       - proto/api
+      - proto/supervisor
 plugins:
   - local: protoc-gen-es
     out: src/generated/proto

@@ -163,20 +163,6 @@ export namespace Tunnels {
       return this.#controller.signal.aborted;
     }
 
-    async request(headers: OutgoingHttpHeaders, options: ClientSessionRequestOptions = {}) {
-      if (this.closed) {
-        throw new Error("Tunnel is closed");
-      }
-
-      const session = this.#pick();
-
-      if (!session) {
-        throw new Error("No available tunnel session");
-      }
-
-      return await session.request(headers, options);
-    }
-
     async upgrade(socket: Duplex) {
       if (this.closed) {
         throw new Error("Tunnel is closed");

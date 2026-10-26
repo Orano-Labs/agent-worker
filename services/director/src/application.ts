@@ -6,6 +6,7 @@ import { ProjectServiceImpl } from "@/api/grpc/project-service";
 import { SupervisorServiceImpl } from "@/api/grpc/supervisor-service";
 import { TemplateServiceImpl } from "@/api/grpc/template-service";
 import { UserServiceImpl } from "@/api/grpc/user-service";
+import { SupervisorTunnelService } from "@/api/tunnel-service";
 import { Signature, SignatureIdentity } from "@/generated/proto/api/v1/signature";
 import { Authenticator } from "@/internal/authenticator";
 import { Cache } from "@/internal/cache";
@@ -17,6 +18,7 @@ import { Projects } from "@/internal/projects";
 import { Redis } from "@/internal/redis";
 import { Supervisors } from "@/internal/supervisors";
 import { Templates } from "@/internal/templates";
+import { Tunnels } from "@/internal/tunnels";
 import { Users } from "@/internal/users";
 
 const EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
@@ -63,7 +65,7 @@ export class Application extends Container.ServiceConstructable {
     });
 
     container.provide(Environment, () => {
-      return new Environment({ prefix: "AW_DIRECTOR", root: "/aw-director" });
+      return new Environment({ prefix: "AW_DIRECTOR" });
     });
     container.provide(Logger.Engine, (injector) => {
       return new Logger.PinoEngine(injector.injectMust(Environment).mode !== Environment.Mode.Production);
@@ -172,6 +174,17 @@ export class Application extends Container.ServiceConstructable {
     });
     container.provide(HTTPServer, (injector) => {
       return new HTTPServer(injector.injectMust(Environment), injector.injectMust(Logger));
+    });
+    container.provide(Tunnels, (injector) => {
+      return new Tunnels(injector.injectMust(Logger));
+    });
+    container.provide(SupervisorTunnelService, (injector) => {
+      return new SupervisorTunnelService(
+        injector.injectMust(HTTPServer),
+        injector.injectMust(Authenticator),
+        injector.injectMust(Tunnels),
+        injector.injectMust(Logger),
+      );
     });
 
     container.resolve();

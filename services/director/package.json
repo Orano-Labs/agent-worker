@@ -33,7 +33,7 @@
     "test": "vitest",
     "generate": "prisma generate && buf generate",
     "db:generate": "drizzle-kit generate",
-    "dev": "tsx watch --include \"./src/**/*\" --exclude \"./src/sdk/**/*\" src/main.ts",
+    "dev": "tsx watch ./src/main.ts",
     "start": "prisma migrate deploy && node ./dist/index.cjs",
     "proto:generate": "buf generate && tsx ./scripts/generate-proto-registry.ts"
   },

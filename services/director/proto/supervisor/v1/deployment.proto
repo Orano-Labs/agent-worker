@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package supervisor.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+enum DeploymentResourceTier {
+  DEPLOYMENT_RESOURCE_TIER_UNSPECIFIED = 0;
+  DEPLOYMENT_RESOURCE_TIER_MINIMUM = 1;
+  DEPLOYMENT_RESOURCE_TIER_STANDARD = 2;
+  DEPLOYMENT_RESOURCE_TIER_PERFORMANCE = 3;
+}
+
+message DeploymentConfig {
+  // Resource tier requested for this deployment.
+  DeploymentResourceTier resource_tier = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // Workspace path relative to the root directory configured on the Supervisor.
+  // An empty value means the Supervisor chooses a default workspace.
+  string workspace = 2 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Additional deployment parameters can be added here as the deployment
+  // contract grows.
+}
+
+message DeploymentStateStarting {
+  string message = 1 [(buf.validate.field).string = {max_len: 4096}];
+}
+
+message DeploymentStateRunning {
+  uint32 pid = 1 [(buf.validate.field).uint32 = {gt: 0}];
+}
+
+message DeploymentStateStopped {
+  int32 exit_code = 1;
+  string reason = 2 [(buf.validate.field).string = {max_len: 4096}];
+}
+
+message DeploymentStateFailed {
+  string error = 1 [(buf.validate.field).string = {max_len: 4096}];
+  int32 exit_code = 2;
+}
+
+message DeploymentState {
+  // Deployment ID stored by the Director.
+  string deployment_id = 1 [(buf.validate.field).string = {len: 24}];
+
+  oneof state {
+    option (buf.validate.oneof).required = true;
+
+    DeploymentStateStarting starting = 4;
+    DeploymentStateRunning running = 5;
+    DeploymentStateStopped stopped = 7;
+    DeploymentStateFailed failed = 8;
+  }
+}
+
+message DeploymentSnapshot {
+  repeated DeploymentState states = 1 [(buf.validate.field).repeated = {max_items: 10000}];
+  uint64 revision = 2 [(buf.validate.field).uint64 = {gte: 0}];
+}
+
+message DeploymentEvent {
+  uint64 revision = 1 [(buf.validate.field).uint64 = {gte: 0}];
+
+  oneof change {
+    option (buf.validate.oneof).required = true;
+
+    // Deployment state was created or updated.
+    DeploymentState state = 2;
+    // Deployment was removed.
+    string removed_deployment_id = 3 [(buf.validate.field).string = {len: 24}];
+  }
+}
+
+message DeploymentServicePrepareRequest {
+  // Deployment ID stored by the Director.
+  string deployment_id = 1 [(buf.validate.field).string = {len: 24}];
+
+  // Deployment parameters.
+  DeploymentConfig config = 2 [(buf.validate.field).required = true];
+}
+
+message DeploymentServicePrepareResponse {}
+
+message DeploymentServiceDeployRequest {
+  // Deployment ID stored by the Director.
+  string deployment_id = 1 [(buf.validate.field).string = {len: 24}];
+}
+
+message DeploymentServiceDeployResponse {
+  DeploymentState state = 1 [(buf.validate.field).required = true];
+}
+
+message DeploymentServiceStopRequest {
+  // Deployment ID stored by the Director.
+  string deployment_id = 1 [(buf.validate.field).string = {len: 24}];
+
+  // Whether to release the resources allocated by Prepare after stopping.
+  bool release = 2 [(buf.validate.field).bool = {}];
+}
+
+message DeploymentServiceStopResponse {
+  DeploymentState state = 1 [(buf.validate.field).required = true];
+}
+
+message DeploymentServiceWatchRequest {
+  // Resume from this revision. Zero starts with a fresh snapshot.
+  uint64 revision = 1 [(buf.validate.field).uint64 = {gte: 0}];
+}
+
+message DeploymentServiceWatchResponse {
+  oneof update {
+    option (buf.validate.oneof).required = true;
+
+    // Initial or resynchronized snapshot of all deployment states.
+    DeploymentSnapshot snapshot = 1;
+    // Incremental deployment state change.
+    DeploymentEvent event = 2;
+  }
+}
+
+service DeploymentService {
+  // Initialize the resources required to deploy a project.
+  rpc Prepare(DeploymentServicePrepareRequest) returns (DeploymentServicePrepareResponse);
+
+  // Deploy a previously prepared deployment.
+  rpc Deploy(DeploymentServiceDeployRequest) returns (DeploymentServiceDeployResponse);
+
+  // Stop a running deployment unit.
+  rpc Stop(DeploymentServiceStopRequest) returns (DeploymentServiceStopResponse);
+
+  // Stream status changes for every deployment unit on this Supervisor.
+  rpc Watch(DeploymentServiceWatchRequest) returns (stream DeploymentServiceWatchResponse);
+}

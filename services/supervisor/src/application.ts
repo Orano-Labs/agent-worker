@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { Container } from "@aw/container";
 import { Environment } from "@aw/environment";
 import { Logger } from "@aw/logging";
@@ -6,13 +5,13 @@ import { Controller } from "@/internal/controller";
 import { Director } from "@/internal/director";
 import { Ganesha } from "@/internal/ganesha";
 import { KVStorage } from "@/internal/kv-storage";
+import { RPC } from "@/internal/rpc";
 import { Shell } from "@/internal/shell";
 import { Tunnel } from "@/internal/tunnel";
 import { VMFactory } from "@/internal/vm-factory";
 import { VMImage } from "@/internal/vm-image";
 import { VMNet } from "@/internal/vm-net";
-
-process.env.AW_SUPERVISOR_FIRECRACKER_ARTIFACTS = join(process.cwd(), "firecracker-ci-artifacts");
+import { Server } from "./internal/server";
 
 const EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
   SIGHUP: 129,
@@ -60,7 +59,6 @@ export class Application extends Container.ServiceConstructable {
       .create({
         id: Math.random().toString().slice(2, 8),
         machineTier: "minimal",
-        metadata: {},
       })
       .run(s, async () => {});
   }
@@ -111,10 +109,16 @@ export class Application extends Container.ServiceConstructable {
       );
     });
     container.provide(KVStorage, (injector) => {
-      return new KVStorage(injector.injectMust(Logger), injector.injectMust(Environment));
+      return new KVStorage(injector.injectMust(Environment));
     });
     container.provide(Tunnel, (injector) => {
       return new Tunnel(injector.injectMust(Environment), injector.injectMust(Logger), injector.injectMust(Controller));
+    });
+    container.provide(Server, (injector) => {
+      return new Server(injector.injectMust(Environment), injector.injectMust(Logger));
+    });
+    container.provide(RPC, (injector) => {
+      return new RPC(injector.injectMust(Server), injector.injectMust(Logger));
     });
 
     const environment = new Environment({ prefix: "AW_SUPERVISOR", root: "/aw-supervisor" });

@@ -501,20 +501,6 @@ export class Generator {
     for (const file of files) {
       this.#generateFile(this.#createContext(schema, file, ".ts"));
     }
-
-    const registry = schema.generateFile("registry.ts");
-
-    registry.print("const r = ", registry.import("createRegistry", "@bufbuild/protobuf"), "(");
-
-    for (const file of files) {
-      registry.print("  ", registry.importSchema(file), ",");
-    }
-
-    registry.print(");");
-    registry.print("");
-    registry.print("for (const entity of r) {");
-    registry.print("   ", registry.import("Proto", "@aw/proto"), ".registry.add(entity)");
-    registry.print("}");
   }
 
   #createContext(schema: Schema, file: DescFile, suffix: string) {

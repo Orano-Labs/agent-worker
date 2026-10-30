@@ -141,11 +141,11 @@ pnpm --filter @aw/vm-supervisor generate:firecracker-api
 
 当前 Director 使用同一个 HTTP 端口，默认为 `3008`，Connect API 路径前缀为 `/grpc`。适配器只启用 Connect，**没有启用原生 gRPC 或 gRPC-Web，也没有内建 TLS 监听器**。远程部署需要在入口代理配置 HTTPS。
 
-`Environment` 先加载其根目录下的 `.env`，根据 `NODE_ENV` 确定模式，再加载 `.env.<mode>`；文件值会覆盖已有进程变量。Director 的根目录是进程工作目录，使用 `pnpm --filter @aw/vm-director dev` 时应把配置放在 `services/director/.env`。
+`Environment` 先加载其根目录下的 `.env`，根据 `NODE_ENV` 确定模式，再加载 `.env.<mode>`；已有进程变量优先；未注入的配置由模式文件覆盖基础文件。Director 的根目录是进程工作目录，使用 `pnpm --filter @aw/vm-director dev` 时应把配置放在 `services/director/.env`。
 
 ```dotenv
 # services/director/.env —— 以下都是示例值，请替换。
-NODE_ENV=development
+NODE_ENV=production
 AW_DIRECTOR_DATABASE_URL=mysql://aw:replace-me@127.0.0.1:3306/agent_worker
 AW_DIRECTOR_DATABASE_MIGRATIONS=./drizzle/migrations
 AW_DIRECTOR_REDIS_URL=redis://127.0.0.1:6379/0
@@ -253,7 +253,7 @@ AW_SUPERVISOR_FIRECRACKER_ARTIFACTS=/tmp/aw-firecracker-artifacts
 AW_SUPERVISOR_RUNTIME_IMAGE=/tmp/aw-runtime.squashfs
 ```
 
-运行镜像未设置时默认查找 `/aw-supervisor/images/runtime.squashfs`。`AW_SUPERVISOR_FS_ROOT` 属于文件系统组件配置；`AW_SUPERVISOR_SERVER_HOST`、`AW_SUPERVISOR_SERVER_PORT` 属于尚未接入入口的 HTTP Server（默认端口 `3000`），均不代表 VM 内的应用监听地址。Dockerfile 中保留的 `AW_SUPERVISOR_ID`、`PRIVATE_KEY` 和 `DIRECTOR_HOST_URL` 当前没有对应的 Director 连接消费逻辑。
+运行镜像未设置时默认查找 `/aw-supervisor/images/runtime.squashfs`。`AW_SUPERVISOR_FS_ROOT` 属于文件系统组件配置；`AW_SUPERVISOR_SERVER_HOST`、`AW_SUPERVISOR_SERVER_PORT` 属于尚未接入入口的 HTTP Server（默认端口 `3000`），均不代表 VM 内的应用监听地址。身份凭据应放在本地环境文件中；当前 Supervisor 入口尚无读取它们的 Director 连接逻辑。
 
 宿主权限和产物就绪后，演示入口命令为：
 
@@ -275,7 +275,7 @@ VM 内使用 SquashFS + ext4/OverlayFS，init 脚本包含 capability 收缩与�
 
 ### Docker 状态
 
-[Director Dockerfile](docker/Dockerfile.director) 和 [Supervisor Dockerfile](docker/Dockerfile.supervisor) 可作为部署结构参考，目前不能当作开箱即用的部署方案：它们仍调用不存在的 Director `generate` 脚本；Director 镜像还使用旧数据库变量，Supervisor 镜像的资源复制路径也需要与镜像脚本同步。仓库没有提供 Docker Compose 或完整部署编排。
+[Director Dockerfile](docker/Dockerfile.director) 和 [Supervisor Dockerfile](docker/Dockerfile.supervisor) 可作为部署结构参考，目前不能当作开箱即用的部署方案：它们仍调用不存在的 Director `generate` 脚本；数据库凭据需在运行时注入，Supervisor 镜像的资源复制路径也需要与镜像脚本同步。仓库没有提供 Docker Compose 或完整部署编排。
 
 ## 检查与测试
 
@@ -337,11 +337,15 @@ Director 的数据库测试会通过 `mysql-memory-server` 和 `redis-memory-ser
 
 ### 凭据与安全问题
 
-配置示例仅使用占位值。不要提交私钥、模型 API key、数据库凭据、真实用户工作区或未脱敏日志。`.env` 已被忽略，但 `.env.<mode>` 不在当前忽略规则内，不能假设它会自动排除。
+真实凭据保存在本地环境文件中。将 [services/director/.env.example](services/director/.env.example) 复制为 `services/director/.env`，用于服务端配置；将 [.env.manager.example](services/director/.env.manager.example) 复制为 `services/director/.env.manager`，仅供可信的管理脚本使用。Director 服务端只需要 Manager 公钥，不应接收 Manager 环境文件，镜像构建也不应使用该文件。Supervisor 从 `/aw-supervisor/.env` 读取配置，可参考[配置模板](services/supervisor/.env.example)。真实环境文件应限制为仅所有者可读写（`chmod 600`）。
 
-`services/director/scripts/generate-test-supervisor.ts` 当前包含硬编码私钥和远程地址，且使用当前服务端未启用的 gRPC-Web。不要直接运行该脚本或复用其中的凭据；公开或部署前应移除硬编码值，并轮换任何仍有效的对应密钥。
+Git 会忽略 `.env` 和 `.env.*`，仅允许提交 `.env.example`、`.env.*.example` 模板；Docker 构建上下文会排除所有环境文件变体、私钥文件和 Git 元数据。这些规则无法保护已经被 Git 跟踪的秘密。不要提交私钥、模型 API key、数据库密码、真实用户工作区或未脱敏日志。生产配置应在运行时注入，例如通过 Docker 的 `--env-file`；设置 `NODE_ENV=production` 才会禁用不验签的开发身份头。
 
-涉及认证绕过、宿主逃逸、路径越界或密钥泄漏的报告，请使用代码托管平台提供的私密安全报告渠道；若未启用，先联系维护者建立私密渠道，不要在公开 Issue 中附上可用凭据或攻击细节。当前仓库尚未提供独立的 `SECURITY.md`。
+创建 Supervisor 的管理脚本从 `.env.manager` 读取配置，使用 Connect 和真实签名，远程端点必须使用 HTTPS。返回的身份凭据会写入新建的本地环境文件，权限仅限所有者，不再打印私钥，也不会覆盖已有输出文件。当前 Supervisor 演示入口尚未消费这些身份配置。
+
+运行 `pnpm security:scan` 检查工作区，运行 `pnpm security:scan:history` 检查可达 Git 历史。检查仅输出位置，不输出敏感值；规则覆盖已知凭据格式，扫描通过不代表完成了全面安全审计。**本次开源前审查在历史版本中发现了身份私钥和 TLS 私钥。将当前值迁入环境文件，并不会使旧密钥失效，也不会删除历史提交。** 公开前必须轮换相关凭据、更换 TLS 证书与私钥，并清理所有待发布 ref 的敏感历史，或另行发布经审查的干净快照。生产依赖审查也仍有未解决项。范围及剩余事项见[审查记录](docs/SECURITY_REVIEW.md)。
+
+涉及认证绕过、宿主逃逸、路径越界或凭据泄漏时，请私密报告。优先使用托管平台已启用的私密漏洞报告渠道；若未启用，先联系维护者建立私密渠道。不要在公开 Issue 中附上可用凭据或攻击细节。报告说明见 [SECURITY.md](SECURITY.md)。
 
 ## 许可证
 

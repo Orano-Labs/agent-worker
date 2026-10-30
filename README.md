@@ -142,11 +142,11 @@ These commands generate code; **they do not resolve every outstanding refactor i
 
 Director currently uses a single HTTP port, `3008` by default, with Connect API routes under `/grpc`. The adapter enables Connect only: **native gRPC and gRPC-Web are disabled, and there is no built-in TLS listener**. Configure HTTPS at an ingress or reverse proxy for remote deployments.
 
-`Environment` loads `.env` from its root directory, determines the mode from `NODE_ENV`, then loads `.env.<mode>`. Values from these files override existing process environment variables. Director uses the process working directory as its root. When running `pnpm --filter @aw/vm-director dev`, place its configuration in `services/director/.env`.
+`Environment` loads `.env` from its root directory, determines the mode from `NODE_ENV`, then loads `.env.<mode>`. Existing process environment variables take priority; otherwise the mode-specific file overrides the base file. Director uses the process working directory as its root. When running `pnpm --filter @aw/vm-director dev`, place its configuration in `services/director/.env`.
 
 ```dotenv
 # services/director/.env — replace these example values.
-NODE_ENV=development
+NODE_ENV=production
 AW_DIRECTOR_DATABASE_URL=mysql://aw:replace-me@127.0.0.1:3306/agent_worker
 AW_DIRECTOR_DATABASE_MIGRATIONS=./drizzle/migrations
 AW_DIRECTOR_REDIS_URL=redis://127.0.0.1:6379/0
@@ -254,7 +254,7 @@ AW_SUPERVISOR_FIRECRACKER_ARTIFACTS=/tmp/aw-firecracker-artifacts
 AW_SUPERVISOR_RUNTIME_IMAGE=/tmp/aw-runtime.squashfs
 ```
 
-Without an explicit runtime image path, Supervisor looks for `/aw-supervisor/images/runtime.squashfs`. `AW_SUPERVISOR_FS_ROOT` configures the filesystem component. `AW_SUPERVISOR_SERVER_HOST` and `AW_SUPERVISOR_SERVER_PORT` configure the HTTP server, which defaults to port `3000` and is not connected to the entrypoint; these settings do not control the application inside the VM. The Dockerfile still contains `AW_SUPERVISOR_ID`, `PRIVATE_KEY`, and `DIRECTOR_HOST_URL` settings, but there is currently no Director connection logic that consumes them.
+Without an explicit runtime image path, Supervisor looks for `/aw-supervisor/images/runtime.squashfs`. `AW_SUPERVISOR_FS_ROOT` configures the filesystem component. `AW_SUPERVISOR_SERVER_HOST` and `AW_SUPERVISOR_SERVER_PORT` configure the HTTP server, which defaults to port `3000` and is not connected to the entrypoint; these settings do not control the application inside the VM. Identity credentials belong in a local env file; there is currently no Director connection logic in the Supervisor entrypoint that consumes them.
 
 Once host permissions and artifacts are in place, run the demo entrypoint with:
 
@@ -276,7 +276,7 @@ Inside the VM, SquashFS and ext4 provide the read-only and writable layers for O
 
 ### Docker status
 
-The [Director Dockerfile](docker/Dockerfile.director) and [Supervisor Dockerfile](docker/Dockerfile.supervisor) illustrate the intended deployment structure, but are not ready-to-use deployment recipes. Both call the removed Director `generate` script. The Director image also uses an obsolete database variable, and the Supervisor image's resource copy paths need to be reconciled with the image build script. The repository does not include Docker Compose or a complete deployment configuration.
+The [Director Dockerfile](docker/Dockerfile.director) and [Supervisor Dockerfile](docker/Dockerfile.supervisor) illustrate the intended deployment structure, but are not ready-to-use deployment recipes. Both call the removed Director `generate` script. Database credentials must be injected at runtime, and the Supervisor image's resource copy paths need to be reconciled with the image build script. The repository does not include Docker Compose or a complete deployment configuration.
 
 ## Checks and tests
 
@@ -339,11 +339,15 @@ These are gaps in the current implementation, not a committed release roadmap. F
 
 ### Credentials and security reports
 
-Configuration examples use placeholders. Do not commit private keys, model API keys, database credentials, real user workspaces, or unsanitized logs. `.env` is ignored, but `.env.<mode>` is not covered by the current ignore rules; do not assume those files will be excluded.
+Keep real credentials in local environment files. Copy [services/director/.env.example](services/director/.env.example) to `services/director/.env` for the server, and [.env.manager.example](services/director/.env.manager.example) to `services/director/.env.manager` for the trusted provisioning client. The Director server needs only the manager's public key; never pass the manager env file to the server or an image build. Supervisor loads its configuration from `/aw-supervisor/.env`; use [its example](services/supervisor/.env.example) as a starting point. Restrict real env files to their owner (`chmod 600`).
 
-`services/director/scripts/generate-test-supervisor.ts` currently contains a hardcoded private key and remote address, and uses gRPC-Web, which the current server does not enable. Do not run that script unchanged or reuse its credentials. Before publishing or deploying the code, remove the hardcoded values and rotate any corresponding keys that are still valid.
+Git ignores `.env` and `.env.*`, with exceptions for `.env.example` and `.env.*.example` templates. Docker excludes all env variants, private-key files, and Git metadata from the build context. These rules do not protect secrets already tracked in Git. Do not commit private keys, model API keys, database passwords, real user workspaces, or unsanitized logs. Inject production settings at runtime, for example with Docker's `--env-file`; set `NODE_ENV=production` to disable unsigned development identities.
 
-For authentication bypasses, host escapes, path traversal, or credential exposure, use your code hosting platform's private vulnerability reporting channel. If one is not enabled, contact the maintainers to establish a private channel before sharing sensitive details. Do not put usable credentials or exploit details in a public issue. The repository does not currently include a separate `SECURITY.md`.
+The Supervisor provisioning script reads `.env.manager`, uses Connect with real signatures, and requires HTTPS for remote endpoints. It writes the returned identity credentials to a new local env file with owner-only permissions, rather than logging private keys. It refuses to overwrite an existing output file. The current demo Supervisor does not yet consume those identity settings.
+
+Run `pnpm security:scan` for the working tree and `pnpm security:scan:history` for reachable Git history. These checks report locations without secret values and cover known credential formats; a passing scan is not a complete security audit. **Historical identity private keys and a TLS private key were found during the pre-release review. Moving current values to env files does not revoke them or remove earlier commits.** Before publishing, rotate affected credentials, replace the TLS certificate/key, and remove the sensitive history from every ref being published, or publish a separately reviewed clean snapshot. The production dependency audit also has unresolved findings. See the [review record](docs/SECURITY_REVIEW.md) for scope and remaining work.
+
+Report authentication bypasses, host escapes, path traversal, and credential exposure privately. Use the hosting platform's private vulnerability reporting channel if enabled; otherwise contact a maintainer to establish a private channel first. Never include usable credentials or exploit details in a public issue. See [SECURITY.md](SECURITY.md) for reporting guidance.
 
 ## License
 

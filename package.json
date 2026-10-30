@@ -25,6 +25,9 @@
     "format": "biome format --write .",
     "lint": "biome check --write .",
     "build": "pnpm -r --if-present run build",
-    "test": "pnpm -r --if-present run test"
+    "test": "pnpm -r --if-present run test",
+    "security:scan": "node scripts/check-secrets.mjs",
+    "security:scan:history": "node scripts/check-secrets.mjs --history",
+    "security:test": "node --test scripts/check-secrets.test.mjs"
   }
 }

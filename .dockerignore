@@ -8,7 +8,26 @@ node_modules/
 *.local
 *.tsbuildinfo
 
+.git
+**/.git
 .env
+.env.*
+**/.env
+**/.env.*
+*.pem
+**/*.pem
+*.key
+**/*.key
+*.p12
+**/*.p12
+*.pfx
+**/*.pfx
+.npmrc
+**/.npmrc
+.netrc
+**/.netrc
+credentials.json
+**/credentials.json
 .idea
 .turbo
 

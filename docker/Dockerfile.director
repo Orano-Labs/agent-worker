@@ -26,10 +26,10 @@ VOLUME ["/aw-fs"]
 
 ENV NODE_ENV=production
 
-ENV AW_DIRECTOR_MYSQL_URL="mysql://root:@127.0.0.1:3306/aw-dev"
-ENV AW_DIRECTOR_REDIS_URL="redis://127.0.0.1:6379?db=1"
 ENV AW_DIRECTOR_FS_ROOT="/aw-fs"
-ENV AW_DIRECTOR_MANAGER_PUBLIC_KEY=""
-ENV AW_DIRECTOR_MANAGER_PRIVATE_KEY=""
+
+# Inject AW_DIRECTOR_DATABASE_URL, AW_DIRECTOR_REDIS_URL,
+# AW_DIRECTOR_DATABASE_MIGRATIONS and AW_DIRECTOR_MANAGER_PUBLIC_KEY at runtime
+# with --env-file. The Director server never needs a manager private key.
 
 CMD ["npm", "run", "start"]

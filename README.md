@@ -1,207 +1,350 @@
 # Agent Worker
 
-Agent Worker 是面向代码型 AI Agent 的隔离执行基础设施。它负责把“启动一个项目运行环境”拆成可调度、可认证、可隔离、可限额、可回收的执行流程，而不是提供聊天界面或完整 Agent 产品。
+English | [简体中文](README_ZH.md)
 
-项目目前处于 **原型集成阶段（v0.0.x）**：控制面、调度、MicroVM、共享工作区和通信组件已有实现，但端到端任务派发尚未接通，不应直接用于生产环境。
+Agent Worker is self-hosted execution infrastructure for coding agents. Its Director control plane manages users, projects, and templates, while Supervisor nodes create, constrain, and clean up Linux microVMs. Request signing, file APIs, reverse tunnels, and a web terminal provide the building blocks for integrating these environments into an agent product.
 
-## 它解决什么问题
+The goal is to give each user's code tasks an isolated environment with a workspace, bounded compute resources, and access to terminals and application services, with the host managing the environment's lifecycle. The runtime image currently includes `pi-coding-agent`; you can change the image build script and entrypoint to run a different program.
 
-- 让不同用户和项目运行在独立的 Firecracker MicroVM 中。
-- 为任务限制 CPU、内存、文件系统和网络边界。
-- 在多台宿主机之间登记 Supervisor、排队并分派项目。
-- 让 MicroVM 通过受控的 WebDAV 工作区读写项目文件。
-- 通过签名请求和反向隧道连接控制面、执行节点与项目实例。
+**Version `0.0.1` is undergoing an architectural refactor. Individual components can be developed independently, but a fresh checkout cannot yet run the complete Director → Supervisor → microVM workflow.** The sections below distinguish existing implementations from unfinished integrations and document the current setup requirements and blockers.
 
-## 架构
+## Contents
+
+- [Capabilities and limitations](#capabilities-and-limitations)
+- [Architecture and repository layout](#architecture-and-repository-layout)
+- [Development setup](#development-setup)
+- [Configuring and using Director](#configuring-and-using-director)
+- [Supervisor and runtime images](#supervisor-and-runtime-images)
+- [Checks and tests](#checks-and-tests)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Capabilities and limitations
+
+“Implemented” here means the corresponding logic exists in the source. It does not mean the complete service has been verified end to end.
+
+| Area | Implemented | Current limitation |
+| --- | --- | --- |
+| Control plane | RPCs for users, Supervisors, templates, projects, and files; MySQL/Drizzle data layer and migrations | The Director build entrypoint and some legacy modules still need to be migrated |
+| Authentication | Manager, User, and Supervisor identities; Ed25519 signatures, timestamp validation, and Redis-backed nonce replay protection | Non-production mode accepts a development identity header and must be restricted to trusted development environments |
+| Project and template files | RPCs for creating, reading, writing, listing, deleting, moving, and copying files | ZIP downloads do not finalize the archive; chunked uploads have protocol and SDK definitions only |
+| Scheduling | Capacity and deployment data models, a legacy allocator, and the `Watch / Acknowledge / Release` protocol | The new `Scheduler` is a placeholder; the Portal has no server-side handler, and Supervisor does not consume assignments |
+| MicroVMs | Firecracker/jailer, network namespaces, TAP/veth, nftables, CPU/memory cgroups, and a read-only root with a writable OverlayFS layer | The Supervisor entrypoint creates one `minimal` demo VM with a random ID |
+| Workspaces | Supervisor filesystem support, dynamic NFS-Ganesha exports, and a standalone Go WebDAV service | Workspace exports are not connected to the demo VM; host project files are not automatically available at `/workspace` |
+| Remote access | Director tunnel components, the SDK's `TunnelClient`, and a separate `@aw/tunnel` library | The Director entrypoint does not instantiate the tunnel service; `/link` forwarding handlers are empty |
+| Web terminal | Go-based `ptyd` with a PTY, HTTP UI, WebSocket transport, terminal state restoration, and idle shutdown | The VM entrypoint currently runs `pi` on port `8000`; model configuration must be supplied separately |
+
+There is no ready-to-use management UI or complete agent task API. `ProjectService` has no `Launch` RPC, and creating a project does not start a VM. The former BullMQ/Fetch workflow, separate HTTP/2 TLS port, and directories such as `runner`, `vm-agent`, and `vm-manager` no longer describe the current repository.
+
+## Architecture and repository layout
+
+Solid arrows show current component dependencies or local execution paths. Dashed arrows show integrations that remain to be completed.
 
 ```mermaid
 flowchart LR
-  Client["上层产品 / SDK"]
-  Director["Director<br/>ConnectRPC API · 认证 · 调度"]
-  MySQL[("MySQL<br/>用户/模板/项目/节点")]
-  Redis[("Redis + BullMQ<br/>队列/状态/Nonce")]
-  Supervisor["Supervisor<br/>宿主机执行节点"]
-  WebDAV["Native WebDAV<br/>按任务暴露工作区"]
-  VM["Firecracker MicroVM<br/>只读镜像 + 可写 OverlayFS"]
-  App["Runner App<br/>VM 内目标进程"]
-
-  Client -->|"HTTP/2 + TLS + 签名"| Director
-  Director --> MySQL
-  Director --> Redis
-  Supervisor -->|"指标上报 / 拉取任务"| Director
-  Director <-->|"项目反向隧道"| Supervisor
-  Supervisor --> WebDAV
-  Supervisor --> VM
-  WebDAV -->|"davfs2 / Basic Auth"| VM
-  VM --> App
+  Client["Application / TypeScript SDK"] --> API["Director<br/>HTTP + Connect /grpc"]
+  API --> DB[("MySQL / Drizzle<br/>Users, nodes, templates, projects, deployments")]
+  API --> Redis[("Redis<br/>Cache and signature nonces")]
+  API --> Files["Director project / template directories"]
+  API -. "Scheduling, assignments, and tunnels: pending" .-> Supervisor["Supervisor / VMFactory"]
+  Supervisor --> Host["Linux KVM<br/>jailer, cgroups, isolated networking"]
+  Host --> VM["MicroVM<br/>SquashFS + ext4 / OverlayFS"]
+  VM --> Terminal["ptyd :8000 → pi"]
+  Workspace["NFS-Ganesha / WebDAV components"] -. "Workspace mounts: pending" .-> VM
 ```
-
-一次完整的目标流程如下；虚线部分代表代码存在，但尚未在 Supervisor 主流程中接通：
-
-```mermaid
-sequenceDiagram
-  participant U as 上层产品
-  participant D as Director
-  participant Q as BullMQ
-  participant S as Supervisor
-  participant V as MicroVM
-
-  U->>D: ProjectService.Launch
-  D->>Q: 项目入队
-  S->>D: SupervisorPortal.Fetch
-  D-->>S: projectId + tunnel token
-  S-->>V: 创建网络、工作区与 MicroVM
-  V-->>D: 通过 Supervisor 建立项目隧道
-  Note over S,V: 当前 Fetch → Orchestrator 尚未集成
-```
-
-## 核心模块
-
-| 模块 | 职责 | 当前状态 |
-| --- | --- | --- |
-| `services/director` | ConnectRPC 控制面；用户、模板、项目、Supervisor API；签名认证；BullMQ 调度；项目隧道 | 主体已实现 |
-| `services/supervisor` | 初始化宿主环境、网络与镜像；上报资源；创建和回收 Firecracker 任务 | 能运行演示 VM，尚未消费 Director 任务 |
-| `native/webdav` | Go WebDAV 服务；通过 Unix Socket 动态创建/删除带凭据的项目暴露 | 已接入 Supervisor |
-| `services/runner` | 未来的 VM 内 Agent Runner | 仅空入口与构建骨架 |
-| `packages/rpc` | 支持普通调用、流式传输、取消和错误编码的 Socket.IO RPC | 有核心实现与流测试 |
-| `packages/vm-agent` | 较早期的项目 bare repo、session worktree 和文件 RPC 实验 | 独立原型，未接入当前 MicroVM 链路 |
-| `packages/vm-manager` | 较早期的 Firecracker/SSH/网络管理封装 | 独立原型 |
-| `packages/vm-manager-panel` | Next.js 管理界面 | 仅显示本地环境状态 |
-| `packages/vm-registry` | VM 注册能力占位 | 空包 |
-
-## 关键实现
-
-### 控制面与认证
-
-Director 在两个端口提供服务：
-
-- HTTP（默认 `3008`）：项目反向隧道和代理入口。
-- HTTP/2 TLS（默认 `50051`）：ConnectRPC/gRPC API，路径前缀为 `/grpc`。
-
-API 按身份隔离：Manager 管理用户和 Supervisor，User 管理自己的模板与项目，Supervisor 仅上报状态和拉取任务。请求使用 Ed25519 签名，载荷包含身份、时间戳和 nonce；Director 通过 Redis 防止 nonce 重放。开发模式支持专用的开发身份头。
-
-Director 当前数据模型保持精简：`User`、`Supervisor`、`Template` 和 `Project`。项目支持 `Minimum`、`Standard`、`Performance` 三档资源规格，运行状态由调度器动态计算，不写入数据库。
-
-### 调度与隧道
-
-`ProjectService.Launch` 将项目写入 BullMQ。Supervisor 通过 client-streaming RPC 每 3 秒上报 CPU、内存、磁盘和运行数量，并可通过 `Fetch` 锁定一个任务。Director 为已分派项目创建临时 token 和反向隧道，维护 pending、pulling、running、terminated 状态及超时回队逻辑。
-
-### MicroVM 隔离
-
-Supervisor 为每个任务执行以下操作：
-
-1. 分配 network namespace、veth 和 TAP，并配置 nftables/NAT。
-2. 启动 Firecracker jailer，按资源档位设置 cgroup CPU/内存限制。
-3. 挂载只读 `runtime.squashfs` 和独立 `scratch.ext4`。
-4. VM 内用 OverlayFS 合并只读根和可写层。
-5. 为该任务生成 WebDAV 密码，把宿主项目目录挂载到 `/workspace`。
-6. 通过 `tini` 启动 `/app`，退出时同步工作区并关闭 VM。
-
-当前资源档位分别约为 `1 vCPU / 1 GiB`、`2 vCPU / 2 GiB`、`4 vCPU / 4 GiB`（jailer 另预留 64 MiB）。
-
-## 仓库结构
 
 ```text
 .
 ├── services/
-│   ├── director/          # 中央控制面与 SDK
-│   ├── supervisor/        # Linux 宿主机执行节点
-│   └── runner/            # Runner 占位实现
+│   ├── director/
+│   │   ├── src/api/            # RPC and tunnel handlers
+│   │   ├── src/internal/       # Data, authentication, files, and tunnels
+│   │   ├── src/sdk/            # Signed client and TunnelClient
+│   │   ├── proto/              # Public API definitions
+│   │   └── drizzle/migrations/ # MySQL migrations
+│   └── supervisor/
+│       ├── src/internal/       # VMs, images, networking, NFS, and files
+│       ├── proto/              # Node filesystem and deployment protocols
+│       ├── resources/          # VM init, entrypoint, and app test resources
+│       └── scripts/            # Image builds, Firecracker downloads, codegen
+├── native/
+│   ├── ptyd/                   # Go web terminal and Linux binary exports
+│   └── webdav/                 # Go WebDAV service with a Unix socket API
 ├── packages/
-│   ├── rpc/               # 自研 Socket.IO RPC
-│   ├── vm-agent/          # VM Agent / worktree 实验
-│   ├── vm-manager/        # 早期 VM 管理实现
-│   ├── vm-manager-panel/  # Next.js 面板原型
-│   ├── vm-registry/       # 注册服务占位包
+│   ├── container/              # Dependency injection and service lifecycle
+│   ├── environment/            # Prefixed environment variables and dotenv
+│   ├── logging/                # Pino logging wrapper
+│   ├── proto/                  # Protobuf types, service abstractions, registry
+│   ├── proto-codegen/          # Custom Protobuf TypeScript generator
+│   ├── tunnel/                 # Socket pairs, HTTP/2 tunnels, stream bridging
 │   └── shared-config-typescript/
-├── native/webdav/         # Go WebDAV 二进制及 TS 导出
+├── docker/                     # Director / Supervisor Dockerfiles; need updates
+├── docs/SDK_USAGE_GUIDE.md      # Detailed SDK examples in Chinese; partly outdated
 ├── pnpm-workspace.yaml
-└── turbo.json
+└── package.json
 ```
 
-## 开发与运行
+The main stack is TypeScript, Node.js, pnpm workspaces, ConnectRPC, Protobuf/Buf, Drizzle/MySQL, and Redis, alongside Go, Firecracker, and Linux networking tools. The root build script uses recursive pnpm commands; Turbo configuration is also present.
 
-### 基础要求
+## Development setup
 
-- Node.js 22+
-- pnpm 10.14+
-- Go（构建 `native/webdav`）
-- MySQL、Redis
-- Director 的 TLS 私钥与证书
-- Linux + KVM（运行 Supervisor/MicroVM）
-- `sudo`、Firecracker/jailer、`iproute2`、`nftables`、`buildah`、`qemu-img`、`mkfs.ext4`、`mksquashfs` 等宿主工具
+### Requirements
 
-macOS/Windows 可以开发和构建大部分 TypeScript 模块，但不能运行 Firecracker 执行链路。
+| Scope | Requirements |
+| --- | --- |
+| TypeScript components, SDK, and control plane | Node.js 24 recommended; the root `packageManager` field specifies `pnpm@11.18.0` |
+| Go components and full repository builds | Go 1.27 or a compatible toolchain recommended; `ptyd/go.mod` specifies `1.27.0`, and `webdav/go.mod` specifies `1.26.1` |
+| Director runtime and database integration tests | MySQL, Redis, and a writable file directory; the test helpers currently request MySQL `9.7.2` and Redis `8.10.2` |
+| Supervisor / microVM execution | Linux x86_64 or aarch64, a working `/dev/kvm`, cgroups, and root or equivalent host privileges |
+| Runtime image builds | Linux, Bash, Buildah, `mksquashfs`, Node.js/npm, pnpm, and network access to download images and packages |
 
-### 安装与检查
+The repository does not declare a common minimum Node.js version through `engines`; Node.js 24 matches the major version used by the Dockerfiles. Some packages still specify `pnpm@10.14.0`; use the root version for development. You can develop TypeScript and some Go components on macOS. The full Firecracker workflow requires Linux/KVM; use a Linux environment when developing on Windows.
+
+### Install dependencies and build shared components
+
+After cloning the repository or your fork, run these commands from the repository root:
 
 ```bash
-pnpm install
-pnpm build
-pnpm test
+pnpm install --frozen-lockfile
 
-# 单独检查某个包
-pnpm --filter @aw/vm-director typecheck
-pnpm --filter @aw/rpc test
+# Build the shared components used by services and code generators.
+# These do not require a VM.
+pnpm --filter @aw/container --filter @aw/environment --filter @aw/logging \
+  --filter @aw/proto --filter @aw/proto-codegen --filter @aw/tunnel -r build
+
+# Start with tests that do not require a database or VM.
+pnpm --filter @aw/container test --run
 ```
 
-### 启动 Director
+Outside CI, installation runs `lefthook install` to set up the pre-commit hook. Initial dependency installation, Buf dependencies, and native toolchain setup may require network access.
 
-至少需要配置 MySQL、Redis、共享文件根和 HTTP/2 TLS 文件：
+### Generate protocol types and the Firecracker client
+
+Generated service files are excluded by each service's `.gitignore` and must be generated after a fresh checkout. Build the shared components above first so that the local `proto-codegen` plugin is available, then run:
+
+```bash
+# Director extension types and API types.
+pnpm --filter @aw/vm-director exec buf generate --template buf.gen.extensions.yaml
+pnpm --filter @aw/vm-director gen:proto
+
+# Supervisor protocol types and Firecracker OpenAPI client.
+pnpm --filter @aw/vm-supervisor gen:proto
+pnpm --filter @aw/vm-supervisor generate:firecracker-api
+```
+
+`gen:proto` includes a separate registry generation script. The Firecracker OpenAPI generator queries GitHub for the latest release, so its output is not pinned to a particular Firecracker version. Check that the generated client matches the binaries you use.
+
+These commands generate code; **they do not resolve every outstanding refactor issue**. Director still references old `Repository`, logging, and key modules, and its build configuration points to a missing `src/index.ts` instead of the actual startup entrypoint, `src/main.ts`. The old command `pnpm --filter @aw/vm-director generate` is no longer valid: that package has no `generate` script.
+
+## Configuring and using Director
+
+### Configuration
+
+Director currently uses a single HTTP port, `3008` by default, with Connect API routes under `/grpc`. The adapter enables Connect only: **native gRPC and gRPC-Web are disabled, and there is no built-in TLS listener**. Configure HTTPS at an ingress or reverse proxy for remote deployments.
+
+`Environment` loads `.env` from its root directory, determines the mode from `NODE_ENV`, then loads `.env.<mode>`. Values from these files override existing process environment variables. Director uses the process working directory as its root. When running `pnpm --filter @aw/vm-director dev`, place its configuration in `services/director/.env`.
 
 ```dotenv
-AW_DIRECTOR_MYSQL_URL=mysql://user:password@127.0.0.1:3306/agent_worker
+# services/director/.env — replace these example values.
+NODE_ENV=development
+AW_DIRECTOR_DATABASE_URL=mysql://aw:replace-me@127.0.0.1:3306/agent_worker
+AW_DIRECTOR_DATABASE_MIGRATIONS=./drizzle/migrations
 AW_DIRECTOR_REDIS_URL=redis://127.0.0.1:6379/0
-AW_DIRECTOR_FS_ROOT=/var/lib/agent-worker
-AW_DIRECTOR_GRPC_CA_KEY=/path/to/server-key.pem
-AW_DIRECTOR_GRPC_CA_CERTIFICATE=/path/to/server-cert.pem
+AW_DIRECTOR_FS_ROOT=/tmp/agent-worker-director-files
 AW_DIRECTOR_HTTP_PORT=3008
-AW_DIRECTOR_GRPC_PORT=50051
+# Required for a manager client using real signatures:
+# AW_DIRECTOR_MANAGER_PUBLIC_KEY=<hex-encoded Ed25519 SPKI DER public key>
 ```
+
+| Variable | Purpose |
+| --- | --- |
+| `AW_DIRECTOR_DATABASE_URL` | Required MySQL connection string; replaces the old `AW_DIRECTOR_MYSQL_URL` |
+| `AW_DIRECTOR_DATABASE_MIGRATIONS` | Required migrations directory; relative paths resolve from the process working directory |
+| `AW_DIRECTOR_REDIS_URL` | Required Redis connection string |
+| `AW_DIRECTOR_FS_ROOT` | Root directory for project and template files; required for file operations |
+| `AW_DIRECTOR_HTTP_PORT` | Optional; defaults to `3008` |
+| `AW_DIRECTOR_MANAGER_PUBLIC_KEY` | Hex-encoded public key for verifying manager signatures; the server does not need the manager's private key |
+| `NODE_ENV` | Defaults to `development`; only `production` disables the development identity header |
+
+Create the MySQL database named in your connection string, start Redis, and grant write access to the file root. Database initialization applies migrations automatically; no separate Prisma command is needed. To change the schema, run `pnpm --filter @aw/vm-director gen:db` to generate a Drizzle migration and review the SQL.
+
+Once the build and protocol integration blockers are resolved, start the development server with:
 
 ```bash
 pnpm --filter @aw/vm-director dev
 ```
 
-首次部署还应固定配置 `AW_DIRECTOR_MANAGER_PUBLIC_KEY`；未配置时开发启动会生成并在日志中输出一组临时 Manager 密钥。
+The built service starts with `pnpm --filter @aw/vm-director start`, which expects `dist/index.cjs`. The build entrypoint must be fixed before this path is usable.
 
-### 启动 Supervisor（仅限 Linux/KVM 开发机）
+### Using the SDK
+
+The SDK lives in the Director package and exposes `@aw/vm-director/sdk` and `@aw/vm-director/tunnel`. Build and test it inside the workspace first; a package definition in this repository does not establish that a usable version has been published to npm.
+
+The following example shows the structure of a signed client. It requires a repaired and built Director package, a running server, and a registered user:
+
+```ts
+import { createConnectTransport } from "@connectrpc/connect-node";
+import { Client, ProjectPB } from "@aw/vm-director/sdk";
+
+const client = new Client(
+  createConnectTransport({
+    baseUrl: "http://127.0.0.1:3008/grpc",
+    httpVersion: "1.1",
+  }),
+  {
+    type: "user",
+    id: process.env.DIRECTOR_USER_ID!,
+    privateKey: process.env.DIRECTOR_USER_PRIVATE_KEY_HEX!,
+  },
+);
+
+const result = await client.createProjectService().list(
+  Client.createMessageValid(ProjectPB.ProjectServiceListRequestSchema, {
+    page: 1,
+    pageSize: 20,
+  }),
+);
+console.log(result);
+```
+
+The example's `DIRECTOR_USER_*` variables belong to the calling application, not the Director server configuration. Identity private keys use hex-encoded PKCS#8 DER; the manager public key uses hex-encoded SPKI DER. The SDK generates a signature, nonce, and timestamp for each request. A manager creates users through `UserService`, and users manage their own projects. Store private keys securely when an identity is created; do not send them to a browser.
+
+For more examples, see the [Director SDK usage guide](docs/SDK_USAGE_GUIDE.md), currently available in Chinese. **The guide has not yet been updated for this refactor.** Its descriptions of gRPC-Web, Portal/watch, `/link`, some file RPCs, and the `generate` command are outdated; refer to the current source and the limitations documented here. An SDK method does not imply that the server implements it. The public signer property for ordinary HTTP requests is currently spelled `client.singer`.
+
+### Outstanding control-plane integrations
+
+- `Scheduler` is an empty class. The legacy `Allocator` depends on removed modules and has not been migrated to the Drizzle data layer.
+- `SupervisorPortalService` has proto definitions and an SDK client, but no server-side implementation.
+- `SupervisorTunnelService` is registered as a container provider but is not instantiated by the entrypoint's dependency graph. The container removes unused providers. Even if the service is connected, its `/link` HTTP and upgrade handlers are still empty.
+- File `move/copy` handlers exist. `FileUploadService` is not registered, and ZIP `download` does not call `finalize()`, so downloads cannot be relied on to finish.
+
+## Supervisor and runtime images
+
+Supervisor currently exercises local VM startup. Its entrypoint depends on `VMFactory` and does not connect to Director, report metrics, or process project assignments. NFS-Ganesha, the HTTP/RPC server, and LMDB have implementations and provider definitions, but the entrypoint's dependency graph does not activate them.
+
+### Prepare the host and build artifacts
+
+Use a dedicated Linux/KVM development host. VM network initialization changes host IP forwarding and nftables rules and removes stale network namespaces managed by this module. The jailer needs device, cgroup, and directory permissions. Required tools include `ip`, `nft`, `sysctl`, `truncate`, and `mkfs.ext4`, plus `firecracker`, `jailer`, and `vmlinux` for the host architecture.
+
+After installing dependencies and generating protocol and OpenAPI code, prepare the artifacts below. Run these commands from the repository root:
+
+```bash
+# Download Firecracker, jailer, and a CI kernel for the host architecture.
+# Requires curl, wget, tar, and GNU grep with -P support.
+bash services/supervisor/scripts/download-firecracker-ci.sh /tmp/aw-firecracker-artifacts
+
+# Build the Linux amd64 and arm64 ptyd binaries.
+pnpm --filter @aw/ptyd build
+
+# Supply the binary path explicitly to avoid package-resolution differences
+# in the image script. Use ptyd-linux-arm64 on an aarch64 host.
+PTYD_SOURCE="$PWD/native/ptyd/dist/ptyd-linux-amd64" \
+  bash services/supervisor/scripts/build-runtime-image.sh /tmp/aw-runtime.squashfs
+```
+
+The image script uses rootless Buildah, which requires subordinate UID/GID ranges and a compatible storage driver. It downloads Alpine packages and installs `@earendil-works/pi-coding-agent`; not all upstream versions are pinned. Supervisor only checks for an existing `runtime.squashfs` at startup. It does not build the image automatically.
+
+### Configuration and demo entrypoint
+
+The Supervisor entrypoint fixes its environment root at `/aw-supervisor`. It reads `.env` there and creates runtime directories, including the jailer directory, under that root. The current VM path uses these settings:
 
 ```dotenv
-AW_SUPERVISOR_ID=<Director 创建的 Supervisor ID>
-AW_SUPERVISOR_PRIVATE_KEY=<对应 Ed25519 私钥 hex>
-AW_SUPERVISOR_DIRECTOR_HOST_URL=https://127.0.0.1:50051
-AW_SUPERVISOR_FS_ROOT=/var/lib/agent-worker
+# /aw-supervisor/.env
+AW_SUPERVISOR_FIRECRACKER_ARTIFACTS=/tmp/aw-firecracker-artifacts
+AW_SUPERVISOR_RUNTIME_IMAGE=/tmp/aw-runtime.squashfs
 ```
+
+Without an explicit runtime image path, Supervisor looks for `/aw-supervisor/images/runtime.squashfs`. `AW_SUPERVISOR_FS_ROOT` configures the filesystem component. `AW_SUPERVISOR_SERVER_HOST` and `AW_SUPERVISOR_SERVER_PORT` configure the HTTP server, which defaults to port `3000` and is not connected to the entrypoint; these settings do not control the application inside the VM. The Dockerfile still contains `AW_SUPERVISOR_ID`, `PRIVATE_KEY`, and `DIRECTOR_HOST_URL` settings, but there is currently no Director connection logic that consumes them.
+
+Once host permissions and artifacts are in place, run the demo entrypoint with:
 
 ```bash
 pnpm --filter @aw/vm-supervisor dev
 ```
 
-> 注意：当前 Supervisor 入口会直接创建两个随机项目的演示 VM，并定时访问其 `3000` 端口。请只在专用 Linux/KVM 开发环境运行；它还不是生产守护进程。
+Current VM resource tiers are:
 
-## 当前进度与下一步
+| `machineTier` | vCPUs | Guest memory |
+| --- | --- | --- |
+| `minimal` | 1 | 256 MiB |
+| `standard` | 2 | 512 MiB |
+| `performance` | 4 | 1024 MiB |
 
-已具备：
+The jailer's memory cgroup adds a `64 MiB` budget for VMM overhead. Each VM gets a writable scratch disk of `512 MiB` by default. These are the current `VMFactory` values; they are not yet automatically mapped from Director's resource enum.
 
-- ConnectRPC API、身份权限、签名与重放防护。
-- MySQL 数据模型和用户/模板/项目/Supervisor 服务。
-- Redis/BullMQ 排队、任务锁、超时回队和运行状态。
-- Supervisor 指标上报、Firecracker/cgroup/网络/镜像编排。
-- 按任务授权的 WebDAV 工作区与 VM 内挂载。
-- HTTP/WebSocket 项目反向代理和隧道管理。
+Inside the VM, SquashFS and ext4 provide the read-only and writable layers for OverlayFS. The init script reduces capabilities and includes optional NFS mount support. The application entrypoint runs `ptyd --port 8000 --idle-timeout 10s --command /usr/local/bin/pi --dir /workspace -- --continue`. The demo does not inject a project workspace, model credentials, or NFS configuration; those integrations are still required to run real agent tasks.
 
-仍需完成：
+### Docker status
 
-- 将 Supervisor 的 `Fetch` 循环接入 `Orchestrator.create()`，移除两个演示 VM。
-- 把项目资源档位、环境变量和任务元数据从 Director 完整传到 VM。
-- 实现任务终止、重启、故障恢复和持久化运行记录。
-- 明确并整合 `runner`、`vm-agent`、`vm-manager` 三条历史实现路径。
-- 补充端到端测试、部署脚本、可观测性、安全审计和生产运维文档。
-- 完成管理面板及对外使用示例。
+The [Director Dockerfile](docker/Dockerfile.director) and [Supervisor Dockerfile](docker/Dockerfile.supervisor) illustrate the intended deployment structure, but are not ready-to-use deployment recipes. Both call the removed Director `generate` script. The Director image also uses an obsolete database variable, and the Supervisor image's resource copy paths need to be reconciled with the image build script. The repository does not include Docker Compose or a complete deployment configuration.
 
-## 参与开发
+## Checks and tests
 
-提交变更前请至少运行相关包的 `typecheck`、`test` 和根目录 `pnpm build`。基础设施代码会触及宿主网络、cgroup、文件目录和虚拟机生命周期；修改清理逻辑时，应同时验证成功、启动失败和进程异常退出三条路径。
+TypeScript packages use Vitest. Run Go tests separately. Most `test` scripts enter watch mode by default; add `--run` for a single run:
 
-如果你想参与，当前最清晰的切入点是 Supervisor 任务消费闭环、端到端测试、Runner 协议，以及重复 VM 实现的收敛。
+```bash
+# Choose checks for the packages you changed. Build shared dependencies
+# and generate code before checking services.
+pnpm --filter @aw/container typecheck
+pnpm --filter @aw/container test --run
+pnpm --filter @aw/tunnel test --run
+pnpm --filter @aw/vm-director typecheck
+pnpm --filter @aw/vm-supervisor typecheck
+
+# All TypeScript tests and builds; known failures are listed below.
+pnpm test --run
+pnpm build
+
+# The root pnpm test command does not run Go tests.
+go -C native/ptyd test ./...
+go -C native/webdav test ./...
+
+# Check changed source files without rewriting the whole repository.
+pnpm exec biome check path/to/changed-file.ts
+```
+
+Director database tests start real processes through `mysql-memory-server` and `redis-memory-server`; the first run may download binaries. Tunnel tests need permission to listen on local TCP and Unix sockets. VM startup, failure cleanup, and shutdown require a host with working networking and KVM. The root `pnpm lint` and `pnpm format` commands use `--write` and modify files.
+
+Limited verification performed when this README was rewritten on October 30, 2026:
+
+- All six shared components built successfully, and all 27 `@aw/container` tests passed.
+- With local socket listening permitted, `@aw/tunnel` had 83 passing tests and one failure: an extended CONNECT test expected `:protocol` to be `tcp`, but received `http`.
+- The Director build failed because `src/index.ts` is missing. Type checking also reported legacy module references and other errors.
+- Supervisor type checking was blocked by the protocol registry and Firecracker OpenAPI files that had not yet been generated. Execution on Linux/KVM was not verified.
+
+These checks do not establish that the full repository passes. There is currently no CI workflow; describe your verification scope and any existing failures in each pull request.
+
+## Contributing
+
+Bug reports, reproducible examples, documentation improvements, and code contributions are welcome. Start with the relevant service's `src/application.ts` to understand which dependencies are actually instantiated, then follow the API/proto definitions, internal services, and tests.
+
+### Areas where help is needed
+
+1. **Make fresh checkouts build reliably.** Align entrypoints, generation steps, legacy modules, and package versions; update the Dockerfiles and SDK guide.
+2. **Complete deployment scheduling.** Migrate the legacy allocation logic, implement the Portal, and connect Supervisor to the VM lifecycle, including disconnect and restart recovery.
+3. **Connect workspaces and runtime configuration.** Clarify the roles of NFS and WebDAV and pass project directories, resource tiers, and agent configuration into VMs.
+4. **Finish access and file APIs.** Connect tunnels and project routing, complete chunked uploads and ZIP downloads, and verify authorization and path boundaries.
+5. **Improve reliability checks.** Resolve existing test failures, add CI and Linux/KVM integration tests, and cover initialization failures, cancellation, and resource cleanup.
+
+These are gaps in the current implementation, not a committed release roadmap. For substantial protocol or architectural changes, open an issue first to explain the problem, proposed approach, and compatibility impact.
+
+### Issues and pull requests
+
+- For bug reports, include reproduction steps, expected and actual behavior, the relevant commit, OS and architecture, toolchain versions, and sanitized logs. For VM issues, include KVM, cgroup, and Firecracker details.
+- Fork the repository and work on a separate branch. Keep each pull request focused on one problem, and explain what changed, why, and how you verified it.
+- Add tests for behavior changes. For API changes, update the `.proto` definitions, server handlers, SDK, and documentation together. Generated directories are ignored; change the protocol or generator and document how to regenerate the output.
+- Include a reviewed Drizzle migration when changing the database schema. Updating only your local database is not sufficient.
+- Run the affected packages' builds, type checks, and tests before submitting. If an existing blocker prevents a check from passing, include the command and failure reason. Do not mark checks as passed unless you ran them.
+- The pre-commit hook runs Biome on staged files and stages automatic fixes. Review the final diff before committing.
+
+### Credentials and security reports
+
+Configuration examples use placeholders. Do not commit private keys, model API keys, database credentials, real user workspaces, or unsanitized logs. `.env` is ignored, but `.env.<mode>` is not covered by the current ignore rules; do not assume those files will be excluded.
+
+`services/director/scripts/generate-test-supervisor.ts` currently contains a hardcoded private key and remote address, and uses gRPC-Web, which the current server does not enable. Do not run that script unchanged or reuse its credentials. Before publishing or deploying the code, remove the hardcoded values and rotate any corresponding keys that are still valid.
+
+For authentication bypasses, host escapes, path traversal, or credential exposure, use your code hosting platform's private vulnerability reporting channel. If one is not enabled, contact the maintainers to establish a private channel before sharing sensitive details. Do not put usable credentials or exploit details in a public issue. The repository does not currently include a separate `SECURITY.md`.
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE). Third-party components used or downloaded by the runtime have their own licenses. Preserve any required license and attribution notices when distributing images or binaries. Contributions under the project's license are welcome.

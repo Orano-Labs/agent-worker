@@ -10,7 +10,20 @@ node_modules/
 
 .vscode-upload.json
 
+# Real environment files are local, including mode-specific and tool configs.
 .env
+.env.*
+!.env.example
+!.env.*.example
+
+# Private keys, certificates and local credential stores.
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+.netrc
+credentials.json
 .idea
 .turbo
 

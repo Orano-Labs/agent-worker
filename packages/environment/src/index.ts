@@ -31,42 +31,36 @@ export class Environment extends Container.ServiceConstructable {
       this.#prefix += "_";
     }
 
-    if (this.#fiels) {
+    // Deployment-injected values must win over files, including NODE_ENV.
+    const injected = new Set(Object.keys(process.env).filter((key) => process.env[key] !== undefined));
+    const load = (name: string) => {
+      const file = join(this.#root, name);
       try {
-        const file = join(this.#root, ".env");
-        const content = readFileSync(file, "utf-8");
-
-        Object.assign(process.env, parseEnv(content));
-        this.#messages.push(`Loaded ".env" file at "${file}".`);
+        const values = parseEnv(readFileSync(file, "utf-8"));
+        for (const [key, value] of Object.entries(values)) {
+          if (!injected.has(key)) process.env[key] = value;
+        }
+        this.#messages.push(`Loaded "${name}" file at "${file}".`);
       } catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-          this.#warnings.push(`Failed to load ".env" file: ${error instanceof Error ? error.message : String(error)}.`);
+          this.#warnings.push(`Failed to load "${name}" file.`);
         }
       }
+    };
 
-      const nodeEnv = process.env.NODE_ENV?.toLowerCase();
+    if (this.#fiels) {
+      load(".env");
+    }
 
-      if (nodeEnv === Environment.Mode.Development || nodeEnv === Environment.Mode.Production || nodeEnv === Environment.Mode.Test) {
-        this.#mode = nodeEnv;
-      } else if (nodeEnv) {
-        this.#warnings.push(`NODE_ENV="${nodeEnv}" is not recognized; defaulting to "${this.#mode}".`);
-      }
+    const nodeEnv = process.env.NODE_ENV?.toLowerCase();
+    if (nodeEnv === Environment.Mode.Development || nodeEnv === Environment.Mode.Production || nodeEnv === Environment.Mode.Test) {
+      this.#mode = nodeEnv;
+    } else if (nodeEnv) {
+      this.#warnings.push(`NODE_ENV is not recognized; defaulting to "${this.#mode}".`);
+    }
 
-      {
-        const name = `.env.${this.#mode}`;
-        const file = join(this.#root, name);
-
-        try {
-          const content = readFileSync(file, "utf-8");
-
-          Object.assign(process.env, parseEnv(content));
-          this.#messages.push(`Loaded "${name}" file at "${file}".`);
-        } catch (error) {
-          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-            this.#warnings.push(`Failed to load "${name}" file: ${error instanceof Error ? error.message : String(error)}.`);
-          }
-        }
-      }
+    if (this.#fiels) {
+      load(`.env.${this.#mode}`);
     }
 
     if (this.#mode !== Environment.Mode.Production) {
@@ -149,7 +143,7 @@ export class Environment extends Container.ServiceConstructable {
       case "0":
         return false;
       default:
-        throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid boolean: "${value}".`);
+        throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid boolean.`);
     }
   }
 
@@ -176,7 +170,7 @@ export class Environment extends Container.ServiceConstructable {
     const parsed = Number(value.trim());
 
     if (Number.isNaN(parsed) || !Number.isFinite(parsed)) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid number: "${value}".`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid number.`);
     }
 
     return parsed;
@@ -206,7 +200,7 @@ export class Environment extends Container.ServiceConstructable {
     const parsed = Number.parseInt(trimmed, 10);
 
     if (Number.isNaN(parsed) || !Number.isFinite(parsed) || String(parsed) !== trimmed) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid integer: "${value}".`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid integer.`);
     }
 
     return parsed;
@@ -235,11 +229,11 @@ export class Environment extends Container.ServiceConstructable {
     const parsed = Number.parseInt(value.trim(), 10);
 
     if (Number.isNaN(parsed) || !Number.isFinite(parsed)) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid number: "${value}".`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid number.`);
     }
 
     if (parsed < 1 || parsed > 65535) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid port (1–65535): ${parsed}.`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid port (1–65535).`);
     }
 
     return parsed;
@@ -268,7 +262,7 @@ export class Environment extends Container.ServiceConstructable {
     const trimmed = value.trim();
 
     if (!this.#isIP(trimmed) && !this.#isFQDN(trimmed)) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid host: "${trimmed}".`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid host.`);
     }
 
     return trimmed;
@@ -297,7 +291,7 @@ export class Environment extends Container.ServiceConstructable {
     const trimmed = value.trim();
 
     if (!this.#isUrl(trimmed)) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid URL: "${trimmed}".`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid URL.`);
     }
 
     return trimmed;
@@ -326,7 +320,7 @@ export class Environment extends Container.ServiceConstructable {
     const trimmed = value.trim();
 
     if (!EMAIL_REGEX.test(trimmed)) {
-      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid email: "${trimmed}".`);
+      throw new Error(`Environment variable "${this.#prefix}${key}" is not a valid email.`);
     }
 
     return trimmed;

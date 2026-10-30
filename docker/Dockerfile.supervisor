@@ -127,10 +127,7 @@ COPY --from=runtime-image-builder /app/runtime.squashfs ./image/runtime.squashfs
 
 ENV NODE_ENV=production
 
-ENV AW_SUPERVISOR_DIRECTOR_HOST_URL="http://127.0.0.1:3008"
 ENV AW_SUPERVISOR_FS_ROOT="/aw-fs"
-ENV AW_SUPERVISOR_ID="unknown"
-ENV AW_SUPERVISOR_PRIVATE_KEY="unknown"
 ENV AW_SUPERVISOR_FIRECRACKER_ARTIFACTS="/app/firecracker-artifacts"
 ENV AW_SUPERVISOR_RUNTIME_IMAGE="/app/image/runtime.squashfs"
 
